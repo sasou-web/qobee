@@ -13,6 +13,11 @@ pub enum OutputMode {
     /// OS-mixer path (CPAL / WASAPI Shared on Windows). Supports
     /// concurrent playback with other applications.
     Shared,
+    /// WASAPI Exclusive on Windows. Bit-perfect when the device
+    /// natively supports the source sample rate and bit depth.
+    /// Other applications cannot play to the same device while
+    /// Qobee is active.
+    Exclusive,
 }
 
 impl Default for OutputMode {
@@ -27,6 +32,8 @@ impl Default for OutputMode {
 pub enum EffectiveOutputMode {
     /// Running in Shared (the OS mixer is in the chain).
     Shared,
+    /// Running in WASAPI Exclusive (the OS mixer is bypassed).
+    Exclusive,
 }
 
 /// Description of an output endpoint the user can pick.
@@ -160,5 +167,10 @@ pub enum EngineEvent {
     StateChanged { state: PlayerState },
     Position { position_seconds: f64 },
     EndOfTrack,
+    /// Emitted when the decoder thread swaps a prepared next track in
+    /// place mid-stream (gapless transition). The audio callback never
+    /// stopped: the user heard one continuous output. The orchestrator
+    /// advances the queue without issuing a fresh `Load`.
+    GaplessTransition,
     Error { message: String },
 }

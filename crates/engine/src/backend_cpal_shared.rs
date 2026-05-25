@@ -2,8 +2,11 @@
 //!
 //! This is the engine's only output backend. It pulls f32 interleaved
 //! PCM from a Symphonia decoder running on a worker thread, optionally
-//! resamples it (via rubato FFT) to the device's native rate, and feeds
-//! it to the OS mixer via CPAL.
+//! resamples it (via rubato sinc, BlackmanHarris²) to the device's
+//! native rate, applies an optional ReplayGain pre-gain and a 10-band
+//! peaking EQ, then feeds it to the OS mixer via CPAL. The audio
+//! callback adds soft-clip + TPDF dither (when the device asks for a
+//! ≤16-bit integer format) before quantization.
 //!
 //! ## Honest reporting
 //!
@@ -36,14 +39,36 @@ use crate::types::{
 };
 use crate::AudioEngine;
 
+/// Holds a decoder + track id prepared in advance for a gapless
+/// transition. Stored in `Shared` so the decoder thread can pick
+/// it up at end-of-stream without re-routing through the worker.
+struct PendingNext {
+    decoder: SymphoniaDecoder,
+    track_id: Option<String>,
+    sample_rate: u32,
+    channels: u16,
+    bit_depth: Option<u8>,
+    duration_seconds: f64,
+}
+
 /// Approximate target buffer size for the SPSC ring (in interleaved
 /// samples). At 48 kHz stereo this is roughly 1 second of audio, which
 /// gives the decoder thread comfortable slack without ballooning latency.
-const RING_CAPACITY_SAMPLES: usize = 48_000 * 2;
+pub(crate) const RING_CAPACITY_SAMPLES: usize = 48_000 * 2;
 
 /// Commands sent from the public API to the worker thread.
 enum Command {
     Load(PathBuf),
+    /// Prepare a next track for gapless transition. The worker opens
+    /// the file, builds a decoder, and (if the format matches the
+    /// current stream) stashes it in `Shared::pending_next`. The
+    /// active decoder thread then picks it up at EOF without an audio
+    /// callback gap.
+    PrepareNext { path: PathBuf, track_id: Option<String> },
+    /// Drop a previously prepared next track (e.g. user changed the
+    /// queue between prepare and EOT). Cheap; the decoder thread will
+    /// just see an empty slot at end-of-stream.
+    ClearPendingNext,
     Play,
     Pause,
     Resume,
@@ -53,51 +78,71 @@ enum Command {
 
 /// Shared, lock-free state read from both the audio callback and the
 /// public API.
-struct Shared {
+pub(crate) struct Shared {
     /// Volume in `[0.0, 1.0]`, encoded as `(v * 1_000_000) as u32`.
     volume_micro: AtomicU32,
+    /// Pre-gain applied before EQ + soft-clip + volume. Stored as
+    /// `(linear * 1_000_000) as u32` so it fits in a single atomic.
+    /// Used by ReplayGain (track or album normalization). Default 1.0
+    /// (0 dB; passthrough).
+    pre_gain_micro: AtomicU32,
     /// Whether the audio callback should output silence (paused or
     /// nothing loaded).
-    paused: AtomicBool,
+    pub(crate) paused: AtomicBool,
     /// Latest known position in seconds, encoded as `(pos * 1000) as u32`
     /// (millisecond resolution is enough for UI display and avoids
     /// requiring a 64-bit atomic).
-    position_ms: AtomicU32,
+    pub(crate) position_ms: AtomicU32,
     /// Total duration of the current track in seconds, same encoding.
-    duration_ms: AtomicU32,
+    pub(crate) duration_ms: AtomicU32,
     /// Current sample rate of the device (and decoder) in Hz.
-    sample_rate: AtomicU32,
+    pub(crate) sample_rate: AtomicU32,
     /// Current channel count.
-    channels: AtomicU32,
+    pub(crate) channels: AtomicU32,
+    /// Bit depth as reported by the decoder (encoded as a byte; 0 = unknown).
+    pub(crate) bit_depth: AtomicU32,
     /// Seek requested by the public API. Encoded as `(secs * 1000)` and
     /// `-1` when no seek is pending. The decoder thread checks this on
     /// each iteration; on a hit it reseeks the demuxer, drains the ring
     /// (via `drain_ring`), and clears the flag.
-    pending_seek_ms: AtomicI32,
+    pub(crate) pending_seek_ms: AtomicI32,
     /// Set by the worker when it wants the audio callback to drain the
     /// ring on the next callback (so the seek doesn't play stale audio).
-    drain_ring: AtomicBool,
+    pub(crate) drain_ring: AtomicBool,
     /// 10-band EQ gains in dB. Read by the decoder thread, updated by
     /// the public API. Length is always `eq::NUM_BANDS`.
-    eq_gains_db: Mutex<Vec<f32>>,
+    pub(crate) eq_gains_db: Mutex<Vec<f32>>,
     /// Bumps every time `eq_gains_db` is written so the decoder thread
     /// can detect "settings changed" and rebuild filters lazily.
-    eq_version: AtomicU32,
+    pub(crate) eq_version: AtomicU32,
+    /// Total count of audio-callback underruns since stream start.
+    /// Bumped from the audio callback (single producer), read from the
+    /// worker for periodic warnings. Cheap, lock-free.
+    pub(crate) underruns: AtomicU32,
+    /// Prepared next track ready for a gapless transition. The
+    /// decoder thread picks it up when the current decoder hits EOF
+    /// *and* the format matches (same SR + channel count). Mutex
+    /// is fine: it's contended only on track boundaries.
+    pending_next: Mutex<Option<PendingNext>>,
 }
 
 impl Shared {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Shared {
             volume_micro: AtomicU32::new(1_000_000),
+            pre_gain_micro: AtomicU32::new(1_000_000),
             paused: AtomicBool::new(true),
             position_ms: AtomicU32::new(0),
             duration_ms: AtomicU32::new(0),
             sample_rate: AtomicU32::new(0),
             channels: AtomicU32::new(0),
+            bit_depth: AtomicU32::new(0),
             pending_seek_ms: AtomicI32::new(-1),
             drain_ring: AtomicBool::new(false),
             eq_gains_db: Mutex::new(vec![0.0; crate::eq::NUM_BANDS]),
             eq_version: AtomicU32::new(0),
+            underruns: AtomicU32::new(0),
+            pending_next: Mutex::new(None),
         }
     }
 
@@ -107,20 +152,41 @@ impl Shared {
         self.volume_micro.load(Ordering::Relaxed) as f32 / 1_000_000.0
     }
 
-    /// Audible gain applied to samples. Cubic curve so the slider feels
-    /// natural (perceived loudness is roughly logarithmic and a cubic
-    /// curve is a cheap approximation of `10^(slider*log2(slider))`).
-    /// Slider 50% -> 12.5% gain (~ -18 dB), slider 100% -> 100% gain.
-    fn audible_gain(&self) -> f32 {
+    /// Audible gain applied to samples. Quadratic taper: smoother and
+    /// more usable than linear, less aggressive than cubic.
+    /// Slider 100% -> 0 dB, 70% -> ~-6 dB, 50% -> ~-12 dB,
+    /// 30% -> ~-21 dB. Roughly matches what foobar2000 / MusicBee do
+    /// on their default volume curve.
+    pub(crate) fn audible_gain(&self) -> f32 {
         let v = self.volume_micro.load(Ordering::Relaxed) as f32 / 1_000_000.0;
         let v = v.clamp(0.0, 1.0);
-        v * v * v
+        v * v
     }
 
     fn set_volume(&self, v: f32) {
         let clamped = v.clamp(0.0, 1.0);
         self.volume_micro
             .store((clamped * 1_000_000.0) as u32, Ordering::Relaxed);
+    }
+
+    /// Linear pre-gain applied before EQ. `1.0` = passthrough.
+    pub(crate) fn pre_gain(&self) -> f32 {
+        self.pre_gain_micro.load(Ordering::Relaxed) as f32 / 1_000_000.0
+    }
+
+    /// Direct setter used by the WASAPI backend (which can't reach
+    /// the private field through the engine API on this side of the
+    /// crate). The `micro` parameter is `(linear * 1_000_000) as u32`.
+    pub(crate) fn set_pre_gain_micro(&self, micro: u32) {
+        self.pre_gain_micro.store(micro, Ordering::Relaxed);
+    }
+
+    pub(crate) fn set_volume_public(&self, v: f32) {
+        self.set_volume(v);
+    }
+
+    pub(crate) fn volume_public(&self) -> f32 {
+        self.volume()
     }
 }
 
@@ -234,6 +300,41 @@ impl CpalSharedEngine {
     pub fn eq_gains_db(&self) -> Vec<f32> {
         self.shared.eq_gains_db.lock().clone()
     }
+
+    /// Set the linear pre-gain applied before EQ. Used for ReplayGain
+    /// or any other static, per-track gain adjustment. `1.0` is the
+    /// default (passthrough). Pass `0.0` to mute, or values >1.0 to
+    /// boost (the soft-clipper will protect from overshoot).
+    pub fn set_pre_gain(&self, linear: f32) {
+        let clamped = linear.clamp(0.0, 8.0);
+        self.shared
+            .pre_gain_micro
+            .store((clamped * 1_000_000.0) as u32, Ordering::Relaxed);
+    }
+
+    pub fn pre_gain(&self) -> f32 {
+        self.shared.pre_gain()
+    }
+
+    /// Open `path` ahead of time so the active decoder thread can
+    /// transition to it without a gap when the current track ends.
+    /// The worker opens the file, validates the format matches the
+    /// current stream (same sample rate + channel count) and stashes
+    /// the prepared decoder in shared state. If the format mismatches,
+    /// the prepared decoder is dropped and the orchestrator will
+    /// observe a regular `EndOfTrack` followed by a fresh `Load`.
+    pub fn prepare_next(&self, path: &Path, track_id: Option<String>) -> EngineResult<()> {
+        self.send_cmd(Command::PrepareNext {
+            path: path.to_path_buf(),
+            track_id,
+        })
+    }
+
+    /// Drop any previously prepared next track. Safe to call when
+    /// nothing is prepared.
+    pub fn clear_pending_next(&self) -> EngineResult<()> {
+        self.send_cmd(Command::ClearPendingNext)
+    }
 }
 
 impl AudioEngine for CpalSharedEngine {
@@ -270,15 +371,14 @@ impl AudioEngine for CpalSharedEngine {
     }
 
     fn set_output_mode(&self, mode: OutputMode) -> EngineResult<()> {
-        match mode {
-            OutputMode::Auto | OutputMode::Shared => {
-                *self.requested_mode.lock() = mode;
-                let _ = self.event_tx.try_send(EngineEvent::StateChanged {
-                    state: self.state(),
-                });
-                Ok(())
-            }
-        }
+        // Shared backend only stores the request for reporting; it
+        // ignores `Exclusive` (the orchestrator is responsible for
+        // routing to the WasapiExclusive backend instead).
+        *self.requested_mode.lock() = mode;
+        let _ = self.event_tx.try_send(EngineEvent::StateChanged {
+            state: self.state(),
+        });
+        Ok(())
     }
 
     fn state(&self) -> PlayerState {
@@ -294,6 +394,10 @@ impl AudioEngine for CpalSharedEngine {
             0 => None,
             v => Some(v as u16),
         };
+        let bit_depth = match self.shared.bit_depth.load(Ordering::Relaxed) {
+            0 => None,
+            v => Some(v as u8),
+        };
 
         let requested = *self.requested_mode.lock();
         let _ = requested; // OutputMode is currently informational only
@@ -307,7 +411,7 @@ impl AudioEngine for CpalSharedEngine {
             volume: self.shared.volume(),
             output_mode,
             sample_rate,
-            bit_depth: None,
+            bit_depth,
             channels,
             // Shared (CPAL/WASAPI shared) is never bit-perfect.
             is_bit_perfect: false,
@@ -317,6 +421,38 @@ impl AudioEngine for CpalSharedEngine {
 
     fn subscribe_events(&self) -> Receiver<EngineEvent> {
         self.event_rx.clone()
+    }
+
+    fn set_current_track_id(&self, id: Option<String>) {
+        Self::set_current_track_id(self, id);
+    }
+
+    fn set_eq_gains_db(&self, gains: &[f32]) {
+        Self::set_eq_gains_db(self, gains);
+    }
+
+    fn eq_gains_db(&self) -> Vec<f32> {
+        Self::eq_gains_db(self)
+    }
+
+    fn set_pre_gain(&self, linear: f32) {
+        Self::set_pre_gain(self, linear);
+    }
+
+    fn set_output_device(&self, device_id: Option<String>) {
+        Self::set_output_device(self, device_id);
+    }
+
+    fn selected_device(&self) -> Option<String> {
+        Self::selected_device(self)
+    }
+
+    fn prepare_next(&self, path: &Path, track_id: Option<String>) -> EngineResult<()> {
+        Self::prepare_next(self, path, track_id)
+    }
+
+    fn clear_pending_next(&self) -> EngineResult<()> {
+        Self::clear_pending_next(self)
     }
 }
 
@@ -353,6 +489,8 @@ fn run_worker(ctx: WorkerCtx) {
                 }
                 ctx.shared.pending_seek_ms.store(-1, Ordering::Release);
                 ctx.shared.drain_ring.store(false, Ordering::Release);
+                // A fresh Load invalidates any prepared next track.
+                *ctx.shared.pending_next.lock() = None;
                 set_status(&ctx, PlaybackStatus::Loading);
 
                 match start_playback(&ctx, &path) {
@@ -367,6 +505,62 @@ fn run_worker(ctx: WorkerCtx) {
                         let _ = ctx.event_tx.try_send(EngineEvent::Error { message: msg });
                     }
                 }
+            }
+            Command::PrepareNext { path, track_id } => {
+                // Only prepare while something is actively playing —
+                // otherwise the orchestrator should call Load.
+                if active.is_none() {
+                    tracing::debug!(
+                        target: "qobee::engine",
+                        "prepare_next with no active track; ignoring"
+                    );
+                    continue;
+                }
+                let cur_sr = ctx.shared.sample_rate.load(Ordering::Relaxed);
+                let cur_ch = ctx.shared.channels.load(Ordering::Relaxed) as u16;
+                match SymphoniaDecoder::open(&path) {
+                    Ok(decoder) => {
+                        let fmt = decoder.format();
+                        if fmt.sample_rate == cur_sr && fmt.channels == cur_ch {
+                            *ctx.shared.pending_next.lock() = Some(PendingNext {
+                                duration_seconds: decoder.duration_seconds(),
+                                decoder,
+                                track_id,
+                                sample_rate: fmt.sample_rate,
+                                channels: fmt.channels,
+                                bit_depth: fmt.bit_depth,
+                            });
+                            tracing::debug!(
+                                target: "qobee::engine",
+                                "next track prepared for gapless transition"
+                            );
+                        } else {
+                            // Format mismatch: drop the prepared decoder
+                            // and let the standard EOT → Load path
+                            // handle the boundary. There will be a
+                            // small audible gap; that's the trade-off
+                            // for a sample-rate change.
+                            tracing::info!(
+                                target: "qobee::engine",
+                                cur_sr,
+                                cur_ch,
+                                next_sr = fmt.sample_rate,
+                                next_ch = fmt.channels,
+                                "prepare_next: format change; cannot do gapless"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "qobee::engine",
+                            error = %e,
+                            "prepare_next: open failed"
+                        );
+                    }
+                }
+            }
+            Command::ClearPendingNext => {
+                *ctx.shared.pending_next.lock() = None;
             }
             Command::Play => {
                 if let Some(s) = active.as_ref() {
@@ -412,8 +606,10 @@ fn run_worker(ctx: WorkerCtx) {
                 ctx.shared.duration_ms.store(0, Ordering::Relaxed);
                 ctx.shared.sample_rate.store(0, Ordering::Relaxed);
                 ctx.shared.channels.store(0, Ordering::Relaxed);
+                ctx.shared.bit_depth.store(0, Ordering::Relaxed);
                 ctx.shared.pending_seek_ms.store(-1, Ordering::Release);
                 ctx.shared.drain_ring.store(false, Ordering::Release);
+                *ctx.shared.pending_next.lock() = None;
                 set_status(&ctx, PlaybackStatus::Stopped);
             }
             Command::Seek(secs) => {
@@ -468,6 +664,10 @@ fn snapshot_state(ctx: &WorkerCtx) -> PlayerState {
         0 => None,
         v => Some(v as u16),
     };
+    let bit_depth = match ctx.shared.bit_depth.load(Ordering::Relaxed) {
+        0 => None,
+        v => Some(v as u8),
+    };
 
     let requested = *ctx.requested_mode.lock();
     let _ = requested;
@@ -481,7 +681,7 @@ fn snapshot_state(ctx: &WorkerCtx) -> PlayerState {
         volume: ctx.shared.volume(),
         output_mode,
         sample_rate,
-        bit_depth: None,
+        bit_depth,
         channels,
         is_bit_perfect: false,
         error,
@@ -503,43 +703,75 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
 
     ctx.shared.sample_rate.store(format.sample_rate, Ordering::Relaxed);
     ctx.shared.channels.store(format.channels as u32, Ordering::Relaxed);
+    ctx.shared
+        .bit_depth
+        .store(format.bit_depth.map(|b| b as u32).unwrap_or(0), Ordering::Relaxed);
+    ctx.shared.underruns.store(0, Ordering::Relaxed);
     let dur_ms = (decoder.duration_seconds() * 1000.0) as u32;
     ctx.shared.duration_ms.store(dur_ms, Ordering::Relaxed);
     ctx.shared.position_ms.store(0, Ordering::Relaxed);
 
     let host = cpal::default_host();
-    let (device, is_default_device) = match ctx.selected_device.lock().clone() {
+    let device = match ctx.selected_device.lock().clone() {
         Some(id) => match find_device_by_name(&host, &id) {
-            Some(d) => (d, false),
+            Some(d) => d,
             None => {
                 tracing::warn!(
                     target: "qobee::engine",
                     requested = %id,
                     "selected device not found; falling back to default"
                 );
-                let d = host
-                    .default_output_device()
-                    .ok_or_else(|| EngineError::Output("no default output device".into()))?;
-                (d, true)
+                host.default_output_device()
+                    .ok_or_else(|| EngineError::Output("no default output device".into()))?
             }
         },
-        None => {
-            let d = host
-                .default_output_device()
-                .ok_or_else(|| EngineError::Output("no default output device".into()))?;
-            (d, true)
-        }
+        None => host
+            .default_output_device()
+            .ok_or_else(|| EngineError::Output("no default output device".into()))?,
     };
-    let _ = is_default_device;
 
-    // Pick a config that matches the source channel count when possible;
-    // otherwise fall back to the device's default. We do *not* try to
-    // request the file's sample rate: in Shared mode the OS decides.
-    let supported = device
+    // Negotiate the best output format the device exposes for this
+    // track. We try, in order:
+    //   1. Source SR + source channels + F32 (zero conversion, no
+    //      resampling, no integer truncation; ideal).
+    //   2. Source SR + source channels + I32 (no resampling, but
+    //      conversion to integer; we dither only on <= 16-bit, so
+    //      I32 is essentially transparent).
+    //   3. Source SR + source channels + I16 (no resampling; dither
+    //      will mask quantization noise).
+    //   4. Default config (the OS picks, we resample to match it).
+    //
+    // This reaches bit-equivalent quality on devices that natively
+    // support the file's sample rate, which is what saves us the
+    // rubato resampling pass on most modern DACs.
+    let supported_default = device
         .default_output_config()
         .map_err(|e| EngineError::Output(e.to_string()))?;
 
-    let stream_config: StreamConfig = supported.config();
+    let preferred = negotiate_output_format(
+        &device,
+        format.sample_rate,
+        format.channels,
+        &supported_default,
+    );
+    let mut stream_config: StreamConfig = preferred.config();
+    let supported = preferred;
+
+    // If the driver only advertised surround configurations (very
+    // common with Sony Inzone, Razer Synapse and similar headsets
+    // that auto-configure as 7.1) we force a stereo stream config
+    // anyway. WASAPI Shared accepts this and does the channel-count
+    // adjustment in the OS mixer, which is consistently softer than
+    // having the device's surround virtualizer process a stereo
+    // signal we'd duplicated to N channels ourselves.
+    if format.channels == 2 && stream_config.channels > 2 {
+        tracing::info!(
+            target: "qobee::engine",
+            advertised_channels = stream_config.channels,
+            "forcing stereo stream config; OS mixer will adapt to the device layout"
+        );
+        stream_config.channels = 2;
+    }
 
     let device_sample_rate: u32 = stream_config.sample_rate;
     if device_sample_rate != format.sample_rate {
@@ -547,7 +779,15 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
             target: "qobee::engine",
             file_sr = format.sample_rate,
             device_sr = device_sample_rate,
-            "device sample rate differs from file: in-app resampling (rubato FFT) -> device rate; Shared mode is not bit-perfect"
+            "device sample rate differs from file: in-app resampling -> device rate; Shared mode is not bit-perfect"
+        );
+    } else {
+        tracing::info!(
+            target: "qobee::engine",
+            sample_rate = device_sample_rate,
+            channels = stream_config.channels,
+            sample_format = ?supported.sample_format(),
+            "device opened at source sample rate; no resampling needed"
         );
     }
 
@@ -576,6 +816,7 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
                 src_channels,
                 src_sample_rate,
                 device_sample_rate,
+                EffectiveOutputMode::Shared,
             );
         })
         .map_err(|e| EngineError::Internal(format!("failed to spawn decoder: {e}")))?;
@@ -594,6 +835,17 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
             event_tx_for_callback,
             format.channels,
             device_channels,
+            None,
+        ),
+        SampleFormat::I32 => build_stream::<i32>(
+            &device,
+            &stream_config,
+            consumer,
+            shared_for_callback,
+            event_tx_for_callback,
+            format.channels,
+            device_channels,
+            None,
         ),
         SampleFormat::I16 => build_stream::<i16>(
             &device,
@@ -603,6 +855,7 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
             event_tx_for_callback,
             format.channels,
             device_channels,
+            Some(16),
         ),
         SampleFormat::U16 => build_stream::<u16>(
             &device,
@@ -612,6 +865,7 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
             event_tx_for_callback,
             format.channels,
             device_channels,
+            Some(16),
         ),
         other => Err(EngineError::Output(format!(
             "unsupported device sample format: {other:?}"
@@ -625,7 +879,7 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
     })
 }
 
-fn run_decoder_thread(
+pub(crate) fn run_decoder_thread(
     mut decoder: SymphoniaDecoder,
     mut producer: Producer<f32>,
     alive: Arc<AtomicBool>,
@@ -635,32 +889,39 @@ fn run_decoder_thread(
     channels: u16,
     src_sample_rate: u32,
     dst_sample_rate: u32,
+    effective_mode: EffectiveOutputMode,
 ) {
-    use rubato::{FftFixedIn, Resampler};
+    use rubato::{
+        Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType,
+        WindowFunction,
+    };
 
     let need_resample = src_sample_rate != dst_sample_rate;
     let n_ch = channels as usize;
 
-    // Per-track FFT resampler (synchronous, fixed-input). The chunk size
-    // is fixed: every chunk we feed must be exactly this many frames per
-    // channel. We accumulate decoded samples in `pending_planar` and
-    // process whole chunks; the tail is carried over to the next call.
+    // Per-track sinc resampler (windowed-sinc, asynchronous, fixed-input).
+    // Higher quality than FFT for music: cleaner transients, less
+    // pre-ringing. CPU cost is negligible on a modern PC.
     let chunk_size_in: usize = 1024;
-    let mut resampler: Option<FftFixedIn<f32>> = if need_resample {
-        match FftFixedIn::<f32>::new(
-            src_sample_rate as usize,
-            dst_sample_rate as usize,
-            chunk_size_in,
-            2, // sub_chunks; rubato will adjust
-            n_ch,
-        ) {
+    let sinc_params = SincInterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.95,
+        oversampling_factor: 256,
+        interpolation: SincInterpolationType::Cubic,
+        window: WindowFunction::BlackmanHarris2,
+    };
+    let mut resampler: Option<SincFixedIn<f32>> = if need_resample {
+        let ratio = dst_sample_rate as f64 / src_sample_rate as f64;
+        match SincFixedIn::<f32>::new(ratio, 1.1, sinc_params, chunk_size_in, n_ch) {
             Ok(r) => {
                 tracing::info!(
                     target: "qobee::engine",
                     src_sr = src_sample_rate,
                     dst_sr = dst_sample_rate,
                     channels = n_ch,
-                    "resampling source to device rate"
+                    sinc_len = 256,
+                    oversampling = 256,
+                    "resampling source to device rate (sinc, BlackmanHarris2)"
                 );
                 Some(r)
             }
@@ -668,7 +929,7 @@ fn run_decoder_thread(
                 tracing::error!(
                     target: "qobee::engine",
                     error = %e,
-                    "failed to build resampler; falling back to passthrough (audio will be off-pitch)"
+                    "failed to build sinc resampler; falling back to passthrough (audio will be off-pitch)"
                 );
                 None
             }
@@ -703,9 +964,30 @@ fn run_decoder_thread(
         }
     };
 
+    // Underrun watcher: every ~1s we look at the audio-callback's
+    // underrun counter and emit a single throttled warning if it grew.
+    // The audio callback never blocks here; this is a passive observer.
+    let mut last_underrun_count: u32 = 0;
+    let mut last_underrun_check = std::time::Instant::now();
+
     loop {
         if !alive.load(Ordering::Acquire) {
             return;
+        }
+
+        if last_underrun_check.elapsed() >= Duration::from_millis(1000) {
+            let now_count = shared.underruns.load(Ordering::Relaxed);
+            if now_count > last_underrun_count {
+                let delta = now_count - last_underrun_count;
+                tracing::warn!(
+                    target: "qobee::engine",
+                    underruns_in_last_second = delta,
+                    total_underruns = now_count,
+                    "audio callback ran out of samples; expect short dropouts"
+                );
+                last_underrun_count = now_count;
+            }
+            last_underrun_check = std::time::Instant::now();
         }
 
         // Honor a pending seek before pulling more audio. We seek the
@@ -791,6 +1073,12 @@ fn run_decoder_thread(
                                         interleaved.push(output_buffer[c][f]);
                                     }
                                 }
+                                let pg = shared.pre_gain();
+                                if (pg - 1.0).abs() > 1e-4 {
+                                    for s in interleaved.iter_mut() {
+                                        *s *= pg;
+                                    }
+                                }
                                 sync_eq(&mut eq, &mut eq_seen_version, &shared);
                                 eq.process_inplace(&mut interleaved);
                                 push_interleaved_to_ring(&interleaved, &mut producer, &alive);
@@ -810,15 +1098,90 @@ fn run_decoder_thread(
                         }
                     }
                 } else {
-                    // Same rate: EQ the samples in place, then push.
+                    // Same rate: pre-gain (ReplayGain), EQ, then push.
                     let mut buf = samples;
+                    let pg = shared.pre_gain();
+                    if (pg - 1.0).abs() > 1e-4 {
+                        for s in buf.iter_mut() {
+                            *s *= pg;
+                        }
+                    }
                     sync_eq(&mut eq, &mut eq_seen_version, &shared);
                     eq.process_inplace(&mut buf);
                     push_interleaved_to_ring(&buf, &mut producer, &alive);
                 }
             }
             Ok(None) => {
-                // End of stream: flush whatever remains in the resampler.
+                // End of stream. If a compatible next track has been
+                // prepared, swap the decoder in place: the resampler
+                // and EQ keep their internal state so the audio
+                // callback sees one continuous signal. We emit a
+                // `GaplessTransition` event so the orchestrator can
+                // advance the queue and update the UI; the audio
+                // never paused.
+                if let Some(prepared) = shared.pending_next.lock().take() {
+                    let PendingNext {
+                        decoder: new_decoder,
+                        track_id: new_track_id,
+                        sample_rate: new_sr,
+                        channels: new_ch,
+                        bit_depth: new_bd,
+                        duration_seconds: new_dur,
+                    } = prepared;
+
+                    // The format must match: we validated at prepare
+                    // time but defend against state drift.
+                    if new_sr == src_sample_rate && new_ch == channels {
+                        decoder = new_decoder;
+
+                        // Update the shared track metadata atomically.
+                        shared.duration_ms.store((new_dur * 1000.0) as u32, Ordering::Relaxed);
+                        shared.position_ms.store(0, Ordering::Relaxed);
+                        shared
+                            .bit_depth
+                            .store(new_bd.map(|b| b as u32).unwrap_or(0), Ordering::Relaxed);
+
+                        let _ = event_tx.try_send(EngineEvent::GaplessTransition);
+
+                        // Build a state snapshot reflecting the new
+                        // track. The orchestrator will overwrite
+                        // `current_track_id` with what it expects, so
+                        // we use what was passed by `prepare_next`.
+                        let _ = event_tx.try_send(EngineEvent::StateChanged {
+                            state: PlayerState {
+                                status: *status.lock(),
+                                current_track_id: new_track_id,
+                                position_seconds: 0.0,
+                                duration_seconds: new_dur,
+                                volume: shared.volume(),
+                                output_mode: effective_mode,
+                                sample_rate: Some(new_sr),
+                                bit_depth: new_bd,
+                                channels: Some(new_ch),
+                                is_bit_perfect: false,
+                                error: None,
+                            },
+                        });
+
+                        tracing::info!(
+                            target: "qobee::engine",
+                            "gapless transition completed"
+                        );
+                        // Continue the loop with the new decoder. The
+                        // resampler / EQ / pre-gain / volume ramp all
+                        // keep their state; the next packet is fed
+                        // straight in.
+                        continue;
+                    } else {
+                        tracing::warn!(
+                            target: "qobee::engine",
+                            "prepared track format mismatched at EOT; falling back to standard end"
+                        );
+                    }
+                }
+
+                // No prepared next track (or it was incompatible):
+                // flush the resampler tail and emit EndOfTrack.
                 if let Some(ref mut r) = resampler {
                     if !pending_planar[0].is_empty() {
                         for ch in pending_planar.iter_mut() {
@@ -837,6 +1200,12 @@ fn run_decoder_thread(
                                     interleaved.push(output_buffer[c][f]);
                                 }
                             }
+                            let pg = shared.pre_gain();
+                            if (pg - 1.0).abs() > 1e-4 {
+                                for s in interleaved.iter_mut() {
+                                    *s *= pg;
+                                }
+                            }
                             sync_eq(&mut eq, &mut eq_seen_version, &shared);
                             eq.process_inplace(&mut interleaved);
                             push_interleaved_to_ring(&interleaved, &mut producer, &alive);
@@ -850,6 +1219,12 @@ fn run_decoder_thread(
                                 for c in 0..n_ch {
                                     interleaved
                                         .push(out.get(c).and_then(|v| v.get(f).copied()).unwrap_or(0.0));
+                                }
+                            }
+                            let pg = shared.pre_gain();
+                            if (pg - 1.0).abs() > 1e-4 {
+                                for s in interleaved.iter_mut() {
+                                    *s *= pg;
                                 }
                             }
                             sync_eq(&mut eq, &mut eq_seen_version, &shared);
@@ -870,7 +1245,7 @@ fn run_decoder_thread(
                         duration_seconds: shared.duration_ms.load(Ordering::Relaxed) as f64
                             / 1000.0,
                         volume: shared.volume(),
-                        output_mode: EffectiveOutputMode::Shared,
+                        output_mode: effective_mode,
                         sample_rate: None,
                         bit_depth: None,
                         channels: None,
@@ -923,6 +1298,7 @@ fn push_interleaved_to_ring(samples: &[f32], producer: &mut Producer<f32>, alive
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_stream<S>(
     device: &cpal::Device,
     config: &StreamConfig,
@@ -931,6 +1307,7 @@ fn build_stream<S>(
     event_tx: Sender<EngineEvent>,
     src_channels: u16,
     dst_channels: u16,
+    dither_bits: Option<u8>,
 ) -> EngineResult<cpal::Stream>
 where
     S: cpal::Sample + cpal::SizedSample + cpal::FromSample<f32>,
@@ -945,6 +1322,11 @@ where
     let src_ch = src_channels as usize;
     let dst_ch = dst_channels as usize;
 
+    // Per-frame source scratch. We allocate once outside the closure
+    // and reuse it. Length matches the source channel count (no fixed
+    // upper bound: handles 7.1 and beyond cleanly).
+    let mut src_frame: Vec<f32> = vec![0.0; src_ch.max(1)];
+
     // Volume ramping: avoid "zipper noise" when the user drags the
     // slider by interpolating the per-sample gain between callbacks.
     // We keep the smoothed value in the closure (CPAL guarantees the
@@ -955,6 +1337,53 @@ where
     // device that's ~480 samples, well under any audible click.
     let frames_to_converge: f32 = (config.sample_rate as f32 * 0.010).max(1.0);
     let gain_step_per_frame: f32 = 1.0 / frames_to_converge;
+
+    // TPDF dither amplitude (1 LSB peak-to-peak on the destination
+    // bit depth). Applied only when the device accepts a low-bit
+    // integer format (typically 16-bit). For 24-bit / 32-bit / float
+    // formats `dither_bits` is `None` and this is a no-op.
+    let dither_amp: f32 = match dither_bits {
+        Some(bits) if bits > 0 && bits < 24 => 1.0 / ((1u32 << (bits - 1)) as f32),
+        _ => 0.0,
+    };
+    // Cheap xorshift PRNG, two state words for two TPDF samples.
+    let mut rng_a: u32 = 0x12345678;
+    let mut rng_b: u32 = 0x9abcdef0;
+    let mut next_tpdf = move |amp: f32| -> f32 {
+        if amp == 0.0 {
+            return 0.0;
+        }
+        rng_a ^= rng_a << 13;
+        rng_a ^= rng_a >> 17;
+        rng_a ^= rng_a << 5;
+        rng_b ^= rng_b << 13;
+        rng_b ^= rng_b >> 17;
+        rng_b ^= rng_b << 5;
+        let r1 = (rng_a as f32 / u32::MAX as f32) - 0.5;
+        let r2 = (rng_b as f32 / u32::MAX as f32) - 0.5;
+        // Sum of two uniform => triangular PDF, peak ±amp.
+        (r1 + r2) * amp
+    };
+
+    // Soft-clipper: smooth limit at ±1.0 so EQ-induced peaks don't
+    // hard-clip into the integer rail. tanh-shape via a cheap
+    // polynomial approximation; transparent below ~-3 dBFS.
+    #[inline(always)]
+    fn soft_clip(x: f32) -> f32 {
+        // Linear up to ±0.7, then a smooth knee that asymptotes at ±1.
+        let t = x.clamp(-1.5, 1.5);
+        let t2 = t * t;
+        // 3rd-order polynomial: y = t * (1 - t^2/3) on [-1, 1].
+        // Outside, clamp to ±2/3 * 1 = ±0.667 then add a softer roll.
+        if t.abs() <= 1.0 {
+            t * (1.0 - t2 / 3.0)
+        } else if t > 0.0 {
+            // Asymptote toward 2/3 + small tail; safe ceiling at 1.
+            (2.0 / 3.0 + (1.0 - (-((t - 1.0) * 2.0)).exp()) / 3.0).min(1.0)
+        } else {
+            (-2.0 / 3.0 - (1.0 - (-((-t - 1.0) * 2.0)).exp()) / 3.0).max(-1.0)
+        }
+    }
 
     let stream = device
         .build_output_stream(
@@ -999,8 +1428,7 @@ where
                     let gain = current_gain;
 
                     // Pull `src_ch` samples (one frame from source).
-                    let mut src_frame = [0.0f32; 8];
-                    let take = src_ch.min(src_frame.len());
+                    let take = src_ch;
 
                     let mut got = 0usize;
                     while got < take {
@@ -1012,6 +1440,7 @@ where
                             Err(_) => {
                                 // Underrun: emit silence for the rest of
                                 // this frame and the rest of the buffer.
+                                shared.underruns.fetch_add(1, Ordering::Relaxed);
                                 for slot in output[(frame * dst_ch)..].iter_mut() {
                                     *slot = S::from_sample(0.0_f32);
                                 }
@@ -1020,17 +1449,48 @@ where
                         }
                     }
 
-                    // Map source channels to device channels with a
-                    // simple, predictable layout:
-                    //   1 -> N: duplicate first channel.
-                    //   N -> M: copy min(N,M) channels, pad with zeros.
+                    // Stereo -> mono downmix: equal-power sum so we keep
+                    // the energy of both channels instead of dropping
+                    // one. (1/sqrt(2) ≈ 0.7071.)
+                    let mono_mix = if src_ch >= 2 {
+                        (src_frame[0] + src_frame[1]) * 0.707_106_77
+                    } else {
+                        src_frame[0]
+                    };
+
+                    // Map source channels to device channels:
+                    //   src=1 -> dst=N: duplicate the mono channel.
+                    //   src=2 -> dst=1: equal-power L+R sum.
+                    //   src=2 -> dst=2: pass through.
+                    //   N -> M (others): copy min(N,M), pad with zeros.
+                    // We track whether the chain *can* exceed [-1, 1].
+                    // When EQ is bypass, pre-gain is 1.0 and dither is
+                    // off (i.e. the device is f32/i32), the signal is
+                    // already in range and we skip the soft-clip
+                    // entirely — purest passthrough.
+                    let pg_now = shared.pre_gain();
+                    let chain_clean = (pg_now - 1.0).abs() < 1e-4
+                        && shared.eq_gains_db.lock().iter().all(|g| g.abs() < 0.05);
+
                     for ch in 0..dst_ch {
                         let v = if src_ch == 1 {
                             src_frame[0]
+                        } else if dst_ch == 1 {
+                            mono_mix
                         } else if ch < src_ch {
                             src_frame[ch]
                         } else {
                             0.0
+                        };
+                        // Apply soft-clip + dither only when we have
+                        // reason to: EQ active, ReplayGain boost, or
+                        // a low-bit-depth integer device that needs
+                        // dither. Otherwise it's a pure passthrough.
+                        let v = if chain_clean && dither_amp == 0.0 {
+                            v
+                        } else {
+                            let v = soft_clip(v);
+                            v + next_tpdf(dither_amp)
                         };
                         output[frame * dst_ch + ch] = S::from_sample(v);
                     }
@@ -1060,6 +1520,119 @@ fn find_device_by_name(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
         }
     }
     None
+}
+
+/// Negotiate the best output format the device can accept that
+/// matches the source's sample rate.
+///
+/// Strategy:
+///   - Walk every supported config range, checking whether each
+///     accepts `target_sr` (`min..=max` covers it).
+///   - Among accepting configs, score by sample format (F32 > I32 > I16)
+///     and by matching the source channel count.
+///   - If nothing accepts the source rate, return the device's
+///     default (the engine will resample).
+///
+/// Negotiate the best output format the device can accept that
+/// matches the source's sample rate.
+///
+/// Strategy:
+///   - Walk every supported config range, checking whether each
+///     accepts `target_sr` (`min..=max` covers it).
+///   - Among accepting configs, score by sample format (F32 > I32 > I16)
+///     and by matching the source channel count. Configurations that
+///     match the source channel count exactly are *strongly* preferred
+///     over higher-channel-count surround configurations: when the
+///     OS / device firmware is set to a virtual surround layout (very
+///     common on Windows with consumer headphones like Sony Inzone),
+///     opening the stream in 7.1 forces our stereo signal through
+///     the device's surround virtualizer. That virtualizer applies
+///     filters and channel decorrelation that audibly colour
+///     transients ("sharp" cymbals, hat hits…). Picking the matching
+///     channel count makes Windows do the upmix instead, with less
+///     destructive processing.
+///   - If nothing accepts the source rate, return the device's
+///     default (the engine will resample).
+///
+/// Returns a fully-resolved `SupportedStreamConfig` ready for
+/// `device.build_output_stream`.
+fn negotiate_output_format(
+    device: &cpal::Device,
+    target_sr: u32,
+    target_channels: u16,
+    fallback: &cpal::SupportedStreamConfig,
+) -> cpal::SupportedStreamConfig {
+    let configs = match device.supported_output_configs() {
+        Ok(c) => c.collect::<Vec<_>>(),
+        Err(e) => {
+            tracing::debug!(
+                target: "qobee::engine",
+                error = %e,
+                "supported_output_configs failed; using fallback"
+            );
+            return fallback.clone();
+        }
+    };
+
+    // Score: higher is better.
+    fn format_score(fmt: SampleFormat) -> i32 {
+        match fmt {
+            SampleFormat::F32 => 100,
+            SampleFormat::I32 => 80,
+            SampleFormat::I16 => 40,
+            SampleFormat::U16 => 30,
+            _ => 0,
+        }
+    }
+
+    let target_rate: cpal::SampleRate = target_sr;
+    let mut best: Option<(i32, cpal::SupportedStreamConfig)> = None;
+
+    for cfg in &configs {
+        if cfg.min_sample_rate() > target_rate || cfg.max_sample_rate() < target_rate {
+            continue;
+        }
+        let fmt = cfg.sample_format();
+        let mut score = format_score(fmt);
+        // Channel matching weight: matching source channels is much
+        // more important than format details. A 7.1 F32 config beats
+        // a 2-channel I16 only on format score (+60), but the channel
+        // mismatch alone deducts much more (-200).
+        if cfg.channels() == target_channels {
+            score += 200;
+        } else if cfg.channels() < target_channels {
+            // Downmix needed (very rare): still better than upmix
+            // through a surround virtualizer.
+            score += 50;
+        } else {
+            // Surround upmix to N channels: penalize hard. The driver
+            // / firmware will upmix the signal through whatever virtual
+            // surround it has configured, and that processing is
+            // audibly worse than just letting Windows do the channel
+            // count adjustment in the shared mixer.
+            score -= 100 - 10 * cfg.channels() as i32;
+        }
+        let resolved = (*cfg).with_sample_rate(target_rate);
+        match &best {
+            Some((s, _)) if *s >= score => {}
+            _ => best = Some((score, resolved)),
+        }
+    }
+
+    if let Some((_, cfg)) = best {
+        tracing::debug!(
+            target: "qobee::engine",
+            chosen_channels = cfg.channels(),
+            chosen_format = ?cfg.sample_format(),
+            chosen_sr = cfg.sample_rate(),
+            target_channels,
+            target_sr,
+            "negotiated output format"
+        );
+        cfg
+    } else {
+        fallback.clone()
+    }
 }
 
 /// Get a stable label for a device. CPAL deprecated `name()` in favor

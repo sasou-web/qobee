@@ -161,8 +161,11 @@ impl SymphoniaDecoder {
         }
     }
 
-    /// Seek to `position_seconds`. Best-effort; the demuxer may snap to
-    /// the nearest keyframe.
+    /// Seek to `position_seconds`. Sample-accurate: the demuxer
+    /// snaps to the nearest keyframe and the decoder then discards
+    /// samples up to the exact requested timestamp. Cost is at most
+    /// a few extra packets of decode time, well below human
+    /// perception.
     pub fn seek(&mut self, position_seconds: f64) -> EngineResult<()> {
         let time = Time::new(
             position_seconds.trunc() as u64,
@@ -170,7 +173,7 @@ impl SymphoniaDecoder {
         );
         self.format
             .seek(
-                SeekMode::Coarse,
+                SeekMode::Accurate,
                 SeekTo::Time {
                     time,
                     track_id: Some(self.track_id),
