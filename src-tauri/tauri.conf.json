@@ -1,6 +1,6 @@
 {
   "productName": "Qobee",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "app.qobee.player",
   "build": {
     "beforeDevCommand": "npm run dev --prefix ../ui",

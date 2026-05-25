@@ -7,10 +7,13 @@ drop in without rewriting the rest of the app.
 
 The current build delivers a complete listening experience: scanning,
 albums / artists / genres / playlists / favorites, search, queue
-management, equalizer, repeat / shuffle / endless, themes, accent
-following the cover, OS media keys, and Discord Rich Presence. It
-does **not** yet deliver bit-perfect output — see the section
-"Bit-perfect honesty" below.
+management, 10-band equalizer, ReplayGain, gapless playback,
+sample-accurate seek, lyrics (synced + plain), a mini player,
+themes, accent following the cover, OS media keys, and Discord
+Rich Presence. The audio engine ships with two output backends —
+**Shared** (default, OS mixer) and **WASAPI Exclusive** (opt-in,
+strictly bit-perfect when the device cooperates). See
+"Bit-perfect honesty" below for the truth about each chain.
 
 ## Concept
 
@@ -19,24 +22,31 @@ does **not** yet deliver bit-perfect output — see the section
 - No tag editing, no media-server features, no library lock-in.
 - Sober, dark UI inspired by Cider (sidebar, album grid, artist list,
   album detail, track list, persistent player bar).
-- Audio engine designed up front to evolve toward true bit-perfect
-  output via WASAPI Exclusive on Windows.
+- Audio engine designed up front to deliver clean Shared output
+  with a real bit-perfect path available via WASAPI Exclusive on
+  Windows.
 
 ## Bit-perfect honesty
 
 Qobee will tell you the truth about its current playback chain rather
 than ship a misleading badge.
 
-- The current backend, **SharedCpal**, talks to WASAPI in shared mode
-  on Windows. The OS mixer can resample, dither, apply effects, and
-  mix Qobee's stream with other apps. **It is not bit-perfect.** The
-  player bar always reports `Bit-perfect: false` while running on
-  this backend.
-- `OutputMode` exposes `Auto` and `Shared` today. A `WasapiExclusive`
-  variant will be added together with the integer PCM path; until
-  then, `Auto` resolves to `Shared`.
-- Software volume and the EQ are applied only on the Shared path.
-  The future Exclusive path will refuse to alter samples at all.
+- The default backend, **Shared (CpalSharedEngine)**, talks to WASAPI
+  in shared mode on Windows. The OS mixer can resample, dither,
+  apply effects, and mix Qobee's stream with other apps. **It is not
+  bit-perfect.** The player bar reports `Bit-perfect: false` on
+  this backend even when the in-app DSP is at unity.
+- The opt-in backend, **WASAPI Exclusive (WasapiExclusiveEngine)**,
+  bypasses the OS mixer and reaches a strictly bit-perfect chain
+  *only* when the device natively accepts the source's sample rate
+  and channel count, the EQ is flat, ReplayGain is at unity and the
+  volume is at 100 %. Any departure from that — resampling, upmix to
+  a surround layout because the OS is configured that way, an EQ
+  band that isn't 0 dB, a volume slider that isn't at the top —
+  flips `is_bit_perfect` back to `false`. While Exclusive is active
+  no other application can play to the same device.
+- Software volume, the EQ and ReplayGain are honored on both paths
+  because users still want them; the badge tracks them honestly.
 
 ## Stack
 
@@ -63,6 +73,8 @@ Pinned versions:
 | `tauri-plugin-dialog`        | 2.2       |
 | `symphonia`                  | 0.5.5     |
 | `cpal`                       | 0.17      |
+| `wasapi` (Windows-only)      | 0.23      |
+| `windows` (Windows-only)     | 0.62      |
 | `lofty`                      | 0.24      |
 | `rusqlite` (bundled)         | 0.39      |
 | `notify`                     | 8.2       |
@@ -357,32 +369,26 @@ The MSI / NSIS installers land under `src-tauri/target/release/bundle/`.
 
 ## What is intentionally not in yet
 
-- **WASAPI Exclusive output.** `OutputMode` only exposes `Auto` and
-  `Shared` today; the Exclusive variant lands together with the
-  integer PCM path.
-- **Sample-accurate seek.** The current seek is Coarse (snaps to the
-  nearest demuxer keyframe). A precise seek path lands together
-  with gapless playback.
+- **Crossfade between tracks.** The engine supports gapless
+  transitions in place; crossfade would need a second active stream
+  in parallel. Wired-in seam exists, no UI yet.
+- **Tray icon.** Closing the window today exits Qobee. A tray icon
+  would let the player keep running in the background.
+- **Global hotkeys.** Media keys / Bluetooth / lock-screen controls
+  work; OS-wide hotkeys (Play/Pause from any focused app) do not.
+- **Scrobbling (Last.fm / ListenBrainz).** Recently-played is
+  recorded in the local library only.
+- **Tag editing.** Qobee is read-only on the audio files.
 - **BASS backend.** The `engine-bass` Cargo feature exists as a
   seam; the module is a stub with no external dependency.
 
 ## Roadmap
 
-- WASAPI Exclusive backend (true bit-perfect output, integer PCM,
-  device format negotiation).
-- Gapless playback (single ring buffer across track boundaries,
-  decode ahead, sample-rate change handling).
-- Sample-accurate seek (when the demuxer supports it,
-  packet-coarse otherwise).
-- ReplayGain (album / track, opt-in, never on the Exclusive path).
-- Crossfade (Shared only).
-- Global hotkeys.
-- Mini-player.
-- Tray icon.
-- Visualizer.
-- LRC / synced lyrics.
-- Smart playlists.
+- Crossfade.
+- Tray icon and global hotkeys.
+- Smart playlists (filter / sort presets).
 - Scrobbling (Last.fm / ListenBrainz).
+- Visualizer.
 - BASS backend behind the `engine-bass` Cargo feature.
 
 ## License
