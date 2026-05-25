@@ -193,6 +193,22 @@ fn index_one(path: &Path, cover_cache_dir: &Path) -> LibraryResult<(Track, Optio
     let bit_depth = properties.bit_depth();
     let channels = properties.channels().map(|c| c as u16);
 
+    // ReplayGain. Lofty surfaces these as plain string items via
+    // `ItemKey`. Values look like "-7.45 dB" or "-7.45". We strip the
+    // unit and parse to f32; absent or unparseable -> None.
+    let parse_rg = |s: &str| -> Option<f32> {
+        s.split_whitespace()
+            .next()
+            .and_then(|t| t.parse::<f32>().ok())
+            .map(|v| v.clamp(-30.0, 30.0))
+    };
+    let replaygain_track_db = primary_tag
+        .and_then(|t| t.get_string(lofty::tag::ItemKey::ReplayGainTrackGain))
+        .and_then(parse_rg);
+    let replaygain_album_db = primary_tag
+        .and_then(|t| t.get_string(lofty::tag::ItemKey::ReplayGainAlbumGain))
+        .and_then(parse_rg);
+
     let cover_info = primary_tag
         .and_then(|t| t.pictures().first().cloned())
         .and_then(|p: Picture| persist_cover(&p, cover_cache_dir).ok().flatten());
@@ -219,6 +235,8 @@ fn index_one(path: &Path, cover_cache_dir: &Path) -> LibraryResult<(Track, Optio
         bit_depth: bit_depth.map(|b| b as u8),
         channels,
         cover_key,
+        replaygain_track_db,
+        replaygain_album_db,
     };
 
     Ok((track, cover_blob))

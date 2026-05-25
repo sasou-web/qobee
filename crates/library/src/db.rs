@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     bit_depth       INTEGER,
     channels        INTEGER,
     cover_key       TEXT,
-    mtime           INTEGER NOT NULL DEFAULT 0
+    mtime           INTEGER NOT NULL DEFAULT 0,
+    replaygain_track_db REAL,
+    replaygain_album_db REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_tracks_album   ON tracks(album, album_artist);
@@ -98,6 +100,22 @@ impl Database {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
         conn.execute_batch(SCHEMA)?;
+
+        // Idempotent migrations for ReplayGain columns: SQLite does not
+        // support `ADD COLUMN IF NOT EXISTS` in older versions, so we
+        // probe and ignore the "duplicate column" error.
+        for stmt in [
+            "ALTER TABLE tracks ADD COLUMN replaygain_track_db REAL",
+            "ALTER TABLE tracks ADD COLUMN replaygain_album_db REAL",
+        ] {
+            if let Err(e) = conn.execute(stmt, []) {
+                let msg = e.to_string();
+                if !msg.contains("duplicate column") {
+                    tracing::debug!(target: "qobee::library", error = %msg, "schema migration: {}", stmt);
+                }
+            }
+        }
+
         Ok(Database { conn })
     }
 
@@ -122,9 +140,9 @@ impl Database {
                 path, title, artist, album, album_artist,
                 track_number, disc_number, year, genre,
                 duration_seconds, sample_rate, bit_depth, channels,
-                cover_key, mtime
+                cover_key, mtime, replaygain_track_db, replaygain_album_db
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
             ON CONFLICT(path) DO UPDATE SET
                 title = excluded.title,
                 artist = excluded.artist,
@@ -139,7 +157,9 @@ impl Database {
                 bit_depth = excluded.bit_depth,
                 channels = excluded.channels,
                 cover_key = excluded.cover_key,
-                mtime = excluded.mtime
+                mtime = excluded.mtime,
+                replaygain_track_db = excluded.replaygain_track_db,
+                replaygain_album_db = excluded.replaygain_album_db
             "#,
             params![
                 track.path,
@@ -157,6 +177,8 @@ impl Database {
                 track.channels,
                 track.cover_key,
                 mtime,
+                track.replaygain_track_db.map(|v| v as f64),
+                track.replaygain_album_db.map(|v| v as f64),
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -280,7 +302,7 @@ impl Database {
             r#"
             SELECT id, path, title, artist, album, album_artist,
                    track_number, disc_number, year, genre,
-                   duration_seconds, sample_rate, bit_depth, channels, cover_key
+                   duration_seconds, sample_rate, bit_depth, channels, cover_key, replaygain_track_db, replaygain_album_db
             FROM tracks
             WHERE album = ?1 AND COALESCE(album_artist, artist) = ?2
             ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 0), title COLLATE NOCASE
@@ -300,7 +322,7 @@ impl Database {
                 r#"
                 SELECT id, path, title, artist, album, album_artist,
                        track_number, disc_number, year, genre,
-                       duration_seconds, sample_rate, bit_depth, channels, cover_key
+                       duration_seconds, sample_rate, bit_depth, channels, cover_key, replaygain_track_db, replaygain_album_db
                 FROM tracks
                 WHERE id = ?1
                 "#,
@@ -369,7 +391,7 @@ impl Database {
             r#"
             SELECT id, path, title, artist, album, album_artist,
                    track_number, disc_number, year, genre,
-                   duration_seconds, sample_rate, bit_depth, channels, cover_key
+                   duration_seconds, sample_rate, bit_depth, channels, cover_key, replaygain_track_db, replaygain_album_db
             FROM tracks
             WHERE album = ?1 AND COALESCE(album_artist, artist) = ?2
             ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 0), title COLLATE NOCASE
@@ -404,7 +426,7 @@ impl Database {
             r#"
             SELECT id, path, title, artist, album, album_artist,
                    track_number, disc_number, year, genre,
-                   duration_seconds, sample_rate, bit_depth, channels, cover_key
+                   duration_seconds, sample_rate, bit_depth, channels, cover_key, replaygain_track_db, replaygain_album_db
             FROM tracks
             WHERE title  LIKE ?1 ESCAPE '\'
                OR artist LIKE ?1 ESCAPE '\'
@@ -583,7 +605,7 @@ impl Database {
             r#"
             SELECT t.id, t.path, t.title, t.artist, t.album, t.album_artist,
                    t.track_number, t.disc_number, t.year, t.genre,
-                   t.duration_seconds, t.sample_rate, t.bit_depth, t.channels, t.cover_key
+                   t.duration_seconds, t.sample_rate, t.bit_depth, t.channels, t.cover_key, t.replaygain_track_db, t.replaygain_album_db
             FROM (
                 SELECT track_id, MAX(played_at) AS played_at
                 FROM play_history
@@ -865,7 +887,7 @@ impl Database {
             r#"
             SELECT t.id, t.path, t.title, t.artist, t.album, t.album_artist,
                    t.track_number, t.disc_number, t.year, t.genre,
-                   t.duration_seconds, t.sample_rate, t.bit_depth, t.channels, t.cover_key
+                   t.duration_seconds, t.sample_rate, t.bit_depth, t.channels, t.cover_key, t.replaygain_track_db, t.replaygain_album_db
             FROM playlist_tracks pt
             JOIN tracks t ON t.id = pt.track_id
             WHERE pt.playlist_id = ?1
@@ -1182,5 +1204,7 @@ fn track_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         bit_depth: row.get::<_, Option<i64>>(12)?.map(|v| v as u8),
         channels: row.get::<_, Option<i64>>(13)?.map(|v| v as u16),
         cover_key: row.get(14)?,
+        replaygain_track_db: row.get::<_, Option<f64>>(15).ok().flatten().map(|v| v as f32),
+        replaygain_album_db: row.get::<_, Option<f64>>(16).ok().flatten().map(|v| v as f32),
     })
 }

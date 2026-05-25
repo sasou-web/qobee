@@ -26,6 +26,12 @@ pub struct Track {
     pub sample_rate: Option<u32>,
     pub bit_depth: Option<u8>,
     pub channels: Option<u16>,
+    /// ReplayGain track gain in dB (from `REPLAYGAIN_TRACK_GAIN` /
+    /// `R128_TRACK_GAIN`). `None` if the file has no RG metadata.
+    pub replaygain_track_db: Option<f32>,
+    /// ReplayGain album gain in dB (from `REPLAYGAIN_ALBUM_GAIN` /
+    /// `R128_ALBUM_GAIN`). `None` if the file has no RG metadata.
+    pub replaygain_album_db: Option<f32>,
     /// Cache key (filename under the cover cache dir, e.g.
     /// `ab/abcdef….jpg`) when an embedded cover was extracted, else
     /// `None`.
