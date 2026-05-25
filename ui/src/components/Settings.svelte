@@ -15,6 +15,12 @@
     scanLibrary,
     setEqGains,
     setOutputDevice,
+    getReplayGainMode,
+    setReplayGainMode,
+    type ReplayGainMode,
+    getUserOutputMode,
+    setOutputMode,
+    type OutputMode,
     setVolume,
     type LibraryRoot,
     type LibraryStats,
@@ -29,6 +35,9 @@
   let devices = $state<OutputDevice[]>([]);
   let selectedDeviceId = $state<string>("");
   let stats = $state<LibraryStats | null>(null);
+  let replayGainMode = $state<ReplayGainMode>("off");
+  let outputMode = $state<OutputMode>("auto");
+  let outputModeError = $state<string | null>(null);
   let discordStatus = $state<DiscordStatus>("disabled");
   let discordPoll: number | null = null;
 
@@ -47,15 +56,19 @@
       listOutputDevices(),
       getSelectedOutputDevice(),
       libraryStats(),
+      getReplayGainMode(),
+      getUserOutputMode(),
     ]);
+    const [rs, ds, sel, st, rg, om] = results;
 
-    const [rs, ds, sel, st] = results;
     if (rs.status === "fulfilled") roots = rs.value;
     else app.lastError = `Library roots: ${String(rs.reason)}`;
     if (ds.status === "fulfilled") devices = ds.value;
     else app.lastError = `Output devices: ${String(ds.reason)}`;
     if (sel.status === "fulfilled") selectedDeviceId = sel.value ?? "";
     if (st.status === "fulfilled") stats = st.value;
+    if (rg.status === "fulfilled") replayGainMode = rg.value;
+    if (om.status === "fulfilled") outputMode = om.value;
   }
 
   $effect(() => {
@@ -141,6 +154,32 @@
   }
 
   // ------- Audio settings -------
+
+  async function handleReplayGainChange(e: Event): Promise<void> {
+    const v = (e.target as HTMLSelectElement).value as ReplayGainMode;
+    replayGainMode = v;
+    try {
+      await setReplayGainMode(v);
+    } catch (err) {
+      app.lastError = String(err);
+    }
+  }
+
+  async function handleOutputModeChange(e: Event): Promise<void> {
+    const v = (e.target as HTMLSelectElement).value as OutputMode;
+    const previous = outputMode;
+    outputMode = v;
+    outputModeError = null;
+    try {
+      await setOutputMode(v);
+    } catch (err) {
+      // Reverting in the UI keeps the dropdown honest if the engine
+      // refused (e.g. the device doesn't accept Exclusive).
+      outputMode = previous;
+      outputModeError = String(err);
+      app.lastError = `Output mode: ${String(err)}`;
+    }
+  }
 
   async function handleDeviceChange(e: Event): Promise<void> {
     const v = (e.target as HTMLSelectElement).value;
@@ -362,11 +401,54 @@
       <span class="value">{Math.round(settings.values.defaultVolume * 100)}%</span>
     </div>
 
+    <div class="row">
+      <label for="replaygain">ReplayGain</label>
+      <select
+        id="replaygain"
+        value={replayGainMode}
+        onchange={handleReplayGainChange}
+      >
+        <option value="off">Off</option>
+        <option value="track">Track gain</option>
+        <option value="album">Album gain</option>
+      </select>
+    </div>
+
     <p class="hint subtle">
-      Output mode is currently fixed to Shared (WASAPI Shared on Windows). Audio is decoded
-      lossless; the OS mixer is in the path so other apps keep working.
-      Bit-perfect Exclusive output is not used because it locks the device.
+      ReplayGain normalizes loudness using tags written by tools like foobar2000
+      or rsgain. Track mode evens out a shuffled queue; album mode preserves the
+      relative dynamics inside an album. Files without RG tags are played at
+      their original level.
     </p>
+
+    <div class="row">
+      <label for="output-mode">Output mode</label>
+      <select
+        id="output-mode"
+        value={outputMode}
+        onchange={handleOutputModeChange}
+      >
+        <option value="auto">Auto (Shared)</option>
+        <option value="shared">Shared (OS mixer)</option>
+        <option value="exclusive">Exclusive (bit-perfect)</option>
+      </select>
+    </div>
+
+    <p class="hint subtle">
+      Shared lets other apps play to the same device through the Windows
+      mixer; the engine is lossless to the mixer but never strictly
+      bit-perfect. Exclusive bypasses the mixer entirely and reaches a
+      true bit-perfect chain when the device natively supports the
+      file's sample rate. While Exclusive is active no other app can
+      play to this device, and Windows notifications go silent. Pause
+      or stop Qobee to release the device.
+    </p>
+
+    {#if outputModeError}
+      <p class="hint subtle" style="color: var(--danger);">
+        Could not switch: {outputModeError}
+      </p>
+    {/if}
   </div>
 
   <!-- Appearance -->

@@ -15,6 +15,7 @@
     setRepeatMode,
     setShuffle,
     setVolume,
+    toggleMiniPlayer,
     type RepeatMode,
     type Track,
   } from "../lib/api";
@@ -364,6 +365,15 @@
         title="Up next"
       >
         <Icon name="queue" size={15} />
+      </button>
+
+      <button
+        class="ctrl"
+        onclick={() => void toggleMiniPlayer(true)}
+        aria-label="Open mini player"
+        title="Mini player"
+      >
+        <Icon name="minimize-2" size={15} />
       </button>
 
       <div class="volume" onwheel={handleVolumeWheel} role="group" aria-label="Volume">

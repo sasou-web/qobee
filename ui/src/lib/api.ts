@@ -138,9 +138,9 @@ export type PlaybackStatus =
   | "stopped"
   | "errored";
 
-export type EffectiveOutputMode = "shared";
+export type EffectiveOutputMode = "shared" | "exclusive";
 
-export type OutputMode = "auto" | "shared";
+export type OutputMode = "auto" | "shared" | "exclusive";
 
 export interface OutputDevice {
   id: string;
@@ -240,6 +240,10 @@ export async function getOutputMode(): Promise<EffectiveOutputMode> {
 
 export async function setOutputMode(mode: OutputMode): Promise<void> {
   await invoke("set_output_mode", { mode });
+}
+
+export async function getUserOutputMode(): Promise<OutputMode> {
+  return invoke<OutputMode>("get_user_output_mode");
 }
 
 export async function listOutputDevices(): Promise<OutputDevice[]> {
@@ -551,6 +555,38 @@ export async function getEqGains(): Promise<number[]> {
 
 export async function setEqGains(gains: number[]): Promise<void> {
   await invoke("set_eq_gains", { gains });
+}
+
+export type ReplayGainMode = "off" | "track" | "album";
+
+export async function getReplayGainMode(): Promise<ReplayGainMode> {
+  return invoke<ReplayGainMode>("get_replaygain_mode");
+}
+
+export async function setReplayGainMode(mode: ReplayGainMode): Promise<void> {
+  await invoke("set_replaygain_mode", { mode });
+}
+
+// ---------------------------------------------------------------------------
+// Lyrics
+// ---------------------------------------------------------------------------
+
+export interface LyricLine {
+  ms: number;
+  text: string;
+}
+
+export interface Lyrics {
+  unsynced: string | null;
+  synced: LyricLine[] | null;
+}
+
+export async function getLyrics(trackId: number): Promise<Lyrics> {
+  return invoke<Lyrics>("get_lyrics", { trackId });
+}
+
+export async function toggleMiniPlayer(show: boolean): Promise<void> {
+  await invoke("toggle_mini_player", { show });
 }
 
 export async function getRepeatMode(): Promise<RepeatMode> {

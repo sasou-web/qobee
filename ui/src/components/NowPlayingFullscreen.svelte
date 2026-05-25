@@ -16,6 +16,7 @@
   import { formatDuration } from "../lib/format";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
+  import LyricsPanel from "./LyricsPanel.svelte";
 
   interface Props {
     track: Track | null;
@@ -29,6 +30,7 @@
 
   let nowFavorite = $state(false);
   let lastResolvedId = "";
+  let showLyrics = $state(false);
 
   $effect(() => {
     const id = track?.id;
@@ -105,8 +107,25 @@
 
   {#if track}
     <div class="content" in:fly={{ y: 20, duration: 320 }}>
-      <div class="cover-frame">
-        <Cover coverKey={track.cover_key} size={420} title={track.title} />
+      <button
+        class="lyrics-toggle"
+        class:active={showLyrics}
+        onclick={() => (showLyrics = !showLyrics)}
+        aria-label={showLyrics ? "Show cover" : "Show lyrics"}
+        title={showLyrics ? "Show cover" : "Show lyrics"}
+      >
+        <Icon name="quote" size={16} />
+        <span>{showLyrics ? "Cover" : "Lyrics"}</span>
+      </button>
+
+      <div class="hero">
+        {#if showLyrics}
+          <LyricsPanel trackId={track.id} />
+        {:else}
+          <div class="cover-frame">
+            <Cover coverKey={track.cover_key} size={420} title={track.title} />
+          </div>
+        {/if}
       </div>
 
       <div class="text">
@@ -231,14 +250,50 @@
     background: var(--bg-2);
     color: var(--fg-0);
   }
+  .lyrics-toggle {
+    position: absolute;
+    top: calc(var(--titlebar-height) + 12px);
+    left: 12px;
+    z-index: 2;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    color: var(--fg-1);
+    height: 36px;
+    padding: 0 14px;
+    border-radius: 999px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    transition: background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out);
+  }
+  .lyrics-toggle:hover {
+    background: var(--bg-2);
+    color: var(--fg-0);
+  }
+  .lyrics-toggle.active {
+    background: var(--accent-soft);
+    color: var(--fg-0);
+    border-color: var(--accent);
+  }
+  .hero {
+    width: 100%;
+    max-width: 480px;
+    aspect-ratio: 1 / 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
   .cover-frame {
     width: 100%;
     max-width: 420px;
     aspect-ratio: 1 / 1;
     border-radius: var(--radius-lg);
     overflow: hidden;
-    box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4);
-  }
+    box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4);  }
   .cover-frame :global(.cover) {
     width: 100%;
     height: 100%;
