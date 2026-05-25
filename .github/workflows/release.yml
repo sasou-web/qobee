@@ -62,9 +62,28 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          Get-ChildItem -Path src-tauri/target/release/bundle -Recurse -Include *.msi, *.exe |
-            ForEach-Object { Copy-Item $_.FullName -Destination artifacts -Force }
-          Get-ChildItem artifacts
+          # In a Cargo workspace the bundle output lives at the
+          # workspace root (./target/release/bundle), not under the
+          # `src-tauri/` sub-crate. We probe both to be robust to
+          # future Tauri / cargo layout changes.
+          $candidates = @(
+            "target/release/bundle",
+            "src-tauri/target/release/bundle"
+          )
+          foreach ($base in $candidates) {
+            if (Test-Path $base) {
+              Write-Host "Collecting from $base"
+              Get-ChildItem -Path $base -Recurse -Include *.msi, *.exe |
+                ForEach-Object { Copy-Item $_.FullName -Destination artifacts -Force }
+            }
+          }
+          $found = Get-ChildItem artifacts -ErrorAction SilentlyContinue
+          if (-not $found) {
+            Write-Error "No installers found under any of: $($candidates -join ', ')"
+            exit 1
+          }
+          Write-Host "Collected:"
+          $found | Format-Table Name, Length
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
