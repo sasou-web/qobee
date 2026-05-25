@@ -1,0 +1,29 @@
+[package]
+name = "qobee-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Audio engine for Qobee: decoding (Symphonia) + output (CPAL Shared, WASAPI Exclusive seam)."
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+crossbeam-channel = { workspace = true }
+rtrb = { workspace = true }
+
+symphonia = { workspace = true }
+cpal = { workspace = true }
+rubato = { workspace = true }
+
+[features]
+default = []
+# Reserved seam for a future BASS-based backend. Currently a stub that returns
+# `EngineError::BackendUnavailable`; pulling this feature in does not add any
+# external dependency yet.
+engine-bass = []

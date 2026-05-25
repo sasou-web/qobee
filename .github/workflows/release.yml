@@ -1,0 +1,82 @@
+name: Release
+
+# Build a Windows installer (MSI + NSIS) every time a tag matching
+# v*.*.* is pushed, and attach the resulting binaries to a draft
+# GitHub Release. Keep the workflow minimal: no signing, no cache
+# poisoning, no auto-publish — the maintainer flips the release
+# from draft to public manually.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            ./src-tauri
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: ui
+        run: npm run build
+
+      - name: Build Tauri bundle
+        shell: pwsh
+        run: |
+          # The Tauri CLI walks subfolders for `tauri.conf.json`, so we
+          # must run it from the workspace root (where both `ui/` and
+          # `src-tauri/` are subfolders), not from `ui/` (which has no
+          # subfolders containing the conf).
+          ./ui/node_modules/.bin/tauri.cmd build
+
+      - name: Collect installers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Get-ChildItem -Path src-tauri/target/release/bundle -Recurse -Include *.msi, *.exe |
+            ForEach-Object { Copy-Item $_.FullName -Destination artifacts -Force }
+          Get-ChildItem artifacts
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qobee-windows-installers
+          path: artifacts/*
+          if-no-files-found: error
+
+      - name: Draft GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: artifacts/*
+          generate_release_notes: true

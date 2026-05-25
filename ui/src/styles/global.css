@@ -1,0 +1,249 @@
+/* Qobee — base theme.
+ *
+ * Sober, dark, vaguely Cider-inspired. Variables only; component-level
+ * styling lives in each `.svelte` file via `<style>`. Colors lean
+ * neutral so they don't fight cover art in the album grid.
+ */
+
+:root {
+  --bg-0: #0e0e10;
+  --bg-1: #16161a;
+  --bg-2: #1d1d22;
+  --bg-3: #27272d;
+
+  --fg-0: #f4f4f6;
+  --fg-1: #c8c8d0;
+  --fg-2: #8e8e98;
+  --fg-3: #5a5a64;
+
+  --accent: #7f8cff;
+  --accent-2: #a98bff;
+  --accent-soft: rgba(127, 140, 255, 0.18);
+  --accent-glow: rgba(127, 140, 255, 0.35);
+  --danger: #ef5d6f;
+
+  --border: #2a2a30;
+
+  /* Spacing scale — 8px grid, with 4px and 12px stops for fine work. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 44px;
+
+  /* Radii — kept the legacy aliases below to avoid a sweep across files. */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+  --radius-s: 6px;
+  --radius-m: 10px;
+  --radius-l: 14px;
+
+  /* Layout — single source of truth for shell dimensions. */
+  --titlebar-height: 48px;
+  --sidebar-width: 220px;
+  --content-padding-x: 32px;
+  --content-padding-top: 16px;
+  --content-padding-bottom: 120px;
+  --searchbar-height: 32px;
+  --player-height: 68px;
+  --window-controls-width: 144px;
+
+  --shadow-1: 0 2px 6px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 6px 20px rgba(0, 0, 0, 0.45);
+  --shadow-lift: 0 14px 32px -8px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.4);
+
+  /* Motion tokens — single source for durations & easings. Keep them
+     short: this is a desktop app, not a marketing site. */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 280ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+
+  color-scheme: dark;
+}
+
+html[data-theme="light"] {
+  --bg-0: #fafafb;
+  --bg-1: #f1f1f4;
+  --bg-2: #e6e6ea;
+  --bg-3: #d8d8de;
+
+  --fg-0: #1a1a1f;
+  --fg-1: #3c3c44;
+  --fg-2: #6a6a74;
+  --fg-3: #94949c;
+
+  --border: #d6d6dc;
+
+  --shadow-1: 0 2px 6px rgba(0, 0, 0, 0.08);
+  --shadow-2: 0 6px 20px rgba(0, 0, 0, 0.12);
+  --shadow-lift: 0 14px 32px -8px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.08);
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.4;
+  background: var(--bg-0);
+  color: var(--fg-0);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+#app {
+  height: 100%;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+button:hover {
+  background: var(--bg-2);
+}
+button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+button:focus {
+  outline: none;
+}
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Range inputs — styled globally so every slider in the app shares the
+   same look (player progress, volume, EQ…). The track is fed via a
+   CSS variable `--range-fill` (0-100). Components that want the
+   accent fill just set that var on the input. */
+input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  width: 100%;
+  height: 18px;
+  cursor: pointer;
+  --range-fill: 0%;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--range-fill),
+    var(--bg-3) var(--range-fill),
+    var(--bg-3) 100%
+  );
+  transition: height var(--dur-fast) var(--ease-out);
+}
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-3);
+}
+input[type="range"]::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--fg-0);
+  box-shadow: 0 0 0 0 var(--accent-glow);
+  transform: scale(0);
+  transition: transform var(--dur-base) var(--ease-spring),
+    box-shadow var(--dur-base) var(--ease-out);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: var(--fg-0);
+  transform: scale(0);
+  transition: transform var(--dur-base) var(--ease-spring);
+}
+input[type="range"]:hover::-webkit-slider-runnable-track,
+input[type="range"]:focus-visible::-webkit-slider-runnable-track {
+  height: 5px;
+}
+input[type="range"]:hover::-webkit-slider-thumb,
+input[type="range"]:focus-visible::-webkit-slider-thumb,
+input[type="range"]:active::-webkit-slider-thumb {
+  transform: scale(1);
+  box-shadow: 0 0 0 6px var(--accent-glow);
+}
+input[type="range"]:hover::-moz-range-thumb,
+input[type="range"]:focus-visible::-moz-range-thumb {
+  transform: scale(1);
+}
+input[type="range"]:focus { outline: none; }
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-3);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background var(--dur-base) var(--ease-out);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-3);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Honor system preference. The app stays usable, just stops moving. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

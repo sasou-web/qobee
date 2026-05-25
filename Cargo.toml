@@ -1,0 +1,87 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/engine",
+    "crates/library",
+    "crates/core",
+    "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["Qobee contributors"]
+repository = "https://github.com/qobee/qobee"
+
+[workspace.dependencies]
+# Async / runtime utils
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+rtrb = "0.3"
+
+# Serde stack
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Errors
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Filesystem / paths
+dirs = "6.0"
+walkdir = "2.5"
+notify = "8.2"
+
+# Hashing for cover cache keys
+blake3 = "1.5"
+
+# Audio decoding
+symphonia = { version = "0.5.5", features = [
+    "flac",
+    "mp3",
+    "aac",
+    "alac",
+    "isomp4",
+    "ogg",
+    "vorbis",
+    "wav",
+    "pcm",
+    "mkv",
+] }
+
+# Audio output
+cpal = "0.17"
+
+# Sample-rate conversion (used by the CPAL Shared backend when the OS
+# mixer's rate differs from the file's rate; see backend_cpal_shared.rs).
+rubato = "0.16"
+
+# Tag / cover extraction
+lofty = "0.24"
+
+# Storage
+rusqlite = { version = "0.39", features = ["bundled"] }
+
+# Tauri 2.x
+tauri = { version = "2.11", features = [] }
+tauri-build = { version = "2.4", features = [] }
+
+# Internal crates
+qobee-engine = { path = "crates/engine" }
+qobee-library = { path = "crates/library" }
+qobee-core = { path = "crates/core" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+opt-level = 1

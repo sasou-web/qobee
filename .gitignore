@@ -1,0 +1,32 @@
+# Rust / Cargo
+target/
+**/*.rs.bk
+# Cargo.lock is committed: this workspace produces a binary
+# application (qobee-app), so reproducible builds matter.
+
+# Tauri build output
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Node / Vite
+node_modules/
+ui/dist/
+ui/.vite/
+ui/.svelte-kit/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment / secrets
+.env
+.env.local
+
+# Qobee runtime data (created by app at runtime, never committed)
+qobee-data/
