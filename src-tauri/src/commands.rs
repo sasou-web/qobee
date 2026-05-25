@@ -19,7 +19,9 @@ use qobee_library::{
     PlaylistDetail, ScanOptions, SearchResults, Track,
 };
 use qobee_core::queue::RepeatMode;
+use qobee_core::ReplayGainMode;
 
+use crate::lyrics::Lyrics;
 use crate::state::AppState;
 
 fn map_err<E: std::fmt::Display>(e: E) -> String {
@@ -150,9 +152,25 @@ pub fn get_output_mode(state: State<'_, AppState>) -> Result<EffectiveOutputMode
     Ok(state.player().output_mode())
 }
 
+/// Read the user-facing output mode (Auto / Shared / Exclusive).
+/// `get_output_mode` reports the *effective* mode (what is actually
+/// running right now), this one reports what the user has selected.
+#[tauri::command]
+pub fn get_user_output_mode(state: State<'_, AppState>) -> Result<OutputMode, String> {
+    Ok(state.player().current_output_mode())
+}
+
 #[tauri::command]
 pub fn set_output_mode(mode: OutputMode, state: State<'_, AppState>) -> Result<(), String> {
-    state.player().set_output_mode(mode).map_err(map_err)
+    state.player().set_output_mode(mode).map_err(map_err)?;
+    // Persist so the choice survives restarts.
+    let value = match mode {
+        OutputMode::Auto => "auto",
+        OutputMode::Shared => "shared",
+        OutputMode::Exclusive => "exclusive",
+    };
+    let _ = state.library().set_setting("audio.output_mode", value);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +629,108 @@ pub fn get_eq_gains(state: State<'_, AppState>) -> Result<Vec<f32>, String> {
 #[tauri::command]
 pub fn set_eq_gains(gains: Vec<f32>, state: State<'_, AppState>) -> Result<(), String> {
     state.player().set_eq_gains_db(gains);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Lyrics
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_lyrics(track_id: i64, state: State<'_, AppState>) -> Result<Lyrics, String> {
+    let track = state
+        .library()
+        .get_track(track_id)
+        .map_err(map_err)?
+        .ok_or_else(|| format!("track {track_id} not found"))?;
+    Ok(crate::lyrics::read_for(std::path::Path::new(&track.path)))
+}
+
+// ---------------------------------------------------------------------------
+// Mini player window
+// ---------------------------------------------------------------------------
+
+/// Show / hide the mini-player window. The mini window is created on
+/// demand the first time the user opens it, and reused on subsequent
+/// toggles. Pass `show: true` to bring the mini up and minimize the
+/// main window; `false` to do the reverse.
+#[tauri::command]
+pub async fn toggle_mini_player(app: tauri::AppHandle, show: bool) -> Result<(), String> {
+    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+    let main = app.get_webview_window("main");
+    let mini = app.get_webview_window("mini");
+
+    if show {
+        let mini = match mini {
+            Some(w) => w,
+            None => {
+                // Create on demand. Same Vite entry; main.ts checks
+                // the window label and renders the MiniPlayer
+                // component for `mini`.
+                WebviewWindowBuilder::new(
+                    &app,
+                    "mini",
+                    WebviewUrl::App("index.html".into()),
+                )
+                .title("Qobee Mini")
+                .inner_size(440.0, 170.0)
+                .min_inner_size(380.0, 150.0)
+                .max_inner_size(700.0, 240.0)
+                .resizable(true)
+                .decorations(false)
+                .shadow(true)
+                .always_on_top(true)
+                .skip_taskbar(false)
+                .visible(false)
+                .build()
+                .map_err(|e| format!("create mini window: {e}"))?
+            }
+        };
+
+        mini.show().map_err(|e| e.to_string())?;
+        mini.set_focus().map_err(|e| e.to_string())?;
+
+        // Hide the main window so only the mini is visible. We use
+        // `hide()` (not `minimize()`) so it doesn't keep an entry in
+        // the taskbar — the mini becomes the only visible Qobee
+        // surface, which is what the user wants.
+        if let Some(m) = main {
+            let _ = m.hide();
+        }
+    } else {
+        if let Some(m) = mini {
+            let _ = m.hide();
+        }
+        if let Some(m) = main {
+            let _ = m.unminimize();
+            let _ = m.show();
+            let _ = m.set_focus();
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ReplayGain
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_replaygain_mode(state: State<'_, AppState>) -> Result<ReplayGainMode, String> {
+    Ok(state.player().replaygain_mode())
+}
+
+#[tauri::command]
+pub fn set_replaygain_mode(
+    mode: ReplayGainMode,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.player().set_replaygain_mode(mode);
+    // Persist so the choice survives restarts (key chosen to align
+    // with other settings: "audio.replaygain_mode" -> "off"|"track"|"album").
+    let _ = state
+        .library()
+        .set_setting("audio.replaygain_mode", mode.as_setting());
     Ok(())
 }
 

@@ -46,6 +46,28 @@ impl AppState {
         let player = Player::new(library.clone()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
         let handle = player.handle();
 
+        // Restore persisted audio settings.
+        if let Ok(Some(rg)) = library.get_setting("audio.replaygain_mode") {
+            handle.set_replaygain_mode(qobee_core::ReplayGainMode::from_setting(&rg));
+        }
+        if let Ok(Some(mode_str)) = library.get_setting("audio.output_mode") {
+            let mode = match mode_str.as_str() {
+                "exclusive" => qobee_engine::OutputMode::Exclusive,
+                "shared" => qobee_engine::OutputMode::Shared,
+                _ => qobee_engine::OutputMode::Auto,
+            };
+            // Errors here are non-fatal: if Exclusive can't init
+            // (no device, etc.) we fall back to Shared and log the
+            // failure so the user can see it in Settings.
+            if let Err(e) = handle.set_output_mode(mode) {
+                tracing::warn!(
+                    target: "qobee::app",
+                    error = %e,
+                    "could not restore persisted output mode; falling back to Shared"
+                );
+            }
+        }
+
         let discord = DiscordPresence::new();
         // Hook the local cover cache up to Discord: covers will be
         // uploaded to a public host on demand and patched into the

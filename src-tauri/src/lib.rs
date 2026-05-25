@@ -12,6 +12,7 @@ pub mod commands;
 pub mod cover_host;
 pub mod discord;
 pub mod logging;
+pub mod lyrics;
 pub mod state;
 
 use std::path::PathBuf;
@@ -62,6 +63,7 @@ pub fn run() {
             commands::get_player_state,
             commands::get_output_mode,
             commands::set_output_mode,
+            commands::get_user_output_mode,
             commands::list_output_devices,
             commands::get_selected_output_device,
             commands::set_output_device,
@@ -109,6 +111,10 @@ pub fn run() {
             commands::reset_library,
             commands::get_eq_gains,
             commands::set_eq_gains,
+            commands::get_lyrics,
+            commands::toggle_mini_player,
+            commands::get_replaygain_mode,
+            commands::set_replaygain_mode,
             commands::get_repeat_mode,
             commands::set_repeat_mode,
             commands::get_shuffle,

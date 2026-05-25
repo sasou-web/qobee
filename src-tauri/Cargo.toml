@@ -36,3 +36,4 @@ blake3 = { workspace = true }
 qobee-engine = { workspace = true }
 qobee-library = { workspace = true }
 qobee-core = { workspace = true }
+lofty = { workspace = true }
