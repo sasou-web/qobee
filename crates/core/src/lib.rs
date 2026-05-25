@@ -16,6 +16,43 @@ pub use queue::Queue;
 
 use serde::{Deserialize, Serialize};
 
+/// ReplayGain mode used by the player when starting a track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayGainMode {
+    /// Don't apply any normalization.
+    Off,
+    /// Apply per-track gain. Most consistent perceived loudness across
+    /// a shuffled queue.
+    Track,
+    /// Apply per-album gain. Preserves the relative dynamics within an
+    /// album (the artist's intended balance between tracks).
+    Album,
+}
+
+impl Default for ReplayGainMode {
+    fn default() -> Self {
+        ReplayGainMode::Off
+    }
+}
+
+impl ReplayGainMode {
+    pub fn from_setting(s: &str) -> Self {
+        match s {
+            "track" => ReplayGainMode::Track,
+            "album" => ReplayGainMode::Album,
+            _ => ReplayGainMode::Off,
+        }
+    }
+    pub fn as_setting(&self) -> &'static str {
+        match self {
+            ReplayGainMode::Off => "off",
+            ReplayGainMode::Track => "track",
+            ReplayGainMode::Album => "album",
+        }
+    }
+}
+
 /// Events emitted by [`Player`] to the application layer (which then
 /// re-publishes them as Tauri events).
 ///
