@@ -65,6 +65,7 @@ const initialPlayer: PlayerState = {
   bit_depth: null,
   channels: null,
   is_bit_perfect: false,
+  rg_attenuation_db: null,
   error: null,
 };
 

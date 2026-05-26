@@ -13,13 +13,15 @@ use std::path::PathBuf;
 use serde::Serialize;
 use tauri::{Emitter, State};
 
-use qobee_engine::{EffectiveOutputMode, OutputDevice, OutputMode, PlayerState};
+use qobee_engine::{
+    BitPerfectHealth, EffectiveOutputMode, OutputDevice, OutputMode, PlayerState,
+};
 use qobee_library::{
     Album, AlbumDetail, Artist, ArtistDetail, Genre, LibraryRoot, LibraryStats, Playlist,
     PlaylistDetail, ScanOptions, SearchResults, Track,
 };
 use qobee_core::queue::RepeatMode;
-use qobee_core::ReplayGainMode;
+use qobee_core::{audio_settings::ALL_KEYS, AudioSettingsError, ReplayGainMode};
 
 use crate::lyrics::Lyrics;
 use crate::state::AppState;
@@ -512,6 +514,324 @@ pub fn list_settings(
 #[tauri::command]
 pub fn clear_settings(state: State<'_, AppState>) -> Result<(), String> {
     state.library().clear_settings().map_err(map_err)
+}
+
+// ---------------------------------------------------------------------------
+// Audio settings (audio.* keys persisted via AudioSettingsStore)
+// ---------------------------------------------------------------------------
+
+/// Map an [`AudioSettingsError`] to a user-friendly string. Every
+/// returned message starts with `"Setting invalid: "` so the UI can
+/// pattern-match on the prefix to decide on a toast vs an inline
+/// validation error.
+fn format_settings_error(err: AudioSettingsError) -> String {
+    format!("Setting invalid: {}", err)
+}
+
+/// Read a single `audio.*` setting. Returns `None` when the key is
+/// unknown, which lets the UI distinguish a missing key from a
+/// `null`-valued one (only `audio.convolver_ir_path` ever produces
+/// `null`).
+#[tauri::command]
+pub fn get_audio_setting(
+    key: String,
+    state: State<'_, AppState>,
+) -> Result<Option<serde_json::Value>, String> {
+    Ok(state.audio_settings().get(&key))
+}
+
+/// Validate, persist, and apply an `audio.*` setting. The store
+/// guarantees atomicity: a failed `set` leaves the engine snapshot
+/// strictly unchanged.
+#[tauri::command]
+pub fn set_audio_setting(
+    key: String,
+    value: serde_json::Value,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .audio_settings()
+        .set(&key, value)
+        .map_err(format_settings_error)
+}
+
+/// Snapshot every persisted `audio.*` key. The frontend uses this on
+/// mount to populate the audio settings panel without round-tripping
+/// each key individually.
+#[tauri::command]
+pub fn list_audio_settings(
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, serde_json::Value>, String> {
+    let store = state.audio_settings();
+    let mut out = std::collections::HashMap::with_capacity(ALL_KEYS.len());
+    for key in ALL_KEYS {
+        if let Some(v) = store.get(key) {
+            out.insert((*key).to_string(), v);
+        }
+    }
+    Ok(out)
+}
+
+/// Reset every `audio.*` key to its default and push the fresh
+/// snapshot to the engine. Used by the "Restore defaults" button in
+/// the audio settings panel.
+#[tauri::command]
+pub fn reset_audio_settings(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .audio_settings()
+        .write_defaults()
+        .map_err(format_settings_error)
+}
+
+// ---------------------------------------------------------------------------
+// Bit-Perfect Health (R5) — read-only diagnostics for the audio panel.
+// ---------------------------------------------------------------------------
+
+/// Snapshot of the device's mix format, returned by
+/// [`get_device_mix_format`]. Sample rate and channel count come from
+/// `IAudioClient::GetMixFormat()` on Windows and from the CPAL default
+/// config elsewhere; `bit_depth` is the WASAPI valid-bits-per-sample
+/// when available and `None` on platforms without a precise depth.
+#[derive(Debug, Serialize)]
+pub struct DeviceMixFormat {
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub bit_depth: Option<u8>,
+}
+
+/// Latest [`BitPerfectHealth`] snapshot known to the engine. Returns
+/// `None` while idle / stopped (no device open) so the UI can hide
+/// the source/track block (R5.7).
+#[tauri::command]
+pub fn get_bit_perfect_health(
+    state: State<'_, AppState>,
+) -> Result<Option<BitPerfectHealth>, String> {
+    Ok(state.player().state().bit_perfect)
+}
+
+/// Read the device mix format used by the OS mixer. On Windows we go
+/// straight to `IAudioClient::GetMixFormat()` so the panel can flag a
+/// hidden Shared-mode resample even when Qobee itself is not playing.
+/// On other operating systems we fall back to the CPAL default
+/// configuration (sample rate + channel count; bit depth is `None`).
+#[tauri::command]
+pub fn get_device_mix_format(
+    device_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<DeviceMixFormat, String> {
+    // Default to whatever the player is currently routing to, so the
+    // panel matches the running stream when no explicit id is sent.
+    let device_id = device_id.or_else(|| state.player().selected_output_device());
+    #[cfg(target_os = "windows")]
+    {
+        use wasapi::{initialize_mta, Direction, DeviceEnumerator};
+        // COM init is idempotent here (the app may already have
+        // initialised on this thread); failures are non-fatal.
+        let _ = initialize_mta().ok();
+        let enumerator = DeviceEnumerator::new()
+            .map_err(|e| format!("device enumerator: {e:?}"))?;
+        let device = if let Some(want) = device_id.as_deref() {
+            let mut found = None;
+            if let Ok(coll) = enumerator.get_device_collection(&Direction::Render) {
+                if let Ok(n) = coll.get_nbr_devices() {
+                    for i in 0..n {
+                        if let Ok(d) = coll.get_device_at_index(i) {
+                            if let Ok(name) = d.get_friendlyname() {
+                                if name == want {
+                                    found = Some(d);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            match found {
+                Some(d) => d,
+                None => enumerator
+                    .get_default_device(&Direction::Render)
+                    .map_err(|e| format!("default device: {e:?}"))?,
+            }
+        } else {
+            enumerator
+                .get_default_device(&Direction::Render)
+                .map_err(|e| format!("default device: {e:?}"))?
+        };
+        let client = device
+            .get_iaudioclient()
+            .map_err(|e| format!("get_iaudioclient: {e:?}"))?;
+        let fmt = client
+            .get_mixformat()
+            .map_err(|e| format!("get_mixformat: {e:?}"))?;
+        let valid = fmt.get_validbitspersample();
+        let bit_depth = if valid > 0 && valid <= u8::MAX as u16 {
+            Some(valid as u8)
+        } else {
+            None
+        };
+        return Ok(DeviceMixFormat {
+            sample_rate: fmt.get_samplespersec(),
+            channels: fmt.get_nchannels(),
+            bit_depth,
+        });
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Reuse the engine's CPAL-backed device enumeration so we
+        // don't need a direct cpal dep in the Tauri shell.
+        let devices = qobee_engine::backend_cpal_shared::list_output_devices()
+            .map_err(|e| format!("list devices: {e}"))?;
+        let pick = match device_id.as_deref() {
+            Some(want) => devices.into_iter().find(|d| d.id == want),
+            None => devices
+                .into_iter()
+                .find(|d| d.is_default)
+                .or_else(|| {
+                    qobee_engine::backend_cpal_shared::list_output_devices()
+                        .ok()
+                        .and_then(|mut v| v.pop())
+                }),
+        }
+        .ok_or_else(|| "no default output device".to_string())?;
+        Ok(DeviceMixFormat {
+            sample_rate: pick.default_sample_rate,
+            channels: pick.channels,
+            bit_depth: None,
+        })
+    }
+}
+
+/// Open the Windows "Sound" control panel (`mmsys.cpl`) on the
+/// Playback tab. No-op + warning log on other operating systems so
+/// the UI can call it unconditionally.
+#[tauri::command]
+pub fn open_windows_sound_settings() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        Command::new("cmd")
+            .args(["/c", "start", "mmsys.cpl,1"])
+            .spawn()
+            .map_err(|e| format!("spawn mmsys.cpl: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        tracing::warn!(
+            target: "qobee::commands",
+            "open_windows_sound_settings is a no-op on non-Windows platforms"
+        );
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Convolver IR (R9) — load, unload, status
+// ---------------------------------------------------------------------------
+
+/// Snapshot of the convolver's runtime state for the
+/// `ConvolverIrPicker` UI panel (R9.10).
+#[derive(Debug, Serialize)]
+pub struct ConvolverStatus {
+    /// Mirror of `audio.convolver_enabled`.
+    pub enabled: bool,
+    /// Persisted IR path, or `None` when no file was ever loaded.
+    pub ir_path: Option<String>,
+    /// Length of the active IR in taps (post-resample), or `None`
+    /// when no IR is loaded.
+    pub ir_len: Option<usize>,
+    /// Reported convolver latency in milliseconds.
+    /// `ir_len / device_sample_rate × 1000`. Zero when no IR is
+    /// loaded.
+    pub latency_ms: f32,
+}
+
+/// Decode + validate + resample + apply gain compensation to the
+/// supplied WAV impulse response, then push it to the engine. Errors
+/// are surfaced as a string to the UI; on failure the previously
+/// loaded IR (if any) is left untouched.
+#[tauri::command]
+pub fn load_convolver_ir(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .player()
+        .load_convolver_ir(std::path::Path::new(&path))
+        .map_err(map_err)
+}
+
+/// Drop the active IR. The convolver stage falls back to bypass on
+/// the next chunk boundary (R9.7).
+#[tauri::command]
+pub fn unload_convolver_ir(state: State<'_, AppState>) -> Result<(), String> {
+    state.player().unload_convolver_ir();
+    Ok(())
+}
+
+/// Aggregate the user-facing status of the convolver (R9.10):
+/// enabled flag, persisted IR path, active IR length, and reported
+/// latency in milliseconds.
+#[tauri::command]
+pub fn get_convolver_status(
+    state: State<'_, AppState>,
+) -> Result<ConvolverStatus, String> {
+    let store = state.audio_settings();
+    let enabled = store
+        .get("audio.convolver_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ir_path = store
+        .get("audio.convolver_ir_path")
+        .and_then(|v| match v {
+            serde_json::Value::String(s) if !s.is_empty() => Some(s),
+            _ => None,
+        });
+    // Engine reports the active IR length in taps (zero when none
+    // loaded). The setter pre-validates the IR so a non-zero length
+    // implies a valid IR is in flight.
+    let live_len = state.player().convolver_ir_len();
+    let ir_len = if live_len == 0 { None } else { Some(live_len) };
+    let sr = state.player().state().sample_rate.unwrap_or(48_000) as f32;
+    let latency_ms = match ir_len {
+        Some(n) if sr > 0.0 => (n as f32 / sr) * 1000.0,
+        _ => 0.0,
+    };
+    Ok(ConvolverStatus {
+        enabled,
+        ir_path,
+        ir_len,
+        latency_ms,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Null-test diagnostic (R11) — generate a deterministic WAV, capture
+// loopback (Shared) or pre-render (Exclusive), align by FFT
+// cross-correlation, and report bit-perfect / modified / inconclusive.
+// ---------------------------------------------------------------------------
+
+/// Run the null-test diagnostic end-to-end. Blocking command: the
+/// orchestrator runs the capture + alignment on the current
+/// thread (Tauri spawns one worker per command). Returns a complete
+/// [`NullTestReport`] in every case (errors surface as
+/// `Inconclusive` with the message in `error`).
+#[tauri::command]
+pub async fn run_null_test(
+    state: State<'_, AppState>,
+) -> Result<qobee_core::NullTestReport, String> {
+    let player = state.player().clone();
+    let report = tauri::async_runtime::spawn_blocking(move || qobee_core::run_null_test(&player))
+        .await
+        .map_err(|e| format!("null-test task panicked: {e}"))?;
+    Ok(report)
+}
+
+/// Trip the cancellation flag observed by an in-flight
+/// [`run_null_test`]. Returns immediately; the running task picks
+/// the flag up at the next polling tick (≤ 100 ms).
+#[tauri::command]
+pub fn cancel_null_test() -> Result<(), String> {
+    qobee_core::cancel_null_test();
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

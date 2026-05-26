@@ -39,4 +39,35 @@ pub enum EngineError {
     /// always logged.
     #[error("internal engine error: {0}")]
     Internal(String),
+
+    // ---- Convolver IR loading (R9.2 / R9.3 / R9.8) ----
+    /// IR exceeds the design's `100_000`-tap budget after resampling.
+    /// Carries the actual length so the UI can report it.
+    #[error("convolver IR too long after resample (max 100000 taps)")]
+    ConvolverIrTooLong,
+
+    /// IR contains NaN / Inf samples or an empty channel — anything
+    /// the convolver cannot run on.
+    #[error("convolver IR invalid: {0}")]
+    ConvolverIrInvalid(String),
+
+    /// IR file could not be opened, decoded, or resampled.
+    #[error("convolver IR load failed: {0}")]
+    ConvolverIrLoadFailed(String),
+
+    // ---- DSD parsers (R7.2) ----
+    /// DSF or DFF parser rejected the supplied file. The string
+    /// carries the offset / chunk identifier so the issue can be
+    /// triaged from logs alone.
+    #[error("DSD invalid file: {0}")]
+    DsdInvalidFile(String),
+
+    // ---- Null-test diagnostic (R11.8) ----
+    /// WASAPI loopback capture refused to start (driver lacks
+    /// loopback support, the device is held by another exclusive
+    /// client, or `IAudioClient::Initialize` returned a hard error).
+    /// The diagnostic falls back to an `Inconclusive` report and
+    /// surfaces this string in the UI so the user knows why.
+    #[error("null-test loopback failed: {0}")]
+    NullTestLoopbackFailed(String),
 }

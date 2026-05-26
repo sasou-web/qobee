@@ -30,14 +30,22 @@ pub mod backend_cpal_shared;
 pub mod backend_symphonia;
 #[cfg(target_os = "windows")]
 pub mod backend_wasapi_exclusive;
+pub mod diagnostic;
+pub mod dsd;
+pub mod dsp;
 pub mod eq;
 pub mod error;
 pub mod types;
+pub mod audio_settings;
+pub mod volume;
 
+pub use audio_settings::*;
+pub use dsd::{DopPacker, DsdGroup16, DsdRate, DsdStream};
+pub use dsp::{PreGainContext, StagesBypass};
 pub use error::{EngineError, EngineResult};
 pub use types::{
-    EffectiveOutputMode, EngineEvent, OutputDevice, OutputMode, PcmBuffer, PlaybackStatus,
-    PlayerState, TrackFormat,
+    BitPerfectHealth, BitPerfectStatus, EffectiveOutputMode, EngineEvent, OutputDevice, OutputMode,
+    PcmBuffer, PlaybackStatus, PlayerState, TrackFormat,
 };
 
 use crossbeam_channel::Receiver;
@@ -46,6 +54,17 @@ use std::path::Path;
 /// Common interface every audio backend must satisfy.
 pub trait AudioEngine: Send + Sync {
     fn load(&self, path: &Path) -> EngineResult<()>;
+    /// Open a DSD track on the engine. Implementations that do not
+    /// support DSD (CPAL Shared) MUST return
+    /// `EngineError::BackendUnavailable`. The WASAPI Exclusive
+    /// backend (Windows-only) implements the full DSF/DFF + DoP
+    /// pipeline (R7.3 / R7.5 / R7.7). Default implementation rejects
+    /// the call so non-DSD backends don't have to override anything.
+    fn load_dsd(&self, _path: &Path, _rate: DsdRate) -> EngineResult<()> {
+        Err(EngineError::BackendUnavailable(
+            "DSD playback requires WASAPI Exclusive on Windows".to_string(),
+        ))
+    }
     fn play(&self) -> EngineResult<()>;
     fn pause(&self) -> EngineResult<()>;
     fn resume(&self) -> EngineResult<()>;
@@ -63,6 +82,43 @@ pub trait AudioEngine: Send + Sync {
     fn set_pre_gain(&self, linear: f32);
     fn set_output_device(&self, device_id: Option<String>);
     fn selected_device(&self) -> Option<String>;
+
+    /// Replace the engine's published [`AudioSettings`] snapshot. The
+    /// decoder thread observes the new values lazily on the next
+    /// chunk boundary (compare-and-swap on the `version` counter).
+    fn set_audio_settings(&self, settings: AudioSettings);
+
+    /// Push a new per-load context (RG dB/peak from the loaded track
+    /// + the current volume slider) into the `Pre_Gain_Stage`. The
+    /// decoder thread picks it up on the next chunk boundary.
+    ///
+    /// Called by the orchestration layer (`Player::start_track`)
+    /// after a track load and on volume changes so the stage's
+    /// combined `g_linear` stays in sync with both the track's tags
+    /// and the user's slider position.
+    fn set_pre_gain_context(&self, ctx: PreGainContext);
+
+    /// Forward a freshly-loaded convolver impulse response (R9.2)
+    /// to the engine. The decoder thread picks it up at the next
+    /// chunk boundary and forwards it to `PcmChain::set_convolver_ir`.
+    /// Pass two empty vectors to drop the IR (the convolver stage
+    /// falls back to bypass on the next chunk).
+    fn set_convolver_ir(&self, ir_left: Vec<f32>, ir_right: Vec<f32>);
+
+    /// Length of the currently loaded convolver IR in taps (per
+    /// channel); zero when none loaded. Read by
+    /// `get_convolver_status` to compute the reported latency.
+    fn convolver_ir_len(&self) -> usize;
+
+    /// Whether the engine is currently rendering a DSD stream
+    /// (R7.8). Used by the orchestrator to gate volume / EQ /
+    /// pre-gain mutations: requests received while this returns
+    /// `true` are cached for the next PCM track but not forwarded
+    /// to the engine. Default implementation reports `false` for
+    /// backends that do not support DSD.
+    fn is_dsd_active(&self) -> bool {
+        false
+    }
 
     // ---- Gapless ----
 

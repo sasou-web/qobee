@@ -4,6 +4,112 @@ All notable changes to Qobee are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows semantic versioning.
 
+## [Unreleased]
+
+## [0.3.0] - 2026-05-26
+
+A fidelity-focused expansion of the audio chain: every stage from
+the decoder to the device is now configurable from a new
+**Settings → Audio** panel, surfaced honestly through a
+**Bit-Perfect Health** badge, and verifiable end-to-end through a
+**null-test diagnostic**.
+
+### Changed defaults — sonic impact
+
+The following defaults change the way Qobee sounds versus 0.2.0
+and earlier. The legacy behaviour stays available, just not as the
+default:
+
+- `audio.dither_profile = shaped_f_weighted` (was: TPDF white
+  triangular noise). Set `audio.dither_profile = tpdf` to restore
+  the previous behaviour.
+- `audio.peak_limiter_mode = lookahead_limiter` (was: a soft-clip
+  applied unconditionally before the device, or no limiter
+  depending on the chain). Set `audio.peak_limiter_mode = off` for
+  no limiter, or `soft_clip` for the legacy soft-clipper.
+- `audio.volume_curve = logarithmic` (was: `quadratic`). Set
+  `audio.volume_curve = quadratic` to restore the previous slider
+  taper.
+
+These defaults are applied automatically on the first launch after
+upgrade; they only affect playback rendering, not the stored audio
+files.
+
+### Added
+
+- **Settings → Audio** panel exposing every stage of the new DSP
+  chain (ReplayGain peak protection, dither profile, peak limiter,
+  volume curve, crossfeed, resampler quality, convolver, balance,
+  per-channel trim). Backed by 19 persisted `audio.*` keys
+  documented in the README.
+- **ReplayGain peak protection** with a configurable safety
+  headroom (`audio.rg_peak_protection`,
+  `audio.rg_safety_headroom_db`). Reads
+  `REPLAYGAIN_TRACK_PEAK` / `_ALBUM_PEAK` tags during scan and
+  reports the actually applied attenuation in `PlayerState`.
+- **Dither stage** with three profiles — TPDF, shaped HP, and the
+  new default shaped F-weighted — exact bypass when output is
+  > 16 bits.
+- **Peak limiter** with three modes — `off`, `soft_clip`, and the
+  new default `lookahead_limiter` (true-peak look-ahead with
+  configurable ceiling, look-ahead window and release).
+- **Logarithmic volume curve** with a configurable floor
+  (`audio.volume_floor_db`); `quadratic` remains available.
+- **Bit-Perfect Health badge** in the player bar that lists every
+  factor breaking bit-perfect (non-native sample rate, channel
+  upmix, non-unity volume, EQ on, ReplayGain attenuation, dither
+  active, limiter biting) instead of a binary flag.
+- **Crossfeed** for headphones, Bauer-style, with `bauer`,
+  `bauer_strong` and `custom` presets plus tunable inter-aural
+  delay and low-pass cutoff.
+- **DSD / DoP** playback: native decoding of DSF and DFF files,
+  with DSD-over-PCM packing for WASAPI Exclusive devices that
+  accept it.
+- **FFT-partitioned IR convolver** with a Settings → Audio file
+  picker for the impulse response and a per-IR gain trim.
+- **Stereo balance and per-channel trim** (`audio.balance`,
+  `audio.trim_db_per_channel`) for asymmetric listening setups.
+- **Null-test diagnostic** in Settings → Diagnostics that plays a
+  reference signal, captures via loopback or pre-render, and
+  reports peak/RMS difference plus a `BitPerfect / Modified /
+  Inconclusive` verdict.
+- New Tauri commands: `get_audio_setting`, `set_audio_setting`,
+  `list_audio_settings`, `reset_audio_settings`,
+  `get_bit_perfect_health`, `get_device_mix_format`,
+  `open_windows_sound_settings`, `load_convolver_ir`,
+  `unload_convolver_ir`, `get_convolver_status`, `run_null_test`,
+  `cancel_null_test`.
+
+### Changed
+
+- The audio engine now runs a single deterministic DSP pipeline
+  shared by both Shared and Exclusive backends; bypass conditions
+  for each stage are explicit and reflected in the Bit-Perfect
+  Health badge.
+- Out-of-range `audio.*` values are clamped and rewritten at boot;
+  missing keys are created with their default.
+
+### Performance
+
+Mini-bench `bench_dsp_chain_cost` (`cargo test --release -p
+qobee-engine --lib -- --ignored bench_dsp_chain_cost --nocapture`,
+5 s 192 kHz stereo, 2048-frame blocks):
+
+- all-off (limiter off, no crossfeed, no convolver, no dither):
+  0.14 ms wall, ≈ 0 ms/block, RT factor ≈ 35 000×.
+- defaults (lookahead limiter, shaped F-weighted dither): 313.8 ms
+  wall, 0.67 ms/block, RT factor 15.9×.
+- all-on (defaults + crossfeed BauerStrong + convolver 65 536-tap
+  IR + 16-bit dither): 688.3 ms wall, 1.47 ms/block, RT factor
+  7.3×. Convolver dominates (`O(N log N)` per partition) as
+  expected; lookahead limiter adds a ring-buffer per channel,
+  crossfeed is two biquads + a delay line per side.
+- Property 5 (R3.4, true-peak ≤ ceiling) and `r3_4` stress run at
+  `PROPTEST_CASES=200`, both green across two consecutive runs.
+- Release binary `target/release/qobee-app.exe` measures 20.17 MB
+  (no comparable 0.2.0 baseline recorded locally; tracked
+  forward).
+
 ## [0.2.0] - 2026-05-25
 
 A fidelity-first overhaul of the audio pipeline plus a handful of
@@ -124,6 +230,7 @@ WASAPI Exclusive, lyrics, mini player).
   auto-fallback handles this transparently — the user just sees
   a switch back to Shared.
 
+[0.3.0]: https://github.com/qobee/qobee/releases/tag/v0.3.0
 [0.2.0]: https://github.com/qobee/qobee/releases/tag/v0.2.0
 
 ## [0.1.0] - 2026-05-25

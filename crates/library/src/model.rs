@@ -8,6 +8,50 @@
 
 use serde::{Deserialize, Serialize};
 
+/// DSD sample-rate identifier (R7.1).
+///
+/// The library stores DSD tracks with `sample_rate` in plain Hz
+/// (DSD64 = 2_822_400, DSD128 = 5_644_800, etc.) and `bit_depth = 1`.
+/// `Track::dsd_rate` matches that pair against this enum so the
+/// orchestrator and engine can reason in named rates rather than
+/// raw Hz figures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DsdRate {
+    Dsd64,
+    Dsd128,
+    Dsd256,
+    Dsd512,
+}
+
+impl DsdRate {
+    /// Plain-Hz value stored in the `tracks` table for this rate.
+    pub fn hz(self) -> u32 {
+        match self {
+            DsdRate::Dsd64 => 2_822_400,
+            DsdRate::Dsd128 => 5_644_800,
+            DsdRate::Dsd256 => 11_289_600,
+            DsdRate::Dsd512 => 22_579_200,
+        }
+    }
+
+    /// Reverse mapping from `(sample_rate_hz, bit_depth)` back to a
+    /// `DsdRate`. Returns `None` for any input that doesn't match a
+    /// canonical DSD rate at one bit per sample.
+    pub fn from_track(sample_rate: u32, bit_depth: u8) -> Option<Self> {
+        if bit_depth != 1 {
+            return None;
+        }
+        match sample_rate {
+            2_822_400 => Some(DsdRate::Dsd64),
+            5_644_800 => Some(DsdRate::Dsd128),
+            11_289_600 => Some(DsdRate::Dsd256),
+            22_579_200 => Some(DsdRate::Dsd512),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
     pub id: i64,
@@ -32,6 +76,14 @@ pub struct Track {
     /// ReplayGain album gain in dB (from `REPLAYGAIN_ALBUM_GAIN` /
     /// `R128_ALBUM_GAIN`). `None` if the file has no RG metadata.
     pub replaygain_album_db: Option<f32>,
+    /// ReplayGain track peak (linear, full-scale = 1.0, may exceed
+    /// 1.0 for true-peak measurements; clamped to `[0.0, 4.0]`).
+    /// Sourced from `REPLAYGAIN_TRACK_PEAK`. `None` when absent.
+    pub replaygain_track_peak: Option<f32>,
+    /// ReplayGain album peak (linear, full-scale = 1.0, may exceed
+    /// 1.0 for true-peak measurements; clamped to `[0.0, 4.0]`).
+    /// Sourced from `REPLAYGAIN_ALBUM_PEAK`. `None` when absent.
+    pub replaygain_album_peak: Option<f32>,
     /// Cache key (filename under the cover cache dir, e.g.
     /// `ab/abcdef….jpg`) when an embedded cover was extracted, else
     /// `None`.
@@ -170,4 +222,16 @@ pub struct ScanProgress {
     pub files_indexed: u64,
     /// Path of the most recently indexed file (for UI display).
     pub current: Option<String>,
+}
+
+impl Track {
+    /// Recognise this track as a DSD stream and return its named
+    /// rate, or `None` for any PCM track. Implemented by matching
+    /// the `(sample_rate, bit_depth)` pair against the canonical
+    /// DSD rates (DSD64–DSD512 at 1 bit per sample).
+    pub fn dsd_rate(&self) -> Option<DsdRate> {
+        let sr = self.sample_rate?;
+        let bd = self.bit_depth?;
+        DsdRate::from_track(sr, bd)
+    }
 }

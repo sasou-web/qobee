@@ -1,12 +1,12 @@
-//! CPAL-based Shared output backend.
+﻿//! CPAL-based Shared output backend.
 //!
 //! This is the engine's only output backend. It pulls f32 interleaved
 //! PCM from a Symphonia decoder running on a worker thread, optionally
-//! resamples it (via rubato sinc, BlackmanHarris²) to the device's
+//! resamples it (via rubato sinc, BlackmanHarrisÂ²) to the device's
 //! native rate, applies an optional ReplayGain pre-gain and a 10-band
 //! peaking EQ, then feeds it to the OS mixer via CPAL. The audio
 //! callback adds soft-clip + TPDF dither (when the device asks for a
-//! ≤16-bit integer format) before quantization.
+//! â‰¤16-bit integer format) before quantization.
 //!
 //! ## Honest reporting
 //!
@@ -26,18 +26,21 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::Mutex;
 use rtrb::{Consumer, Producer, RingBuffer};
 
+use crate::audio_settings::{AudioSettings, ResamplerQuality};
 use crate::backend_symphonia::SymphoniaDecoder;
 use crate::error::{EngineError, EngineResult};
 use crate::types::{
-    EffectiveOutputMode, EngineEvent, OutputMode, PlaybackStatus, PlayerState,
+    BitPerfectHealth, EffectiveOutputMode, EngineEvent, OutputMode, PlaybackStatus, PlayerState,
 };
 use crate::AudioEngine;
+use crate::PreGainContext;
 
 /// Holds a decoder + track id prepared in advance for a gapless
 /// transition. Stored in `Shared` so the decoder thread can pick
@@ -124,6 +127,94 @@ pub(crate) struct Shared {
     /// *and* the format matches (same SR + channel count). Mutex
     /// is fine: it's contended only on track boundaries.
     pending_next: Mutex<Option<PendingNext>>,
+    /// Snapshot of every `audio.*` setting consumed by the DSP
+    /// pipeline. The decoder thread loads it lazily at chunk
+    /// boundaries (`load_full()` is a single atomic read + refcount)
+    /// and rebuilds DSP stages when [`AudioSettings::version`] has
+    /// changed since its last sync.
+    ///
+    /// Kept as a single [`ArcSwap`] (rather than per-field atomics) to
+    /// avoid bloating this struct as new audio settings land in later
+    /// phases of the spec.
+    audio_settings: ArcSwap<AudioSettings>,
+    /// Per-load context for `Pre_Gain_Stage`: ReplayGain dB and peak
+    /// from the active track's tags + the current volume slider.
+    /// Stashed by `Player::start_track` (and on volume changes); the
+    /// decoder thread (task 18) will pick it up on chunk boundaries
+    /// and forward it to `PcmChain::set_pre_gain_context`.
+    pre_gain_context: Mutex<PreGainContext>,
+    /// Bumped whenever `pre_gain_context` is replaced. Read by the
+    /// decoder thread to detect a fresh context without holding the
+    /// mutex on the hot path.
+    pub(crate) pre_gain_context_version: AtomicU32,
+    /// Last RG attenuation in dB reported by `Pre_Gain_Stage`. Lives
+    /// here (rather than on the chain) so `state()` can read it
+    /// without crossing the decoder thread. Encoded as `(db_x1000) as
+    /// i32` so it fits in a single relaxed atomic.
+    pub(crate) rg_attenuation_db_x1000: AtomicI32,
+    /// Negotiated sample rate of the output device in Hz, or `0` when
+    /// no device is open. Distinct from `sample_rate` (which tracks
+    /// the *source* SR after format negotiation): the device may run
+    /// at a different rate when the source SR was refused, in which
+    /// case the engine resamples on its way to the device.
+    pub(crate) device_sample_rate: AtomicU32,
+    /// Negotiated channel count of the output device, or `0` when no
+    /// device is open. Distinct from `channels` (which always tracks
+    /// the source) so the bit-perfect health calculator can spot an
+    /// upmix without re-running negotiation.
+    pub(crate) device_channels: AtomicU32,
+    /// Last [`BitPerfectHealth`] snapshot pushed via
+    /// [`EngineEvent::BitPerfectChanged`]. Compared on every chunk
+    /// boundary so we only emit a fresh event when the snapshot
+    /// meaningfully differs *and* at least 200 ms have elapsed since
+    /// the previous emit (R5.5 cadence + flooding guard). The mutex
+    /// is contended only at chunk boundaries (~tens of times per
+    /// second) so a `parking_lot::Mutex` is fine.
+    pub(crate) last_bit_perfect: Mutex<Option<BitPerfectHealth>>,
+    /// Wall-clock instant of the last `BitPerfectChanged` emit.
+    /// Locked together with `last_bit_perfect` so the pair stays
+    /// consistent under concurrent reads.
+    pub(crate) last_bit_perfect_emit: Mutex<Option<std::time::Instant>>,
+    /// Per-chunk snapshot of the chain's `eq_bypass`,
+    /// `convolver_off`, and `dither_bypass` flags, packed into one
+    /// atomic byte. Bit 0 = eq_bypass, bit 1 = convolver_off, bit 2
+    /// = dither_bypass. Conservative initial value `0b111` (every
+    /// stage bypassed) so an early `state()` call before the
+    /// decoder thread runs reports a clean chain.
+    pub(crate) chain_bypass_bits: AtomicU32,
+    /// Pending convolver IR for the decoder thread to apply at the
+    /// next chunk boundary (R9.2). Written by the worker thread that
+    /// loaded the WAV (`Player::load_convolver_ir`); the decoder
+    /// thread takes the value once and forwards it to
+    /// `PcmChain::set_convolver_ir`. Empty channels (`Vec::new`)
+    /// signal an explicit unload.
+    pending_ir: Mutex<Option<(Vec<f32>, Vec<f32>)>>,
+    /// Bumped whenever `pending_ir` is replaced. Read by the
+    /// decoder thread to detect a fresh IR without holding the
+    /// mutex on the hot path.
+    pub(crate) pending_ir_version: AtomicU32,
+    /// Length (in taps, per channel) of the most recently published
+    /// IR; zero when none loaded. Cached at `set_convolver_ir` time
+    /// so `state()`-style readers can compute latency without
+    /// crossing the decoder thread boundary.
+    pub(crate) convolver_ir_len: AtomicU32,
+    /// `true` while the engine is actively rendering a DSD stream
+    /// (R7.8). Set at the start of a DSD load, cleared on `Stop` /
+    /// on a PCM `Load`. Read by `Player` to gate volume / EQ /
+    /// pre-gain commands and by the decoder thread to ignore the
+    /// PCM chain.
+    pub(crate) is_dsd_active: AtomicBool,
+    /// Active DSD rate label (`"DSD64"` …). Populated when the DSD
+    /// pipeline starts emitting samples and cleared on stop / on a
+    /// PCM load. Mutex contention is limited to track boundaries.
+    pub(crate) dsd_rate_label: Mutex<Option<String>>,
+    /// Pre-render sink installed by [`CpalSharedEngine::start_pre_render`]
+    /// for the Exclusive-mode null-test branch (R11.3). When
+    /// [`PreRenderSink::is_active`] is true the decoder thread
+    /// writes its post-DSP chunks to this file *instead* of the
+    /// audio device. Always present (the sink defaults to inactive)
+    /// so the decoder thread never has to handle an `Option`.
+    pub(crate) pre_render: crate::diagnostic::pre_render::PreRenderSink,
 }
 
 impl Shared {
@@ -143,6 +234,21 @@ impl Shared {
             eq_version: AtomicU32::new(0),
             underruns: AtomicU32::new(0),
             pending_next: Mutex::new(None),
+            audio_settings: ArcSwap::from_pointee(AudioSettings::default()),
+            pre_gain_context: Mutex::new(PreGainContext::default()),
+            pre_gain_context_version: AtomicU32::new(0),
+            rg_attenuation_db_x1000: AtomicI32::new(0),
+            device_sample_rate: AtomicU32::new(0),
+            device_channels: AtomicU32::new(0),
+            last_bit_perfect: Mutex::new(None),
+            last_bit_perfect_emit: Mutex::new(None),
+            chain_bypass_bits: AtomicU32::new(0b111),
+            pending_ir: Mutex::new(None),
+            pending_ir_version: AtomicU32::new(0),
+            convolver_ir_len: AtomicU32::new(0),
+            is_dsd_active: AtomicBool::new(false),
+            dsd_rate_label: Mutex::new(None),
+            pre_render: crate::diagnostic::pre_render::PreRenderSink::new(),
         }
     }
 
@@ -152,15 +258,25 @@ impl Shared {
         self.volume_micro.load(Ordering::Relaxed) as f32 / 1_000_000.0
     }
 
-    /// Audible gain applied to samples. Quadratic taper: smoother and
-    /// more usable than linear, less aggressive than cubic.
-    /// Slider 100% -> 0 dB, 70% -> ~-6 dB, 50% -> ~-12 dB,
-    /// 30% -> ~-21 dB. Roughly matches what foobar2000 / MusicBee do
-    /// on their default volume curve.
+    /// Audible gain applied to samples. Drives the 10 ms volume ramp
+    /// in the audio callback (and the WASAPI exclusive render loop)
+    /// by translating the user's slider position through the
+    /// currently published [`AudioSettings::volume_curve`] (R4.1,
+    /// R4.4). Boundary contracts:
+    ///
+    ///   * `slider == 0.0` â†’ `0.0` (mute-exact, R4.2).
+    ///   * `slider == 1.0` â†’ `1.0` (unity-exact, R4.3 â€” the value
+    ///     the bit-perfect badge rests on).
+    ///
+    /// The ramp itself stays linear: it operates on the `target_gain`
+    /// returned here, so the curve only sets the sliderâ†’linear
+    /// mapping. The conversion is one `ArcSwap::load` + a single
+    /// `slider_to_linear` call, both branchless on the hot path.
     pub(crate) fn audible_gain(&self) -> f32 {
         let v = self.volume_micro.load(Ordering::Relaxed) as f32 / 1_000_000.0;
         let v = v.clamp(0.0, 1.0);
-        v * v
+        let settings = self.audio_settings.load();
+        crate::volume::slider_to_linear(v, settings.volume_curve, settings.volume_floor_db)
     }
 
     fn set_volume(&self, v: f32) {
@@ -187,6 +303,208 @@ impl Shared {
 
     pub(crate) fn volume_public(&self) -> f32 {
         self.volume()
+    }
+
+    /// Snapshot of the latest [`AudioSettings`] published to the DSP
+    /// pipeline. This is a single atomic load + refcount bump; cheap
+    /// enough to call at every chunk boundary in the decoder thread.
+    pub(crate) fn audio_settings(&self) -> Arc<AudioSettings> {
+        self.audio_settings.load_full()
+    }
+
+    /// Replace the published [`AudioSettings`] snapshot. Bumps
+    /// [`AudioSettings::version`] off the *currently published* value
+    /// so the decoder thread observes a strictly increasing version
+    /// even if the caller did not update it (the store layer is the
+    /// source of truth for clamping; this method only owns the version
+    /// counter).
+    pub fn set_audio_settings(&self, new: AudioSettings) {
+        let mut new = new;
+        let current_version = self.audio_settings.load().version;
+        new.version = current_version.wrapping_add(1);
+        self.audio_settings.store(Arc::new(new));
+    }
+
+    /// Replace the per-load `PreGainContext` and bump its version
+    /// counter so the decoder thread (task 18) picks it up on the
+    /// next chunk boundary.
+    pub(crate) fn set_pre_gain_context(&self, ctx: PreGainContext) {
+        *self.pre_gain_context.lock() = ctx;
+        self.pre_gain_context_version
+            .fetch_add(1, Ordering::Release);
+    }
+
+    /// Snapshot of the current pre-gain context. Cheap (one mutex
+    /// lock; the mutex is contended only on track boundaries).
+    #[allow(dead_code)] // Consumed by run_decoder_thread in task 18.
+    pub(crate) fn pre_gain_context(&self) -> PreGainContext {
+        *self.pre_gain_context.lock()
+    }
+
+    /// Last RG attenuation in dB reported by `Pre_Gain_Stage`. Returns
+    /// `None` when no track is active or the value has not been
+    /// published yet (encoded as exactly zero).
+    pub(crate) fn rg_attenuation_db(&self) -> Option<f32> {
+        let raw = self.rg_attenuation_db_x1000.load(Ordering::Relaxed);
+        if raw == 0 {
+            None
+        } else {
+            Some(raw as f32 / 1000.0)
+        }
+    }
+
+    /// Setter used by the decoder thread (task 18) after computing a
+    /// new pre-gain. `db = 0.0` is encoded as the "no attenuation"
+    /// sentinel (it is also the value when the demanded gain fit).
+    #[allow(dead_code)] // Wired up by run_decoder_thread in task 18.
+    pub(crate) fn set_rg_attenuation_db(&self, db: f32) {
+        let raw = (db * 1000.0).round() as i32;
+        self.rg_attenuation_db_x1000.store(raw, Ordering::Relaxed);
+    }
+
+    /// Negotiated device sample rate in Hz, or `None` if no device is
+    /// currently open. Read by [`BitPerfectHealth::compute`] in
+    /// `state()` to detect a hidden double-resample (R5.3).
+    pub(crate) fn device_sample_rate(&self) -> Option<u32> {
+        match self.device_sample_rate.load(Ordering::Relaxed) {
+            0 => None,
+            v => Some(v),
+        }
+    }
+
+    /// Negotiated device channel count, or `None` if no device is
+    /// open. Used by `BitPerfectHealth` to spot an upmix.
+    pub(crate) fn device_channels(&self) -> Option<u16> {
+        match self.device_channels.load(Ordering::Relaxed) {
+            0 => None,
+            v => Some(v as u16),
+        }
+    }
+
+    /// Setter used when negotiating the output stream. Pass `0` for
+    /// `sr` and `ch` on stop / on a failed open so the snapshot
+    /// reverts to "no device".
+    pub(crate) fn set_device_format(&self, sr: u32, ch: u16) {
+        self.device_sample_rate.store(sr, Ordering::Relaxed);
+        self.device_channels.store(ch as u32, Ordering::Relaxed);
+    }
+
+    /// Decide whether a new [`BitPerfectHealth`] snapshot should be
+    /// published as [`EngineEvent::BitPerfectChanged`]: emit only when
+    /// the snapshot meaningfully differs from the last one *and* at
+    /// least 200 ms have elapsed since the previous emit (R5 debounce
+    /// guard against slider drag flooding).
+    ///
+    /// Returns `true` when the caller should emit; on `true` the
+    /// internal "last" snapshot + timestamp are updated atomically so
+    /// the next call sees the new state.
+    pub(crate) fn should_emit_bit_perfect(&self, candidate: &BitPerfectHealth) -> bool {
+        const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
+
+        let mut last = self.last_bit_perfect.lock();
+        let mut last_emit = self.last_bit_perfect_emit.lock();
+
+        // First emit (no prior snapshot): always publish so the UI
+        // sees an initial state without waiting for a flag flip.
+        let same_as_last = matches!(&*last, Some(prev) if prev == candidate);
+        if same_as_last {
+            return false;
+        }
+        if let Some(prev_at) = *last_emit {
+            if prev_at.elapsed() < DEBOUNCE {
+                return false;
+            }
+        }
+
+        *last = Some(candidate.clone());
+        *last_emit = Some(std::time::Instant::now());
+        true
+    }
+
+    /// Reset the bit-perfect debounce state. Called on `Stop` so the
+    /// next track's first snapshot is always emitted (no leftover
+    /// timestamp from the previous session can suppress it).
+    pub(crate) fn reset_bit_perfect_debounce(&self) {
+        *self.last_bit_perfect.lock() = None;
+        *self.last_bit_perfect_emit.lock() = None;
+    }
+
+    /// Snapshot the chain bypass flags into the packed atomic byte.
+    /// Called by the decoder thread on each chunk boundary so
+    /// `state()` (called from any thread) can read a coherent view
+    /// without crossing the chain boundary.
+    pub(crate) fn set_chain_bypass(
+        &self,
+        eq_bypass: bool,
+        convolver_off: bool,
+        dither_bypass: bool,
+    ) {
+        let bits = (eq_bypass as u32)
+            | ((convolver_off as u32) << 1)
+            | ((dither_bypass as u32) << 2);
+        self.chain_bypass_bits.store(bits, Ordering::Relaxed);
+    }
+
+    /// Snapshot of the chain's `eq_bypass`, `convolver_off`,
+    /// `dither_bypass` flags. Returns the conservative `(true, true,
+    /// true)` triple before the decoder thread has run.
+    pub(crate) fn chain_bypass(&self) -> (bool, bool, bool) {
+        let bits = self.chain_bypass_bits.load(Ordering::Relaxed);
+        (
+            (bits & 0b001) != 0,
+            (bits & 0b010) != 0,
+            (bits & 0b100) != 0,
+        )
+    }
+
+    /// Stash a new convolver IR for the decoder thread to apply at
+    /// the next chunk boundary (R9.2). Empty channels signal an
+    /// explicit unload â€” the convolver stage falls back to bypass.
+    /// Caller is the worker thread that decoded + resampled the WAV
+    /// (typically `Player::load_convolver_ir`).
+    pub(crate) fn set_convolver_ir(&self, ir_l: Vec<f32>, ir_r: Vec<f32>) {
+        // Cache the per-channel length so `state()` can report
+        // latency without crossing the decoder thread boundary.
+        let len = ir_l.len().min(ir_r.len()) as u32;
+        self.convolver_ir_len.store(len, Ordering::Relaxed);
+        *self.pending_ir.lock() = Some((ir_l, ir_r));
+        self.pending_ir_version.fetch_add(1, Ordering::Release);
+    }
+
+    /// Take the latest pending IR, if any. Called by the decoder
+    /// thread on chunk boundaries when `pending_ir_version` has
+    /// changed since the previous iteration.
+    pub(crate) fn take_pending_ir(&self) -> Option<(Vec<f32>, Vec<f32>)> {
+        self.pending_ir.lock().take()
+    }
+
+    /// Length of the active convolver IR in taps; zero when none
+    /// loaded. Consumed by `commands::get_convolver_status` to
+    /// compute the reported latency.
+    pub fn convolver_ir_len(&self) -> usize {
+        self.convolver_ir_len.load(Ordering::Relaxed) as usize
+    }
+
+    // ---- DSD pipeline state (R7.7 / R7.8) ----
+
+    /// Mark the engine as actively rendering DSD. Read by the
+    /// orchestrator (`Player`) to gate volume / EQ / pre-gain
+    /// commands while DSD is playing.
+    pub(crate) fn set_dsd_active(&self, active: bool, label: Option<&str>) {
+        self.is_dsd_active.store(active, Ordering::Release);
+        *self.dsd_rate_label.lock() = label.map(|s| s.to_string());
+    }
+
+    /// Whether the DSD pipeline is currently active.
+    pub fn is_dsd_active(&self) -> bool {
+        self.is_dsd_active.load(Ordering::Acquire)
+    }
+
+    /// Active DSD rate label (`"DSD64"`, ...) or `None` for PCM /
+    /// idle. Surfaced through `PlayerState::dsd_rate_label`
+    /// (R7.7).
+    pub(crate) fn dsd_rate_label(&self) -> Option<String> {
+        self.dsd_rate_label.lock().clone()
     }
 }
 
@@ -262,13 +580,58 @@ impl CpalSharedEngine {
             .map_err(|_| EngineError::Internal("worker thread is gone".into()))
     }
 
+    /// Activate pre-render mode for the null-test diagnostic
+    /// (R11.3, Exclusive branch). The decoder thread routes its
+    /// post-DSP chunks to `output_wav` (RIFF, 24-bit, the source's
+    /// native SR) instead of the audio device. Mutually exclusive
+    /// with normal device playback: returns
+    /// [`EngineError::InvalidState`] when a track is already loaded
+    /// and the audio callback is active.
+    ///
+    /// Caller workflow:
+    ///   1. `engine.start_pre_render(&source, &output_wav, sr, ch)?;`
+    ///   2. `engine.load(&source)?;`
+    ///   3. `engine.play()?;`
+    ///   4. wait for [`EngineEvent::EndOfTrack`].
+    ///   5. `engine.finalise_pre_render()?;`
+    pub fn start_pre_render(
+        &self,
+        output_wav: &Path,
+        sample_rate: u32,
+        channels: u16,
+    ) -> EngineResult<()> {
+        if !matches!(*self.status.lock(), PlaybackStatus::Idle | PlaybackStatus::Stopped) {
+            return Err(EngineError::InvalidState(
+                "pre-render requires the engine to be idle (no track loaded)",
+            ));
+        }
+        crate::diagnostic::pre_render::open_pre_render(
+            &self.shared.pre_render,
+            output_wav,
+            sample_rate,
+            channels,
+        )
+    }
+
+    /// Close the active pre-render session: flush, patch the RIFF
+    /// header sizes, drop the writer. Idempotent — safe to call when
+    /// no session is active.
+    pub fn finalise_pre_render(&self) -> EngineResult<()> {
+        crate::diagnostic::pre_render::finalise_pre_render(&self.shared.pre_render)
+    }
+
+    /// Whether a pre-render session is currently in flight.
+    pub fn is_pre_render_active(&self) -> bool {
+        self.shared.pre_render.is_active()
+    }
+
     /// Used by the orchestration layer to tag the currently loaded track.
     pub fn set_current_track_id(&self, id: Option<String>) {
         *self.current_track.lock() = id;
     }
 
     /// Pick the output device by its CPAL name. Pass `None` to revert
-    /// to the system default. The change applies to the *next* track —
+    /// to the system default. The change applies to the *next* track â€”
     /// the currently playing stream is not interrupted.
     pub fn set_output_device(&self, device_id: Option<String>) {
         *self.selected_device.lock() = device_id;
@@ -403,7 +766,7 @@ impl AudioEngine for CpalSharedEngine {
         let _ = requested; // OutputMode is currently informational only
         let output_mode = EffectiveOutputMode::Shared;
 
-        PlayerState {
+        let mut state = PlayerState {
             status,
             current_track_id,
             position_seconds: self.shared.position_ms.load(Ordering::Relaxed) as f64 / 1000.0,
@@ -415,8 +778,14 @@ impl AudioEngine for CpalSharedEngine {
             channels,
             // Shared (CPAL/WASAPI shared) is never bit-perfect.
             is_bit_perfect: false,
+            rg_attenuation_db: self.shared.rg_attenuation_db(),
+            bit_perfect: None,
+            dsd_rate_label: self.shared.dsd_rate_label(),
+            is_dsd: self.shared.is_dsd_active(),
             error,
-        }
+        };
+        state.bit_perfect = build_bit_perfect_health(&self.shared, &state);
+        state
     }
 
     fn subscribe_events(&self) -> Receiver<EngineEvent> {
@@ -445,6 +814,25 @@ impl AudioEngine for CpalSharedEngine {
 
     fn selected_device(&self) -> Option<String> {
         Self::selected_device(self)
+    }
+
+    fn set_audio_settings(&self, settings: AudioSettings) {
+        self.shared.set_audio_settings(settings);
+        let _ = self.event_tx.try_send(EngineEvent::StateChanged {
+            state: self.state(),
+        });
+    }
+
+    fn set_pre_gain_context(&self, ctx: PreGainContext) {
+        self.shared.set_pre_gain_context(ctx);
+    }
+
+    fn set_convolver_ir(&self, ir_left: Vec<f32>, ir_right: Vec<f32>) {
+        self.shared.set_convolver_ir(ir_left, ir_right);
+    }
+
+    fn convolver_ir_len(&self) -> usize {
+        self.shared.convolver_ir_len()
     }
 
     fn prepare_next(&self, path: &Path, track_id: Option<String>) -> EngineResult<()> {
@@ -507,7 +895,7 @@ fn run_worker(ctx: WorkerCtx) {
                 }
             }
             Command::PrepareNext { path, track_id } => {
-                // Only prepare while something is actively playing —
+                // Only prepare while something is actively playing â€”
                 // otherwise the orchestrator should call Load.
                 if active.is_none() {
                     tracing::debug!(
@@ -518,10 +906,28 @@ fn run_worker(ctx: WorkerCtx) {
                 }
                 let cur_sr = ctx.shared.sample_rate.load(Ordering::Relaxed);
                 let cur_ch = ctx.shared.channels.load(Ordering::Relaxed) as u16;
+                let cur_bd = ctx.shared.bit_depth.load(Ordering::Relaxed) as u8;
+                let cur_is_dsd = ctx.shared.is_dsd_active();
+                let cur_dsd_rate = crate::DsdRate::from_hz_bits(cur_sr, cur_bd);
                 match SymphoniaDecoder::open(&path) {
                     Ok(decoder) => {
                         let fmt = decoder.format();
-                        if fmt.sample_rate == cur_sr && fmt.channels == cur_ch {
+                        let next_dsd_rate = crate::DsdRate::from_hz_bits(
+                            fmt.sample_rate,
+                            fmt.bit_depth.unwrap_or(0),
+                        );
+                        let next_is_dsd = next_dsd_rate.is_some();
+                        // R7 acceptance #5: gapless is impossible
+                        // across DSD/PCM boundaries and across DSD
+                        // rate changes (DSD64 → DSD128, …).
+                        let dsd_pcm_change = cur_is_dsd != next_is_dsd;
+                        let dsd_rate_change =
+                            cur_is_dsd && next_is_dsd && cur_dsd_rate != next_dsd_rate;
+                        if !dsd_pcm_change
+                            && !dsd_rate_change
+                            && fmt.sample_rate == cur_sr
+                            && fmt.channels == cur_ch
+                        {
                             *ctx.shared.pending_next.lock() = Some(PendingNext {
                                 duration_seconds: decoder.duration_seconds(),
                                 decoder,
@@ -535,18 +941,15 @@ fn run_worker(ctx: WorkerCtx) {
                                 "next track prepared for gapless transition"
                             );
                         } else {
-                            // Format mismatch: drop the prepared decoder
-                            // and let the standard EOT → Load path
-                            // handle the boundary. There will be a
-                            // small audible gap; that's the trade-off
-                            // for a sample-rate change.
                             tracing::info!(
                                 target: "qobee::engine",
                                 cur_sr,
                                 cur_ch,
+                                cur_is_dsd,
                                 next_sr = fmt.sample_rate,
                                 next_ch = fmt.channels,
-                                "prepare_next: format change; cannot do gapless"
+                                next_is_dsd,
+                                "format change: gapless impossible"
                             );
                         }
                     }
@@ -607,6 +1010,8 @@ fn run_worker(ctx: WorkerCtx) {
                 ctx.shared.sample_rate.store(0, Ordering::Relaxed);
                 ctx.shared.channels.store(0, Ordering::Relaxed);
                 ctx.shared.bit_depth.store(0, Ordering::Relaxed);
+                ctx.shared.set_device_format(0, 0);
+                ctx.shared.reset_bit_perfect_debounce();
                 ctx.shared.pending_seek_ms.store(-1, Ordering::Release);
                 ctx.shared.drain_ring.store(false, Ordering::Release);
                 *ctx.shared.pending_next.lock() = None;
@@ -673,7 +1078,7 @@ fn snapshot_state(ctx: &WorkerCtx) -> PlayerState {
     let _ = requested;
     let output_mode = EffectiveOutputMode::Shared;
 
-    PlayerState {
+    let mut state = PlayerState {
         status,
         current_track_id,
         position_seconds: ctx.shared.position_ms.load(Ordering::Relaxed) as f64 / 1000.0,
@@ -684,8 +1089,14 @@ fn snapshot_state(ctx: &WorkerCtx) -> PlayerState {
         bit_depth,
         channels,
         is_bit_perfect: false,
+        rg_attenuation_db: ctx.shared.rg_attenuation_db(),
+        bit_perfect: None,
+        dsd_rate_label: ctx.shared.dsd_rate_label(),
+        is_dsd: ctx.shared.is_dsd_active(),
         error,
-    }
+    };
+    state.bit_perfect = build_bit_perfect_health(&ctx.shared, &state);
+    state
 }
 
 fn stop_active(active: ActiveStream) {
@@ -793,6 +1204,11 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
 
     let device_channels = stream_config.channels;
 
+    // Publish the negotiated device format so `state()` can build a
+    // [`BitPerfectHealth`] snapshot from a single atomic read.
+    ctx.shared.set_device_format(device_sample_rate, device_channels);
+    ctx.shared.reset_bit_perfect_debounce();
+
     let (producer, consumer) = RingBuffer::<f32>::new(RING_CAPACITY_SAMPLES);
 
     let decoder_alive = Arc::new(AtomicBool::new(true));
@@ -879,6 +1295,45 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
     })
 }
 
+/// Build the rubato `SincInterpolationParameters` block for the
+/// requested [`ResamplerQuality`]. The `Best` preset preserves the
+/// historical configuration (`sinc_len = 256`, `oversampling = 256`,
+/// cubic interpolation, BlackmanHarrisÂ²) and is the default that
+/// Properties 15â€“16 measure at â‰¥ 140 dB SNR. The `Standard` preset
+/// drops both `sinc_len` and `oversampling_factor` to 128 and uses
+/// linear interpolation, trading the last few dB of SNR for ~1/4
+/// the CPU; Properties 15â€“16 require it to stay â‰¥ 120 dB SNR.
+///
+/// The preset applies to the *next* track because the resampler is
+/// instantiated once per `run_decoder_thread` call (R8.2). Mid-stream
+/// changes to `audio.resampler_quality` therefore take effect at the
+/// following `Load`.
+///
+/// Exposed publicly so the integration tests in
+/// `tests/properties/resampler.rs` can reuse the exact same params
+/// the engine ships with.
+pub fn sinc_params_for(
+    quality: ResamplerQuality,
+) -> rubato::SincInterpolationParameters {
+    use rubato::{SincInterpolationParameters, SincInterpolationType, WindowFunction};
+    match quality {
+        ResamplerQuality::Standard => SincInterpolationParameters {
+            sinc_len: 128,
+            f_cutoff: 0.95,
+            oversampling_factor: 128,
+            interpolation: SincInterpolationType::Linear,
+            window: WindowFunction::BlackmanHarris2,
+        },
+        ResamplerQuality::Best => SincInterpolationParameters {
+            sinc_len: 256,
+            f_cutoff: 0.95,
+            oversampling_factor: 256,
+            interpolation: SincInterpolationType::Cubic,
+            window: WindowFunction::BlackmanHarris2,
+        },
+    }
+}
+
 pub(crate) fn run_decoder_thread(
     mut decoder: SymphoniaDecoder,
     mut producer: Producer<f32>,
@@ -891,10 +1346,7 @@ pub(crate) fn run_decoder_thread(
     dst_sample_rate: u32,
     effective_mode: EffectiveOutputMode,
 ) {
-    use rubato::{
-        Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType,
-        WindowFunction,
-    };
+    use rubato::{Resampler, SincFixedIn};
 
     let need_resample = src_sample_rate != dst_sample_rate;
     let n_ch = channels as usize;
@@ -902,25 +1354,35 @@ pub(crate) fn run_decoder_thread(
     // Per-track sinc resampler (windowed-sinc, asynchronous, fixed-input).
     // Higher quality than FFT for music: cleaner transients, less
     // pre-ringing. CPU cost is negligible on a modern PC.
+    //
+    // The `audio.resampler_quality` setting is read once at decoder
+    // start (R8.2 â€” the preset applies to the *next* track, not
+    // mid-stream): instantiating a `SincFixedIn` reallocates the
+    // entire FIR table and would tear an in-flight chunk if swapped
+    // hot.
     let chunk_size_in: usize = 1024;
-    let sinc_params = SincInterpolationParameters {
-        sinc_len: 256,
-        f_cutoff: 0.95,
-        oversampling_factor: 256,
-        interpolation: SincInterpolationType::Cubic,
-        window: WindowFunction::BlackmanHarris2,
-    };
+    let quality = shared.audio_settings().resampler_quality;
+    let sinc_params = sinc_params_for(quality);
+    let sinc_len_log = sinc_params.sinc_len;
+    let oversampling_log = sinc_params.oversampling_factor;
     let mut resampler: Option<SincFixedIn<f32>> = if need_resample {
         let ratio = dst_sample_rate as f64 / src_sample_rate as f64;
         match SincFixedIn::<f32>::new(ratio, 1.1, sinc_params, chunk_size_in, n_ch) {
             Ok(r) => {
                 tracing::info!(
                     target: "qobee::engine",
+                    quality = ?quality,
+                    sinc_len = sinc_len_log,
+                    oversampling = oversampling_log,
+                    "resampler params"
+                );
+                tracing::info!(
+                    target: "qobee::engine",
                     src_sr = src_sample_rate,
                     dst_sr = dst_sample_rate,
                     channels = n_ch,
-                    sinc_len = 256,
-                    oversampling = 256,
+                    sinc_len = sinc_len_log,
+                    oversampling = oversampling_log,
                     "resampling source to device rate (sinc, BlackmanHarris2)"
                 );
                 Some(r)
@@ -964,6 +1426,47 @@ pub(crate) fn run_decoder_thread(
         }
     };
 
+    // Assemble the PCM DSP chain. The legacy `eq` above stays inline
+    // for now because the chain's EQ slot is a `NoopEq` placeholder
+    // (a future task will move the equaliser into `PcmChain`). Every
+    // other stage â€” pre-gain, balance, crossfeed, limiter, dither â€”
+    // lives in the chain, so `chain.process` replaces the inline
+    // `pre_gain *=` multiply that used to live in this thread.
+    let chain_sample_rate = if need_resample {
+        dst_sample_rate
+    } else {
+        src_sample_rate
+    };
+    let mut pcm_chain = {
+        let initial_settings = shared.audio_settings();
+        let mut chain = crate::dsp::PcmChain::new(
+            &initial_settings,
+            chain_sample_rate,
+            channels,
+        );
+        let initial_bit_depth = match shared.bit_depth.load(Ordering::Relaxed) {
+            0 => None,
+            v => Some(v as u8),
+        };
+        chain.set_dither_output_bits(initial_bit_depth);
+        // Volume is applied by the audio callback's gain ramp via
+        // `Shared::audible_gain`, which now reads the configured
+        // `volume_curve` + `volume_floor_db` (task 22). Force the
+        // pre-gain stage's slider to unity so the user's slider
+        // position is never multiplied twice. The chain still applies
+        // ReplayGain + true-peak protection + mute-exact at slider = 0
+        // through `set_pre_gain_context`.
+        let mut ctx = shared.pre_gain_context();
+        ctx.slider = 1.0;
+        chain.set_pre_gain_context(ctx);
+        shared.set_rg_attenuation_db(chain.pre_gain_attenuation_db());
+        chain
+    };
+    let mut last_pre_gain_ctx_version =
+        shared.pre_gain_context_version.load(Ordering::Acquire);
+    let mut last_seen_bit_depth: u32 = shared.bit_depth.load(Ordering::Relaxed);
+    let mut last_pending_ir_version = shared.pending_ir_version.load(Ordering::Acquire);
+
     // Underrun watcher: every ~1s we look at the audio-callback's
     // underrun counter and emit a single throttled warning if it grew.
     // The audio callback never blocks here; this is a passive observer.
@@ -973,6 +1476,104 @@ pub(crate) fn run_decoder_thread(
     loop {
         if !alive.load(Ordering::Acquire) {
             return;
+        }
+
+        // Re-check the published `AudioSettings` snapshot at every
+        // chunk boundary. A single atomic load + version compare; we
+        // only observe a change at chunk boundaries so DSP rebuilds
+        // never tear an in-flight chunk.
+        let cur_settings = shared.audio_settings();
+        if cur_settings.version != pcm_chain.settings_version() {
+            pcm_chain.reconfigure(&cur_settings, chain_sample_rate, channels);
+            tracing::trace!(
+                target: "qobee::engine",
+                version = cur_settings.version,
+                "PcmChain reconfigured from new AudioSettings snapshot"
+            );
+        }
+
+        // Publish the chain's bypass triple so `state()` (called
+        // from any thread) can build a coherent BitPerfectHealth
+        // snapshot, and emit a `BitPerfectChanged` event when one of
+        // the flags has actually moved (debounced 200 ms inside
+        // `should_emit_bit_perfect`).
+        let bypass = pcm_chain.bypass_snapshot();
+        shared.set_chain_bypass(bypass.eq_bypass, bypass.convolver_off, bypass.dither_bypass);
+
+        // Build a transient `PlayerState` carrying just the inputs
+        // `BitPerfectHealth::compute` needs. We do not push this
+        // through the event channel (the existing `StateChanged`
+        // path already covers that); only the dedicated bit-perfect
+        // event is debounced separately.
+        let bp_state = PlayerState {
+            status: *status.lock(),
+            current_track_id: None,
+            position_seconds: 0.0,
+            duration_seconds: 0.0,
+            volume: shared.volume(),
+            output_mode: effective_mode,
+            sample_rate: match shared.sample_rate.load(Ordering::Relaxed) {
+                0 => None,
+                v => Some(v),
+            },
+            bit_depth: match shared.bit_depth.load(Ordering::Relaxed) {
+                0 => None,
+                v => Some(v as u8),
+            },
+            channels: match shared.channels.load(Ordering::Relaxed) {
+                0 => None,
+                v => Some(v as u16),
+            },
+            is_bit_perfect: false,
+            rg_attenuation_db: shared.rg_attenuation_db(),
+            bit_perfect: None,
+            dsd_rate_label: None,
+            is_dsd: shared.is_dsd_active(),
+            error: None,
+        };
+        if let Some(health) = build_bit_perfect_health(&shared, &bp_state) {
+            if shared.should_emit_bit_perfect(&health) {
+                let _ = event_tx.try_send(EngineEvent::BitPerfectChanged { health });
+            }
+        }
+
+        // Pick up a new pre-gain context (RG dB/peak from the loaded
+        // track + slider) when the orchestrator publishes one. Force
+        // the slider to unity â€” see `pcm_chain` construction comment.
+        let cur_ctx_v = shared.pre_gain_context_version.load(Ordering::Acquire);
+        if cur_ctx_v != last_pre_gain_ctx_version {
+            let mut ctx = shared.pre_gain_context();
+            ctx.slider = 1.0;
+            pcm_chain.set_pre_gain_context(ctx);
+            shared.set_rg_attenuation_db(pcm_chain.pre_gain_attenuation_db());
+            last_pre_gain_ctx_version = cur_ctx_v;
+        }
+
+        // Forward the negotiated output bit-depth to the dither stage
+        // when it changes. CPAL Shared does not renegotiate mid-track
+        // today, but the read is cheap and keeps the stage in sync if
+        // a future backend ever pushes a new value.
+        let cur_bit_depth_raw = shared.bit_depth.load(Ordering::Relaxed);
+        if cur_bit_depth_raw != last_seen_bit_depth {
+            let bits = if cur_bit_depth_raw == 0 {
+                None
+            } else {
+                Some(cur_bit_depth_raw as u8)
+            };
+            pcm_chain.set_dither_output_bits(bits);
+            last_seen_bit_depth = cur_bit_depth_raw;
+        }
+
+        // Pick up a freshly-loaded convolver IR (R9.2). The worker
+        // thread that decoded the WAV stashed it on `Shared` and
+        // bumped `pending_ir_version`; we take it once and forward it
+        // to the chain. Empty channels signal an explicit unload.
+        let cur_ir_v = shared.pending_ir_version.load(Ordering::Acquire);
+        if cur_ir_v != last_pending_ir_version {
+            if let Some((ir_l, ir_r)) = shared.take_pending_ir() {
+                pcm_chain.set_convolver_ir(ir_l, ir_r);
+            }
+            last_pending_ir_version = cur_ir_v;
         }
 
         if last_underrun_check.elapsed() >= Duration::from_millis(1000) {
@@ -1016,6 +1617,7 @@ pub(crate) fn run_decoder_thread(
                 r.reset();
             }
             eq.reset_state();
+            pcm_chain.reset();
             shared.pending_seek_ms.store(-1, Ordering::Release);
             shared.drain_ring.store(false, Ordering::Release);
         }
@@ -1038,7 +1640,11 @@ pub(crate) fn run_decoder_thread(
                 };
 
                 shared.position_ms.store(
-                    (packet.timestamp_seconds * 1000.0) as u32,
+                    position_ms_with_latency(
+                        packet.timestamp_seconds,
+                        pcm_chain.limiter_lookahead_samples(),
+                        chain_sample_rate,
+                    ),
                     Ordering::Relaxed,
                 );
                 let _ = event_tx.try_send(EngineEvent::Position {
@@ -1064,8 +1670,13 @@ pub(crate) fn run_decoder_thread(
                         match r.process_into_buffer(&input_slices, &mut output_buffer, None) {
                             Ok((_in_frames, out_frames)) => {
                                 // Interleave the resampled output and
-                                // run it through the EQ before handing
-                                // it to the audio callback.
+                                // run it through the legacy EQ + the
+                                // PcmChain (pre-gain â†’ balance â†’
+                                // crossfeed â†’ noop EQ â†’ noop convolver
+                                // â†’ limiter â†’ dither). The legacy EQ
+                                // call survives until a future task
+                                // moves the equaliser into the chain's
+                                // EQ slot.
                                 let mut interleaved: Vec<f32> =
                                     Vec::with_capacity(out_frames * n_ch);
                                 for f in 0..out_frames {
@@ -1073,15 +1684,10 @@ pub(crate) fn run_decoder_thread(
                                         interleaved.push(output_buffer[c][f]);
                                     }
                                 }
-                                let pg = shared.pre_gain();
-                                if (pg - 1.0).abs() > 1e-4 {
-                                    for s in interleaved.iter_mut() {
-                                        *s *= pg;
-                                    }
-                                }
                                 sync_eq(&mut eq, &mut eq_seen_version, &shared);
                                 eq.process_inplace(&mut interleaved);
-                                push_interleaved_to_ring(&interleaved, &mut producer, &alive);
+                                pcm_chain.process(&mut interleaved);
+                                dispatch_post_dsp(&interleaved, &mut producer, &alive, &shared);
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -1098,17 +1704,16 @@ pub(crate) fn run_decoder_thread(
                         }
                     }
                 } else {
-                    // Same rate: pre-gain (ReplayGain), EQ, then push.
+                    // Same rate: legacy EQ + PcmChain (pre-gain â†’
+                    // balance â†’ crossfeed â†’ noop EQ â†’ noop convolver
+                    // â†’ limiter â†’ dither). The chain's pre-gain stage
+                    // owns the ReplayGain multiply that used to live
+                    // inline here.
                     let mut buf = samples;
-                    let pg = shared.pre_gain();
-                    if (pg - 1.0).abs() > 1e-4 {
-                        for s in buf.iter_mut() {
-                            *s *= pg;
-                        }
-                    }
                     sync_eq(&mut eq, &mut eq_seen_version, &shared);
                     eq.process_inplace(&mut buf);
-                    push_interleaved_to_ring(&buf, &mut producer, &alive);
+                    pcm_chain.process(&mut buf);
+                    dispatch_post_dsp(&buf, &mut producer, &alive, &shared);
                 }
             }
             Ok(None) => {
@@ -1147,20 +1752,26 @@ pub(crate) fn run_decoder_thread(
                         // track. The orchestrator will overwrite
                         // `current_track_id` with what it expects, so
                         // we use what was passed by `prepare_next`.
+                        let mut new_state = PlayerState {
+                            status: *status.lock(),
+                            current_track_id: new_track_id,
+                            position_seconds: 0.0,
+                            duration_seconds: new_dur,
+                            volume: shared.volume(),
+                            output_mode: effective_mode,
+                            sample_rate: Some(new_sr),
+                            bit_depth: new_bd,
+                            channels: Some(new_ch),
+                            is_bit_perfect: false,
+                            rg_attenuation_db: shared.rg_attenuation_db(),
+                            bit_perfect: None,
+                            dsd_rate_label: None,
+                            is_dsd: shared.is_dsd_active(),
+                            error: None,
+                        };
+                        new_state.bit_perfect = build_bit_perfect_health(&shared, &new_state);
                         let _ = event_tx.try_send(EngineEvent::StateChanged {
-                            state: PlayerState {
-                                status: *status.lock(),
-                                current_track_id: new_track_id,
-                                position_seconds: 0.0,
-                                duration_seconds: new_dur,
-                                volume: shared.volume(),
-                                output_mode: effective_mode,
-                                sample_rate: Some(new_sr),
-                                bit_depth: new_bd,
-                                channels: Some(new_ch),
-                                is_bit_perfect: false,
-                                error: None,
-                            },
+                            state: new_state,
                         });
 
                         tracing::info!(
@@ -1168,9 +1779,11 @@ pub(crate) fn run_decoder_thread(
                             "gapless transition completed"
                         );
                         // Continue the loop with the new decoder. The
-                        // resampler / EQ / pre-gain / volume ramp all
-                        // keep their state; the next packet is fed
-                        // straight in.
+                        // resampler / legacy EQ / PcmChain (pre-gain,
+                        // balance, crossfeed, limiter delay-line,
+                        // dither PRNG + shaping history) all keep
+                        // their state so the listener hears one
+                        // continuous signal across the boundary.
                         continue;
                     } else {
                         tracing::warn!(
@@ -1200,15 +1813,10 @@ pub(crate) fn run_decoder_thread(
                                     interleaved.push(output_buffer[c][f]);
                                 }
                             }
-                            let pg = shared.pre_gain();
-                            if (pg - 1.0).abs() > 1e-4 {
-                                for s in interleaved.iter_mut() {
-                                    *s *= pg;
-                                }
-                            }
                             sync_eq(&mut eq, &mut eq_seen_version, &shared);
                             eq.process_inplace(&mut interleaved);
-                            push_interleaved_to_ring(&interleaved, &mut producer, &alive);
+                            pcm_chain.process(&mut interleaved);
+                            dispatch_post_dsp(&interleaved, &mut producer, &alive, &shared);
                         }
                     }
                     if let Ok(out) = r.process_partial::<&[f32]>(None, None) {
@@ -1221,17 +1829,25 @@ pub(crate) fn run_decoder_thread(
                                         .push(out.get(c).and_then(|v| v.get(f).copied()).unwrap_or(0.0));
                                 }
                             }
-                            let pg = shared.pre_gain();
-                            if (pg - 1.0).abs() > 1e-4 {
-                                for s in interleaved.iter_mut() {
-                                    *s *= pg;
-                                }
-                            }
                             sync_eq(&mut eq, &mut eq_seen_version, &shared);
                             eq.process_inplace(&mut interleaved);
-                            push_interleaved_to_ring(&interleaved, &mut producer, &alive);
+                            pcm_chain.process(&mut interleaved);
+                            dispatch_post_dsp(&interleaved, &mut producer, &alive, &shared);
                         }
                     }
+                }
+
+                // Drain the limiter look-ahead buffer with silence so
+                // the last `lookahead_samples` of real audio still
+                // reach the device before we emit `EndOfTrack` (R3
+                // EOT-flush requirement). When the limiter is `Off`
+                // or in `SoftClip` mode this loop is a no-op because
+                // `limiter_lookahead_samples()` returns zero.
+                let look = pcm_chain.limiter_lookahead_samples();
+                if look > 0 {
+                    let mut tail = vec![0.0_f32; look * n_ch];
+                    pcm_chain.process(&mut tail);
+                    dispatch_post_dsp(&tail, &mut producer, &alive, &shared);
                 }
 
                 let _ = event_tx.try_send(EngineEvent::EndOfTrack);
@@ -1250,6 +1866,10 @@ pub(crate) fn run_decoder_thread(
                         bit_depth: None,
                         channels: None,
                         is_bit_perfect: false,
+                        rg_attenuation_db: None,
+                        bit_perfect: None,
+                        dsd_rate_label: None,
+                        is_dsd: false,
                         error: None,
                     },
                 });
@@ -1265,6 +1885,65 @@ pub(crate) fn run_decoder_thread(
             }
         }
     }
+}
+
+/// Reduce `timestamp_seconds` (the demuxer's pre-DSP timestamp) by
+/// the limiter's look-ahead so the position the UI displays matches
+/// what is *audible* at this moment. Returns milliseconds, never
+/// underflows below zero.
+fn position_ms_with_latency(
+    timestamp_seconds: f64,
+    lookahead_samples: usize,
+    sample_rate: u32,
+) -> u32 {
+    if lookahead_samples == 0 || sample_rate == 0 {
+        return (timestamp_seconds * 1000.0).max(0.0) as u32;
+    }
+    let lookahead_seconds = lookahead_samples as f64 / sample_rate as f64;
+    let adjusted = (timestamp_seconds - lookahead_seconds).max(0.0);
+    (adjusted * 1000.0) as u32
+}
+
+/// Aggregate the chain state into a [`BitPerfectHealth`] snapshot
+/// for the supplied [`PlayerState`]. Returns `None` when no device
+/// is currently open (`device_sample_rate` and `device_channels`
+/// both zero), so the wire format stays compact while idle.
+///
+/// Pulls from:
+///   * `state` for source SR/bit depth/channels and effective mode,
+///   * [`Shared::audio_settings`] for the per-stage settings flags
+///     (crossfeed / limiter / balance â€” read directly by
+///     [`BitPerfectHealth::compute`]),
+///   * [`Shared::chain_bypass`] for the per-stage bypass triple
+///     `(eq_bypass, convolver_off, dither_bypass)` published by the
+///     decoder thread on each chunk boundary,
+///   * [`Shared::device_sample_rate`] / [`Shared::device_channels`]
+///     for the negotiated output format.
+pub(crate) fn build_bit_perfect_health(
+    shared: &Shared,
+    state: &PlayerState,
+) -> Option<BitPerfectHealth> {
+    let device_sr = shared.device_sample_rate();
+    let device_ch = shared.device_channels();
+    // No device open â†’ no health to report. The UI hides the
+    // device-side block in that case anyway (R5.7).
+    if device_sr.is_none() && device_ch.is_none() {
+        return None;
+    }
+    let settings = shared.audio_settings();
+    let (eq_bypass, convolver_off, dither_bypass) = shared.chain_bypass();
+    let src_ch = state.channels.unwrap_or(0);
+    let device_ch = device_ch.unwrap_or(0);
+    Some(BitPerfectHealth::compute(
+        state,
+        &settings,
+        device_sr,
+        src_ch,
+        device_ch,
+        eq_bypass,
+        convolver_off,
+        dither_bypass,
+    ))
 }
 
 /// Deinterleave `samples` (which is interleaved `n_ch` channels) into
@@ -1295,6 +1974,24 @@ fn push_interleaved_to_ring(samples: &[f32], producer: &mut Producer<f32>, alive
             let _ = producer.push(*v);
         }
         idx += to_write;
+    }
+}
+
+/// Forward post-DSP samples to either the device ring or the
+/// pre-render sink, depending on whether a null-test pre-render
+/// session is active (R11.3, Exclusive branch). When the sink is
+/// active the device ring is *not* fed: pre-render is mutually
+/// exclusive with normal device playback by construction.
+fn dispatch_post_dsp(
+    samples: &[f32],
+    producer: &mut Producer<f32>,
+    alive: &AtomicBool,
+    shared: &Shared,
+) {
+    if shared.pre_render.is_active() {
+        shared.pre_render.write_chunk(samples);
+    } else {
+        push_interleaved_to_ring(samples, producer, alive);
     }
 }
 
@@ -1338,52 +2035,16 @@ where
     let frames_to_converge: f32 = (config.sample_rate as f32 * 0.010).max(1.0);
     let gain_step_per_frame: f32 = 1.0 / frames_to_converge;
 
-    // TPDF dither amplitude (1 LSB peak-to-peak on the destination
-    // bit depth). Applied only when the device accepts a low-bit
-    // integer format (typically 16-bit). For 24-bit / 32-bit / float
-    // formats `dither_bits` is `None` and this is a no-op.
-    let dither_amp: f32 = match dither_bits {
-        Some(bits) if bits > 0 && bits < 24 => 1.0 / ((1u32 << (bits - 1)) as f32),
-        _ => 0.0,
-    };
-    // Cheap xorshift PRNG, two state words for two TPDF samples.
-    let mut rng_a: u32 = 0x12345678;
-    let mut rng_b: u32 = 0x9abcdef0;
-    let mut next_tpdf = move |amp: f32| -> f32 {
-        if amp == 0.0 {
-            return 0.0;
-        }
-        rng_a ^= rng_a << 13;
-        rng_a ^= rng_a >> 17;
-        rng_a ^= rng_a << 5;
-        rng_b ^= rng_b << 13;
-        rng_b ^= rng_b >> 17;
-        rng_b ^= rng_b << 5;
-        let r1 = (rng_a as f32 / u32::MAX as f32) - 0.5;
-        let r2 = (rng_b as f32 / u32::MAX as f32) - 0.5;
-        // Sum of two uniform => triangular PDF, peak ±amp.
-        (r1 + r2) * amp
-    };
-
-    // Soft-clipper: smooth limit at ±1.0 so EQ-induced peaks don't
-    // hard-clip into the integer rail. tanh-shape via a cheap
-    // polynomial approximation; transparent below ~-3 dBFS.
-    #[inline(always)]
-    fn soft_clip(x: f32) -> f32 {
-        // Linear up to ±0.7, then a smooth knee that asymptotes at ±1.
-        let t = x.clamp(-1.5, 1.5);
-        let t2 = t * t;
-        // 3rd-order polynomial: y = t * (1 - t^2/3) on [-1, 1].
-        // Outside, clamp to ±2/3 * 1 = ±0.667 then add a softer roll.
-        if t.abs() <= 1.0 {
-            t * (1.0 - t2 / 3.0)
-        } else if t > 0.0 {
-            // Asymptote toward 2/3 + small tail; safe ceiling at 1.
-            (2.0 / 3.0 + (1.0 - (-((t - 1.0) * 2.0)).exp()) / 3.0).min(1.0)
-        } else {
-            (-2.0 / 3.0 - (1.0 - (-((-t - 1.0) * 2.0)).exp()) / 3.0).max(-1.0)
-        }
-    }
+    // Phase B (task 19) note. Inline soft-clip and TPDF dither used
+    // to live here as the *only* clipping/dither path. With the new
+    // `PcmChain` (`Peak_Limiter` + `Dither_Stage`) those operations
+    // run before the samples reach this callback. The callback is
+    // now a transparent multiplier (volume ramp) + ring drain +
+    // channel mapper. The `dither_bits` parameter is kept on the
+    // signature so subsequent tasks (e.g. a future fallback path)
+    // can re-introduce a callback dither without changing every
+    // call site.
+    let _ = dither_bits;
 
     let stream = device
         .build_output_stream(
@@ -1451,7 +2112,7 @@ where
 
                     // Stereo -> mono downmix: equal-power sum so we keep
                     // the energy of both channels instead of dropping
-                    // one. (1/sqrt(2) ≈ 0.7071.)
+                    // one. (1/sqrt(2) â‰ˆ 0.7071.)
                     let mono_mix = if src_ch >= 2 {
                         (src_frame[0] + src_frame[1]) * 0.707_106_77
                     } else {
@@ -1463,15 +2124,15 @@ where
                     //   src=2 -> dst=1: equal-power L+R sum.
                     //   src=2 -> dst=2: pass through.
                     //   N -> M (others): copy min(N,M), pad with zeros.
-                    // We track whether the chain *can* exceed [-1, 1].
-                    // When EQ is bypass, pre-gain is 1.0 and dither is
-                    // off (i.e. the device is f32/i32), the signal is
-                    // already in range and we skip the soft-clip
-                    // entirely — purest passthrough.
-                    let pg_now = shared.pre_gain();
-                    let chain_clean = (pg_now - 1.0).abs() < 1e-4
-                        && shared.eq_gains_db.lock().iter().all(|g| g.abs() < 0.05);
-
+                    //
+                    // The samples already went through `PcmChain`'s
+                    // `Peak_Limiter` (soft-clip in `SoftClip` mode,
+                    // hard-clamped to the configured ceiling in
+                    // `LookaheadLimiter` mode) and `Dither_Stage`
+                    // (TPDF or noise-shaped dither when the device
+                    // is â‰¤ 16-bit). The callback adds nothing to the
+                    // signal beyond the volume ramp applied above
+                    // and the channel mapping below.
                     for ch in 0..dst_ch {
                         let v = if src_ch == 1 {
                             src_frame[0]
@@ -1481,16 +2142,6 @@ where
                             src_frame[ch]
                         } else {
                             0.0
-                        };
-                        // Apply soft-clip + dither only when we have
-                        // reason to: EQ active, ReplayGain boost, or
-                        // a low-bit-depth integer device that needs
-                        // dither. Otherwise it's a pure passthrough.
-                        let v = if chain_clean && dither_amp == 0.0 {
-                            v
-                        } else {
-                            let v = soft_clip(v);
-                            v + next_tpdf(dither_amp)
                         };
                         output[frame * dst_ch + ch] = S::from_sample(v);
                     }
@@ -1548,7 +2199,7 @@ fn find_device_by_name(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
 ///     opening the stream in 7.1 forces our stereo signal through
 ///     the device's surround virtualizer. That virtualizer applies
 ///     filters and channel decorrelation that audibly colour
-///     transients ("sharp" cymbals, hat hits…). Picking the matching
+///     transients ("sharp" cymbals, hat hitsâ€¦). Picking the matching
 ///     channel count makes Windows do the upmix instead, with less
 ///     destructive processing.
 ///   - If nothing accepts the source rate, return the device's
@@ -1695,4 +2346,380 @@ pub fn list_output_devices() -> EngineResult<Vec<crate::types::OutputDevice>> {
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio_settings::{AudioSettings, DitherProfile, PeakLimiterMode, VolumeCurve};
+
+    #[test]
+    fn shared_new_publishes_default_audio_settings() {
+        let shared = Shared::new();
+        let snap = shared.audio_settings();
+
+        // Fresh `Shared` should expose `AudioSettings::default()` with
+        // version 0 (the store layer bumps it on every mutation).
+        assert_eq!(snap.version, 0);
+        assert_eq!(*snap, AudioSettings::default());
+    }
+
+    #[test]
+    fn set_audio_settings_bumps_version_and_keeps_payload() {
+        let shared = Shared::new();
+        let initial_version = shared.audio_settings().version;
+        assert_eq!(initial_version, 0);
+
+        // Use a snapshot whose `version` field is intentionally bogus
+        // to confirm `set_audio_settings` ignores it and bumps off the
+        // currently published value.
+        let mut new_settings = AudioSettings::default();
+        new_settings.version = 999;
+        new_settings.peak_limiter_mode = PeakLimiterMode::Off;
+        new_settings.dither_profile = DitherProfile::Tpdf;
+        new_settings.volume_curve = VolumeCurve::Quadratic;
+        new_settings.volume_floor_db = -45.0;
+
+        shared.set_audio_settings(new_settings.clone());
+
+        let snap = shared.audio_settings();
+        assert_eq!(snap.version, initial_version + 1);
+        assert_eq!(snap.peak_limiter_mode, PeakLimiterMode::Off);
+        assert_eq!(snap.dither_profile, DitherProfile::Tpdf);
+        assert_eq!(snap.volume_curve, VolumeCurve::Quadratic);
+        assert_eq!(snap.volume_floor_db, -45.0);
+    }
+
+    #[test]
+    fn set_audio_settings_twice_bumps_version_twice() {
+        let shared = Shared::new();
+        assert_eq!(shared.audio_settings().version, 0);
+
+        shared.set_audio_settings(AudioSettings::default());
+        assert_eq!(shared.audio_settings().version, 1);
+
+        shared.set_audio_settings(AudioSettings::default());
+        assert_eq!(shared.audio_settings().version, 2);
+    }
+
+    #[test]
+    fn position_ms_with_latency_subtracts_lookahead() {
+        // 5 ms look-ahead at 48 kHz = 240 samples. A 10 s timestamp
+        // should report as 9_995 ms once the limiter delay is
+        // accounted for.
+        let ms = position_ms_with_latency(10.0, 240, 48_000);
+        assert_eq!(ms, 9_995);
+    }
+
+    #[test]
+    fn position_ms_with_latency_clamps_to_zero_at_track_start() {
+        // The very first frames of a track sit *inside* the
+        // look-ahead window and produce a negative wall-clock
+        // position. Clamp to zero rather than wrapping `u32`.
+        let ms = position_ms_with_latency(0.001, 240, 48_000);
+        assert_eq!(ms, 0);
+    }
+
+    #[test]
+    fn position_ms_with_latency_passthrough_when_lookahead_zero() {
+        // SoftClip / Off modes report `lookahead_samples == 0`. In
+        // that case the helper must reduce to the historical
+        // `(timestamp_seconds * 1000.0) as u32` cast.
+        let ms = position_ms_with_latency(2.5, 0, 48_000);
+        assert_eq!(ms, 2_500);
+    }
+
+    // ---- audible_gain Ã— volume curve coupling (R4.1, R4.4) ------------------
+
+    #[test]
+    fn audible_gain_uses_quadratic_curve_when_configured() {
+        // Set the published settings to the legacy quadratic curve;
+        // any half-slider value should produce vÂ² gain.
+        let shared = Shared::new();
+        let mut s = AudioSettings::default();
+        s.volume_curve = VolumeCurve::Quadratic;
+        shared.set_audio_settings(s);
+
+        shared.set_volume_public(0.5);
+        let g = shared.audible_gain();
+        assert!(
+            (g - 0.25).abs() < 1e-6,
+            "quadratic curve at v=0.5 should give 0.25, got {g}"
+        );
+
+        shared.set_volume_public(0.1);
+        let g = shared.audible_gain();
+        assert!(
+            (g - 0.01).abs() < 1e-6,
+            "quadratic curve at v=0.1 should give 0.01, got {g}"
+        );
+    }
+
+    #[test]
+    fn audible_gain_uses_logarithmic_curve_when_configured() {
+        // Logarithmic at v=0.5 with floor=-60 dB lands at -30 dB =
+        // 10^(-30/20) â‰ˆ 0.03162.
+        let shared = Shared::new();
+        let mut s = AudioSettings::default();
+        s.volume_curve = VolumeCurve::Logarithmic;
+        s.volume_floor_db = -60.0;
+        shared.set_audio_settings(s);
+
+        shared.set_volume_public(0.5);
+        let g = shared.audible_gain();
+        let want = 10f32.powf(-30.0 / 20.0);
+        assert!(
+            (g - want).abs() < 1e-5,
+            "logarithmic curve at v=0.5 should give {want}, got {g}"
+        );
+    }
+
+    #[test]
+    fn audible_gain_anchors_match_curve_contract() {
+        // Both anchors must hold for both curves: v=0 â†’ 0.0 exact
+        // (mute) and v=1 â†’ 1.0 exact (unity, basis for the
+        // bit-perfect badge).
+        for curve in [VolumeCurve::Logarithmic, VolumeCurve::Quadratic] {
+            let shared = Shared::new();
+            let mut s = AudioSettings::default();
+            s.volume_curve = curve;
+            shared.set_audio_settings(s);
+
+            shared.set_volume_public(0.0);
+            assert_eq!(shared.audible_gain(), 0.0, "{curve:?}: v=0 must mute");
+
+            shared.set_volume_public(1.0);
+            assert_eq!(
+                shared.audible_gain(),
+                1.0,
+                "{curve:?}: v=1 must produce strict unity"
+            );
+        }
+    }
+
+    #[test]
+    fn audible_gain_picks_up_runtime_curve_change() {
+        // Switching the curve at runtime (as the UI does on
+        // settings change) must immediately propagate to the next
+        // `audible_gain` read â€” the audio callback re-reads the
+        // target every period, so there's no caching here.
+        let shared = Shared::new();
+        shared.set_volume_public(0.5);
+
+        let mut quad = AudioSettings::default();
+        quad.volume_curve = VolumeCurve::Quadratic;
+        shared.set_audio_settings(quad);
+        let g_quad = shared.audible_gain();
+        assert!((g_quad - 0.25).abs() < 1e-6);
+
+        let mut log = AudioSettings::default();
+        log.volume_curve = VolumeCurve::Logarithmic;
+        log.volume_floor_db = -60.0;
+        shared.set_audio_settings(log);
+        let g_log = shared.audible_gain();
+        let want = 10f32.powf(-30.0 / 20.0);
+        assert!((g_log - want).abs() < 1e-5);
+    }
+
+    // ---- Bit-perfect health snapshot publishing (task 25, R5.2/R5.5) -------
+
+    /// Build a minimal `PlayerState` shaped like what `state()`
+    /// would synthesise for an actively-playing track. Used by the
+    /// helpers below to drive `build_bit_perfect_health` without
+    /// the rest of the engine.
+    fn playing_state(channels: u16, sr: u32) -> PlayerState {
+        PlayerState {
+            status: PlaybackStatus::Playing,
+            current_track_id: Some("t".into()),
+            position_seconds: 0.0,
+            duration_seconds: 60.0,
+            volume: 1.0,
+            output_mode: EffectiveOutputMode::Shared,
+            sample_rate: Some(sr),
+            bit_depth: Some(24),
+            channels: Some(channels),
+            is_bit_perfect: false,
+            rg_attenuation_db: None,
+            bit_perfect: None,
+            dsd_rate_label: None,
+            is_dsd: false,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn build_bit_perfect_health_returns_none_when_no_device_open() {
+        let shared = Shared::new();
+        // Default `Shared` has `device_sample_rate = 0` (no device).
+        let state = playing_state(2, 44_100);
+        assert!(build_bit_perfect_health(&shared, &state).is_none());
+    }
+
+    #[test]
+    fn build_bit_perfect_health_is_some_after_device_format_published() {
+        let shared = Shared::new();
+        // Simulate what `start_playback` does once it has finished
+        // negotiating the output format.
+        shared.set_device_format(44_100, 2);
+
+        let state = playing_state(2, 44_100);
+        let health = build_bit_perfect_health(&shared, &state)
+            .expect("device open â‡’ health snapshot present");
+
+        assert_eq!(health.device_sample_rate, Some(44_100));
+        assert_eq!(health.source_sample_rate, Some(44_100));
+        assert!(health.is_native_rate);
+        assert!(!health.upmix_active);
+    }
+
+    #[test]
+    fn build_bit_perfect_health_flags_double_resample_in_shared() {
+        let shared = Shared::new();
+        // Source 44.1 kHz, device running at 48 kHz â†’ hidden double
+        // resample (R5.3).
+        shared.set_device_format(48_000, 2);
+        let state = playing_state(2, 44_100);
+
+        let health = build_bit_perfect_health(&shared, &state).unwrap();
+        assert!(!health.is_native_rate);
+        assert!(
+            health
+                .messages
+                .iter()
+                .any(|m| m.contains("Double rééchantillonnage caché")),
+            "expected a double-resample warning, got messages = {:?}",
+            health.messages
+        );
+    }
+
+    #[test]
+    fn chain_bypass_round_trip_packs_and_unpacks_bits() {
+        let shared = Shared::new();
+        // Initial state: every flag conservative `true`.
+        assert_eq!(shared.chain_bypass(), (true, true, true));
+
+        shared.set_chain_bypass(false, true, false);
+        assert_eq!(shared.chain_bypass(), (false, true, false));
+
+        shared.set_chain_bypass(true, false, true);
+        assert_eq!(shared.chain_bypass(), (true, false, true));
+
+        shared.set_chain_bypass(false, false, false);
+        assert_eq!(shared.chain_bypass(), (false, false, false));
+    }
+
+    #[test]
+    fn should_emit_bit_perfect_first_call_publishes_unconditionally() {
+        let shared = Shared::new();
+        shared.set_device_format(44_100, 2);
+        let state = playing_state(2, 44_100);
+        let health = build_bit_perfect_health(&shared, &state).unwrap();
+        assert!(
+            shared.should_emit_bit_perfect(&health),
+            "first emit must always go through"
+        );
+        // Repeating with the *same* health: suppressed by content
+        // equality (no flag movement).
+        assert!(!shared.should_emit_bit_perfect(&health));
+    }
+
+    #[test]
+    fn should_emit_bit_perfect_suppresses_within_debounce_window() {
+        let shared = Shared::new();
+        shared.set_device_format(44_100, 2);
+        let state = playing_state(2, 44_100);
+        let health = build_bit_perfect_health(&shared, &state).unwrap();
+        assert!(shared.should_emit_bit_perfect(&health));
+
+        // Mutate the snapshot so content equality alone would not
+        // suppress; only the 200 ms debounce should hold us back.
+        let mut other = health.clone();
+        other.upmix_active = !other.upmix_active;
+        assert!(
+            !shared.should_emit_bit_perfect(&other),
+            "must be suppressed within 200 ms even when content differs"
+        );
+    }
+
+    #[test]
+    fn should_emit_bit_perfect_emits_after_debounce_window_elapses() {
+        let shared = Shared::new();
+        shared.set_device_format(44_100, 2);
+        let state = playing_state(2, 44_100);
+        let mut health = build_bit_perfect_health(&shared, &state).unwrap();
+        assert!(shared.should_emit_bit_perfect(&health));
+
+        // Advance past the 200 ms guard.
+        std::thread::sleep(std::time::Duration::from_millis(220));
+
+        // Move a flag so content equality does not suppress.
+        health.upmix_active = !health.upmix_active;
+        assert!(
+            shared.should_emit_bit_perfect(&health),
+            "post-debounce emit must go through"
+        );
+    }
+
+    #[test]
+    fn reset_bit_perfect_debounce_clears_state() {
+        let shared = Shared::new();
+        shared.set_device_format(44_100, 2);
+        let state = playing_state(2, 44_100);
+        let health = build_bit_perfect_health(&shared, &state).unwrap();
+        assert!(shared.should_emit_bit_perfect(&health));
+        // Same content, would be suppressed.
+        assert!(!shared.should_emit_bit_perfect(&health));
+
+        // Reset acts like a brand-new track: next emit goes through.
+        shared.reset_bit_perfect_debounce();
+        assert!(shared.should_emit_bit_perfect(&health));
+    }
+
+    #[test]
+    fn cpal_engine_state_carries_bit_perfect_field_default_none() {
+        // Engine boot does not open a device â†’ `state.bit_perfect`
+        // must be `None` and serde must omit it from the JSON wire
+        // format (compactness contract: `skip_serializing_if`).
+        let engine = CpalSharedEngine::new().expect("CPAL engine boot");
+        let state = AudioEngine::state(&engine);
+        assert!(state.bit_perfect.is_none());
+
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(
+            !json.contains("\"bit_perfect\":"),
+            "bit_perfect=None must be skipped on the wire, got {json}"
+        );
+    }
+
+    #[test]
+    fn cpal_engine_state_publishes_bit_perfect_after_device_format_set() {
+        // We can't exercise a real `Load` in unit tests (needs a
+        // working CPAL device), but the engine's `state()` reads
+        // the device format directly from `Shared`. Publishing it
+        // by hand mimics what `start_playback` does once it has
+        // finished negotiating. Status is forced to `Playing` so
+        // `BitPerfectHealth::compute` exposes the source-side
+        // fields (R5.7 hides them while idle).
+        let engine = CpalSharedEngine::new().expect("CPAL engine boot");
+        engine.shared.set_device_format(44_100, 2);
+        engine.shared.sample_rate.store(44_100, Ordering::Relaxed);
+        engine.shared.channels.store(2, Ordering::Relaxed);
+        engine.shared.bit_depth.store(24, Ordering::Relaxed);
+        *engine.status.lock() = PlaybackStatus::Playing;
+
+        let state = AudioEngine::state(&engine);
+        assert!(
+            state.bit_perfect.is_some(),
+            "device format published â‡’ bit_perfect snapshot must be Some"
+        );
+        let health = state.bit_perfect.unwrap();
+        assert_eq!(health.device_sample_rate, Some(44_100));
+        assert_eq!(health.source_sample_rate, Some(44_100));
+        assert!(health.is_native_rate);
+        assert_eq!(health.effective_output_mode, EffectiveOutputMode::Shared);
+    }
 }

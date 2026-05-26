@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use qobee_core::{Player, PlayerHandle};
+use qobee_core::{AudioSettingsApply, AudioSettingsStore, Player, PlayerHandle};
 use qobee_library::Library;
 
 use crate::discord::DiscordPresence;
@@ -27,6 +27,10 @@ pub struct AppState {
 struct Inner {
     library: Library,
     player: PlayerHandle,
+    /// Persistent store for the `audio.*` settings. Loaded from the
+    /// SQLite `settings` table at boot, mirrored to a lock-free
+    /// snapshot read by the engine on each chunk boundary.
+    audio_settings: AudioSettingsStore,
     /// Kept alive for the lifetime of the app so the engine pump thread
     /// does not exit prematurely. Wrapped in a `Mutex<Option<_>>` to
     /// allow tests / shutdown logic to drop it explicitly.
@@ -74,10 +78,20 @@ impl AppState {
         // active activity once a URL is available.
         discord.attach_cover_host(library.clone());
 
+        // Build the audio-settings store and load (or initialise)
+        // the persisted `audio.*` keys. `load_or_init` writes any
+        // missing/invalid rows, clamps stale values, and pushes the
+        // resulting snapshot into the engine via the `apply` impl on
+        // `PlayerHandle`.
+        let engine_apply: Arc<dyn AudioSettingsApply> = Arc::new(handle.clone());
+        let audio_settings = AudioSettingsStore::new(library.clone(), engine_apply);
+        audio_settings.load_or_init();
+
         Ok(AppState {
             inner: Arc::new(Inner {
                 library,
                 player: handle,
+                audio_settings,
                 _player_owner: Mutex::new(Some(player)),
                 cover_cache_dir,
                 discord,
@@ -91,6 +105,10 @@ impl AppState {
 
     pub fn player(&self) -> &PlayerHandle {
         &self.inner.player
+    }
+
+    pub fn audio_settings(&self) -> &AudioSettingsStore {
+        &self.inner.audio_settings
     }
 
     pub fn cover_cache_dir(&self) -> &Path {

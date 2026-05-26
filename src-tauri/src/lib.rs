@@ -101,6 +101,18 @@ pub fn run() {
             commands::set_setting,
             commands::list_settings,
             commands::clear_settings,
+            commands::get_audio_setting,
+            commands::set_audio_setting,
+            commands::list_audio_settings,
+            commands::reset_audio_settings,
+            commands::get_bit_perfect_health,
+            commands::get_device_mix_format,
+            commands::open_windows_sound_settings,
+            commands::load_convolver_ir,
+            commands::unload_convolver_ir,
+            commands::get_convolver_status,
+            commands::run_null_test,
+            commands::cancel_null_test,
             commands::list_library_roots,
             commands::add_library_root,
             commands::remove_library_root,
@@ -145,6 +157,9 @@ pub fn run() {
                             qobee_core::PlayerEvent::StateChanged { .. } => "player:state",
                             qobee_core::PlayerEvent::Position { .. } => "player:position",
                             qobee_core::PlayerEvent::EndOfTrack => "player:end-of-track",
+                            qobee_core::PlayerEvent::BitPerfectChanged { .. } => {
+                                "player:bit-perfect"
+                            }
                             qobee_core::PlayerEvent::Error { .. } => "player:error",
                         };
                         if let Err(e) = app_handle.emit(topic, &event) {

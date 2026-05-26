@@ -16,10 +16,17 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 crossbeam-channel = { workspace = true }
 rtrb = { workspace = true }
+arc-swap = { workspace = true }
 
 symphonia = { workspace = true }
 cpal = { workspace = true }
 rubato = { workspace = true }
+fft-convolver = { workspace = true }
+# Real-FFT cross-correlation aligner used by the null-test
+# diagnostic (Phase F, task 49). Promoted from dev-dep to a
+# regular dep so `crates/engine/src/diagnostic/align.rs` can ship
+# in production builds.
+realfft = "3"
 
 # WASAPI Exclusive backend (Windows-only). Pulled via target-cfg below.
 
@@ -36,3 +43,20 @@ default = []
 # `EngineError::BackendUnavailable`; pulling this feature in does not add any
 # external dependency yet.
 engine-bass = []
+# Opt-in flag for the long-running resampler SNR property tests
+# (Properties 15 / 16). Off by default because each FFT pass through
+# 65 536 samples is a few seconds of CPU; CI only runs them on the
+# nightly audio-quality job that explicitly enables this feature.
+slow-tests = []
+
+[dev-dependencies]
+serde_json = { workspace = true }
+proptest = { workspace = true }
+tracing-test = { workspace = true }
+# FFT helper used by the `Dither_Stage` property tests (Property 3,
+# `shaped_f_weighted` spectral bound). See task 17.
+realfft = "3"
+# Direct rubato access for the resampler SNR tests (Properties
+# 15-16). The engine itself depends on rubato as a regular dep, but
+# integration tests need an explicit handle on `SincFixedIn`.
+rubato = { workspace = true }

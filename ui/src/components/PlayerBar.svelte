@@ -21,6 +21,8 @@
   } from "../lib/api";
   import { app } from "../lib/stores.svelte";
   import { settings } from "../lib/settings.svelte";
+  import { volumeSettings } from "../lib/audioSettings.svelte";
+  import { formatVolumeDb, stepDb } from "../lib/volumeFormat";
   import { formatDuration, formatOutputMode, formatQuality } from "../lib/format";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
@@ -169,6 +171,20 @@
     Math.max(0, app.player.duration_seconds - app.player.position_seconds)
   );
 
+  // Lazily warm the cached `audio.volume_curve` / `audio.volume_floor_db`
+  // pair so the dB readout matches the engine's curve. The store
+  // returns spec defaults synchronously while the load is in flight.
+  void volumeSettings.ensureLoaded();
+
+  // R4.5 — display the slider's audible dB value next to the bar.
+  let volumeDbLabel = $derived(
+    formatVolumeDb(
+      app.player.volume,
+      volumeSettings.curve,
+      volumeSettings.floorDb
+    )
+  );
+
   async function togglePlay(): Promise<void> {
     try {
       if (isPlaying) await pause();
@@ -199,12 +215,19 @@
     }
   }
 
-  // Mouse-wheel volume — same step as native media keys (5%).
+  // Mouse-wheel volume. Steps by ±2 dB per notch (R4.6) by deferring
+  // to `stepDb` so the slider's audible delta stays uniform across
+  // the curve regardless of the user's selected `audio.volume_curve`.
   let pendingVolumePersist: ReturnType<typeof setTimeout> | null = null;
   async function handleVolumeWheel(e: WheelEvent): Promise<void> {
     e.preventDefault();
     const direction = e.deltaY > 0 ? -1 : 1;
-    const next = Math.max(0, Math.min(1, app.player.volume + direction * 0.05));
+    const next = stepDb(
+      app.player.volume,
+      direction * 2.0,
+      volumeSettings.curve,
+      volumeSettings.floorDb
+    );
     if (next === app.player.volume) return;
     try {
       await setVolume(next);
@@ -388,6 +411,9 @@
           style:--range-fill={`${volumePct}%`}
           aria-label="Volume"
         />
+        <span class="vol-db tabular" title={`Volume audible: ${volumeDbLabel}`}>
+          {volumeDbLabel}
+        </span>
       </div>
     </div>
   </div>
@@ -730,7 +756,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    width: 110px;
+    width: 170px;
     color: var(--fg-2);
     transition: color var(--dur-fast) var(--ease-out);
   }
@@ -739,5 +765,11 @@
   }
   .volume input[type="range"] {
     height: 14px;
+  }
+  .vol-db {
+    font-size: 10px;
+    color: var(--fg-2);
+    min-width: 52px;
+    text-align: right;
   }
 </style>

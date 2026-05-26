@@ -30,6 +30,7 @@
   import { app } from "../lib/stores.svelte";
   import { discordPresence, type DiscordStatus } from "../lib/discordPresence";
   import { toasts } from "../lib/toasts.svelte";
+  import SettingsAudio from "./audio/SettingsAudio.svelte";
 
   let roots = $state<LibraryRoot[]>([]);
   let devices = $state<OutputDevice[]>([]);
@@ -449,6 +450,12 @@
         Could not switch: {outputModeError}
       </p>
     {/if}
+  </div>
+
+  <!-- Audio (R5 — Bit-Perfect Health & friends) -->
+  <div class="card">
+    <h2>Audio</h2>
+    <SettingsAudio />
   </div>
 
   <!-- Appearance -->

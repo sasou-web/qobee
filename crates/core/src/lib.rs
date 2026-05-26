@@ -8,9 +8,15 @@
 //! The frontend never talks to the engine or the library directly: it
 //! talks to a [`Player`] that owns both.
 
+pub mod audio_settings;
+pub mod diagnostic;
 pub mod player;
 pub mod queue;
 
+pub use audio_settings::{AudioSettingsApply, AudioSettingsError, AudioSettingsStore};
+pub use diagnostic::{
+    cancel_null_test, run_null_test, NullTestConclusion, NullTestReport, NullTestSource,
+};
 pub use player::{Player, PlayerError, PlayerHandle};
 pub use queue::Queue;
 
@@ -69,6 +75,14 @@ pub enum PlayerEvent {
     Position { position_seconds: f64 },
     /// Current track finished playing.
     EndOfTrack,
+    /// Aggregated bit-perfect health snapshot republished from the
+    /// engine's [`qobee_engine::EngineEvent::BitPerfectChanged`].
+    /// Emitted as the dedicated `player:bit-perfect` Tauri topic so
+    /// the UI panel can react without parsing the heavier
+    /// `StateChanged` payload (R5.5).
+    BitPerfectChanged {
+        health: qobee_engine::BitPerfectHealth,
+    },
     /// Recoverable engine error that the UI should surface.
     Error { message: String },
 }

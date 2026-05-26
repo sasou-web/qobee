@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 47c0ef990b7e15bdde624edb45a9024ab32f93418fcb1bab2cdc3cdeb29d7c6b # shrinks to inputs = (PlayerState { status: Playing, current_track_id: Some("t"), position_seconds: 1.0, duration_seconds: 60.0, volume: 0.0, output_mode: Shared, sample_rate: Some(44100), bit_depth: Some(24), channels: Some(1), is_bit_perfect: false, rg_attenuation_db: None, bit_perfect: None, dsd_rate_label: None, is_dsd: false, error: None }, AudioSettings { version: 0, rg_peak_protection: true, rg_safety_headroom_db: 1.0, dither_profile: ShapedFWeighted, peak_limiter_mode: Off, peak_limiter_ceiling_dbfs: -1.0, peak_limiter_lookahead_ms: 5.0, peak_limiter_release_ms: 100.0, volume_curve: Logarithmic, volume_floor_db: -60.0, crossfeed_enabled: false, crossfeed_preset: Bauer, crossfeed_delay_us: 300.0, crossfeed_lp_cutoff_hz: 700.0, resampler_quality: Best, convolver_enabled: false, convolver_ir_path: None, convolver_gain_db: -6.0, balance: 0.0, trim_db_per_channel: [] }, Some(48000), 1, 1, false, false, false)

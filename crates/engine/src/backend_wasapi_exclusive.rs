@@ -1,4 +1,4 @@
-//! WASAPI Exclusive output backend (Windows-only).
+﻿//! WASAPI Exclusive output backend (Windows-only).
 //!
 //! Bypasses the OS mixer entirely: when this backend is active no other
 //! application can play to the same device. The DAC receives exactly
@@ -26,13 +26,13 @@
 //!
 //! Sample rate strategy:
 //!   - First try the source's own SR (zero resampling, ideal).
-//!   - Then try common HD rates ≥ source SR (192 → 88.2 kHz), then
+//!   - Then try common HD rates â‰¥ source SR (192 â†’ 88.2 kHz), then
 //!     common rates < source SR (48, 44.1 kHz). Resampling kicks in
 //!     via the same sinc resampler used by the Shared backend.
 //!   - As a last resort, ask the device for its `mixformat` and try
 //!     that rate (with the source's channel count, then with the
 //!     device's preferred channel count when the driver demands it).
-//!     When the channel count is upmixed (e.g. stereo → 7.1 surround
+//!     When the channel count is upmixed (e.g. stereo â†’ 7.1 surround
 //!     because the OS is configured that way), the render path puts
 //!     the source channels on the front and silences the rest.
 //!     `is_bit_perfect` is reported `false` whenever any of these
@@ -51,13 +51,17 @@ use wasapi::{
     initialize_mta, Direction, DeviceEnumerator, SampleType, StreamMode, WaveFormat,
 };
 
-use crate::backend_cpal_shared::{run_decoder_thread, Shared, RING_CAPACITY_SAMPLES};
+use crate::backend_cpal_shared::{
+    build_bit_perfect_health, run_decoder_thread, Shared, RING_CAPACITY_SAMPLES,
+};
 use crate::backend_symphonia::SymphoniaDecoder;
 use crate::error::{EngineError, EngineResult};
 use crate::types::{
     EffectiveOutputMode, EngineEvent, OutputMode, PlaybackStatus, PlayerState,
 };
 use crate::AudioEngine;
+use crate::AudioSettings;
+use crate::PreGainContext;
 
 // ---------------------------------------------------------------------------
 // Public engine
@@ -65,6 +69,9 @@ use crate::AudioEngine;
 
 enum Command {
     Load(PathBuf),
+    /// DSD load: opens a DSF/DFF file, negotiates 24-in-32 at the
+    /// DoP carrier rate, and starts the DSD render thread (R7.3).
+    LoadDsd { path: PathBuf, rate: crate::DsdRate },
     Play,
     Pause,
     Resume,
@@ -194,6 +201,12 @@ impl AudioEngine for WasapiExclusiveEngine {
     fn load(&self, path: &Path) -> EngineResult<()> {
         self.send_cmd(Command::Load(path.to_path_buf()))
     }
+    fn load_dsd(&self, path: &Path, rate: crate::DsdRate) -> EngineResult<()> {
+        self.send_cmd(Command::LoadDsd {
+            path: path.to_path_buf(),
+            rate,
+        })
+    }
     fn play(&self) -> EngineResult<()> {
         self.send_cmd(Command::Play)
     }
@@ -253,7 +266,7 @@ impl AudioEngine for WasapiExclusiveEngine {
             && unity_pregain
             && eq_bypass;
 
-        PlayerState {
+        let mut state = PlayerState {
             status,
             current_track_id,
             position_seconds: self.shared.position_ms.load(Ordering::Relaxed) as f64 / 1000.0,
@@ -264,8 +277,14 @@ impl AudioEngine for WasapiExclusiveEngine {
             bit_depth,
             channels,
             is_bit_perfect,
+            rg_attenuation_db: self.shared.rg_attenuation_db(),
+            bit_perfect: None,
+            dsd_rate_label: self.shared.dsd_rate_label(),
+            is_dsd: self.shared.is_dsd_active(),
             error,
-        }
+        };
+        state.bit_perfect = build_bit_perfect_health(&self.shared, &state);
+        state
     }
 
     fn subscribe_events(&self) -> Receiver<EngineEvent> {
@@ -296,10 +315,33 @@ impl AudioEngine for WasapiExclusiveEngine {
         Self::selected_device(self)
     }
 
+    fn set_audio_settings(&self, settings: AudioSettings) {
+        self.shared.set_audio_settings(settings);
+        let _ = self.event_tx.try_send(EngineEvent::StateChanged {
+            state: self.state(),
+        });
+    }
+
+    fn set_pre_gain_context(&self, ctx: PreGainContext) {
+        self.shared.set_pre_gain_context(ctx);
+    }
+
+    fn set_convolver_ir(&self, ir_left: Vec<f32>, ir_right: Vec<f32>) {
+        self.shared.set_convolver_ir(ir_left, ir_right);
+    }
+
+    fn convolver_ir_len(&self) -> usize {
+        self.shared.convolver_ir_len()
+    }
+
+    fn is_dsd_active(&self) -> bool {
+        self.shared.is_dsd_active()
+    }
+
     fn prepare_next(&self, _path: &Path, _track_id: Option<String>) -> EngineResult<()> {
         // WASAPI Exclusive backend does not support in-place gapless
         // transitions yet (each track opens a fresh device session).
-        // The orchestrator will use the standard EOT → Load path,
+        // The orchestrator will use the standard EOT â†’ Load path,
         // which produces the same small gap as before.
         Ok(())
     }
@@ -342,6 +384,68 @@ struct ActiveTrack {
     rng_b: u32,
 }
 
+/// DSD variant of `ActiveTrack`: the WASAPI device is opened in
+/// 24-in-32 at the DoP carrier rate and the consumer pulls
+/// pre-packed `i32` samples with the DoP marker already in place.
+/// No PCM DSP runs.
+struct ActiveDsd {
+    audio_client: wasapi::AudioClient,
+    render_client: wasapi::AudioRenderClient,
+    h_event: wasapi::Handle,
+    sample_rate: u32,
+    channels: u16,
+    consumer: Consumer<i32>,
+    decoder_alive: Arc<AtomicBool>,
+    decoder_handle: Option<JoinHandle<()>>,
+    started: bool,
+}
+
+impl ActiveDsd {
+    fn shutdown(mut self) {
+        if self.started {
+            let _ = self.audio_client.stop_stream();
+        }
+        self.decoder_alive.store(false, Ordering::Release);
+        if let Some(h) = self.decoder_handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// Either a PCM track (full DSP chain) or a DSD track (no DSP, DoP
+/// packed). Both variants share Stop / Pause / Resume semantics.
+enum ActiveStream {
+    Pcm(ActiveTrack),
+    Dsd(ActiveDsd),
+}
+
+impl ActiveStream {
+    fn is_started(&self) -> bool {
+        match self {
+            ActiveStream::Pcm(t) => t.started,
+            ActiveStream::Dsd(t) => t.started,
+        }
+    }
+    fn audio_client_mut(&mut self) -> &mut wasapi::AudioClient {
+        match self {
+            ActiveStream::Pcm(t) => &mut t.audio_client,
+            ActiveStream::Dsd(t) => &mut t.audio_client,
+        }
+    }
+    fn started_set(&mut self, v: bool) {
+        match self {
+            ActiveStream::Pcm(t) => t.started = v,
+            ActiveStream::Dsd(t) => t.started = v,
+        }
+    }
+    fn shutdown(self) {
+        match self {
+            ActiveStream::Pcm(t) => t.shutdown(),
+            ActiveStream::Dsd(t) => t.shutdown(),
+        }
+    }
+}
+
 impl ActiveTrack {
     fn shutdown(mut self) {
         if self.started {
@@ -355,34 +459,35 @@ impl ActiveTrack {
 }
 
 fn run_worker(ctx: WorkerCtx) {
-    let mut active: Option<ActiveTrack> = None;
+    let mut active: Option<ActiveStream> = None;
 
     loop {
         // If something is loaded and playing, drain the audio device
         // until we hit a "no available frames" / event-wait state, then
         // poll the command channel non-blocking. If nothing is loaded
         // we block on the command channel.
-        let render_active = active.as_ref().is_some_and(|a| a.started);
+        let render_active = active.as_ref().is_some_and(|a| a.is_started());
 
         if render_active {
             // Render one period if there is space.
-            if let Some(track) = active.as_mut() {
-                match render_one_period(track, &ctx) {
-                    Ok(()) => {}
-                    Err(e) => {
-                        let msg = e.to_string();
-                        tracing::error!(
-                            target: "qobee::engine",
-                            error = %msg,
-                            "WASAPI render error"
-                        );
-                        *ctx.last_error.lock() = Some(msg.clone());
-                        let _ = ctx.event_tx.try_send(EngineEvent::Error { message: msg });
-                        if let Some(prev) = active.take() {
-                            prev.shutdown();
-                        }
-                        set_status(&ctx, PlaybackStatus::Errored);
+            if let Some(stream) = active.as_mut() {
+                let result = match stream {
+                    ActiveStream::Pcm(track) => render_one_period(track, &ctx),
+                    ActiveStream::Dsd(track) => render_one_period_dsd(track, &ctx),
+                };
+                if let Err(e) = result {
+                    let msg = e.to_string();
+                    tracing::error!(
+                        target: "qobee::engine",
+                        error = %msg,
+                        "WASAPI render error"
+                    );
+                    *ctx.last_error.lock() = Some(msg.clone());
+                    let _ = ctx.event_tx.try_send(EngineEvent::Error { message: msg });
+                    if let Some(prev) = active.take() {
+                        prev.shutdown();
                     }
+                    set_status(&ctx, PlaybackStatus::Errored);
                 }
             }
 
@@ -404,7 +509,7 @@ fn run_worker(ctx: WorkerCtx) {
     }
 }
 
-fn handle_cmd(cmd: Command, ctx: &WorkerCtx, active: &mut Option<ActiveTrack>) {
+fn handle_cmd(cmd: Command, ctx: &WorkerCtx, active: &mut Option<ActiveStream>) {
     match cmd {
         Command::Load(path) => {
             if let Some(prev) = active.take() {
@@ -412,11 +517,14 @@ fn handle_cmd(cmd: Command, ctx: &WorkerCtx, active: &mut Option<ActiveTrack>) {
             }
             ctx.shared.pending_seek_ms.store(-1, Ordering::Release);
             ctx.shared.drain_ring.store(false, Ordering::Release);
+            // Leaving DSD: unset the active flag so volume / EQ are
+            // re-allowed for the next PCM track.
+            ctx.shared.set_dsd_active(false, None);
             set_status(ctx, PlaybackStatus::Loading);
 
             match start_playback(ctx, &path) {
                 Ok(s) => {
-                    *active = Some(s);
+                    *active = Some(ActiveStream::Pcm(s));
                     set_status(ctx, PlaybackStatus::Paused);
                 }
                 Err(e) => {
@@ -427,24 +535,55 @@ fn handle_cmd(cmd: Command, ctx: &WorkerCtx, active: &mut Option<ActiveTrack>) {
                 }
             }
         }
+        Command::LoadDsd { path, rate } => {
+            if let Some(prev) = active.take() {
+                prev.shutdown();
+            }
+            ctx.shared.pending_seek_ms.store(-1, Ordering::Release);
+            ctx.shared.drain_ring.store(false, Ordering::Release);
+            ctx.shared.set_dsd_active(true, Some(rate.label()));
+            set_status(ctx, PlaybackStatus::Loading);
+
+            match start_dsd_playback(ctx, &path, rate) {
+                Ok(s) => {
+                    *active = Some(ActiveStream::Dsd(s));
+                    set_status(ctx, PlaybackStatus::Paused);
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    *ctx.last_error.lock() = Some(msg.clone());
+                    ctx.shared.set_dsd_active(false, None);
+                    set_status(ctx, PlaybackStatus::Errored);
+                    // Surface the DoP-specific event for the UI panel
+                    // (R7.5) and an Error toast carrying the FR
+                    // localised message so the user sees what went
+                    // wrong.
+                    let _ = ctx.event_tx.try_send(EngineEvent::DopUnsupported);
+                    let _ = ctx.event_tx.try_send(EngineEvent::Error {
+                        message: format!("DoP non supporté par le périphérique: {msg}"),
+                    });
+                }
+            }
+        }
         Command::Play | Command::Resume => {
-            if let Some(track) = active.as_mut() {
+            if let Some(stream) = active.as_mut() {
                 ctx.shared.paused.store(false, Ordering::Release);
-                if !track.started {
-                    if let Err(e) = track.audio_client.start_stream() {
+                if !stream.is_started() {
+                    let r = stream.audio_client_mut().start_stream();
+                    if let Err(e) = r {
                         let msg = format!("start_stream: {e:?}");
                         *ctx.last_error.lock() = Some(msg.clone());
                         set_status(ctx, PlaybackStatus::Errored);
                         let _ = ctx.event_tx.try_send(EngineEvent::Error { message: msg });
                         return;
                     }
-                    track.started = true;
+                    stream.started_set(true);
                 }
                 set_status(ctx, PlaybackStatus::Playing);
             }
         }
         Command::Pause => {
-            if let Some(_track) = active.as_mut() {
+            if active.is_some() {
                 // Don't stop_stream: keeping the stream running with
                 // silence in the buffer means resume is instant. We
                 // just flip the `paused` flag and the render path
@@ -463,8 +602,11 @@ fn handle_cmd(cmd: Command, ctx: &WorkerCtx, active: &mut Option<ActiveTrack>) {
             ctx.shared.sample_rate.store(0, Ordering::Relaxed);
             ctx.shared.channels.store(0, Ordering::Relaxed);
             ctx.shared.bit_depth.store(0, Ordering::Relaxed);
+            ctx.shared.set_device_format(0, 0);
+            ctx.shared.reset_bit_perfect_debounce();
             ctx.shared.pending_seek_ms.store(-1, Ordering::Release);
             ctx.shared.drain_ring.store(false, Ordering::Release);
+            ctx.shared.set_dsd_active(false, None);
             ctx.is_native_rate.store(false, Ordering::Release);
             set_status(ctx, PlaybackStatus::Stopped);
         }
@@ -524,7 +666,7 @@ fn snapshot_state(ctx: &WorkerCtx) -> PlayerState {
         && unity_pregain
         && eq_bypass;
 
-    PlayerState {
+    let mut state = PlayerState {
         status,
         current_track_id,
         position_seconds: ctx.shared.position_ms.load(Ordering::Relaxed) as f64 / 1000.0,
@@ -535,8 +677,14 @@ fn snapshot_state(ctx: &WorkerCtx) -> PlayerState {
         bit_depth,
         channels,
         is_bit_perfect,
+        rg_attenuation_db: ctx.shared.rg_attenuation_db(),
+        bit_perfect: None,
+        dsd_rate_label: ctx.shared.dsd_rate_label(),
+        is_dsd: ctx.shared.is_dsd_active(),
         error,
-    }
+    };
+    state.bit_perfect = build_bit_perfect_health(&ctx.shared, &state);
+    state
 }
 
 // ---------------------------------------------------------------------------
@@ -783,12 +931,21 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveTrack> {
     ctx.shared.position_ms.store(0, Ordering::Relaxed);
     // Bit-perfect requires both same SR *and* same channel count
     // (no upmix). When the device demanded surround we route mono/
-    // stereo into a few channels and pad the rest with silence —
+    // stereo into a few channels and pad the rest with silence â€”
     // that's still cleaner than the OS mixer but no longer strictly
     // bit-perfect.
     let no_upmix = nego.src_channels == nego.channels;
     ctx.is_native_rate
         .store(native_rate && no_upmix, Ordering::Release);
+
+    // Publish the negotiated device format so `state()` can build a
+    // [`BitPerfectHealth`] snapshot from a single atomic read. The
+    // device channel count is what we actually write to WASAPI
+    // (post-upmix when applicable); pairing it with `nego.src_channels`
+    // is what lets `BitPerfectHealth::compute` flag an upmix.
+    ctx.shared
+        .set_device_format(nego.sample_rate, nego.channels);
+    ctx.shared.reset_bit_perfect_debounce();
 
     // Aim for ~ 1.5x the device's minimum period (handles Symphonia's
     // FLAC packet cadence comfortably).
@@ -1031,15 +1188,7 @@ fn render_one_period(track: &mut ActiveTrack, ctx: &WorkerCtx) -> EngineResult<(
 
 #[inline(always)]
 fn soft_clip(x: f32) -> f32 {
-    let t = x.clamp(-1.5, 1.5);
-    let t2 = t * t;
-    if t.abs() <= 1.0 {
-        t * (1.0 - t2 / 3.0)
-    } else if t > 0.0 {
-        (2.0 / 3.0 + (1.0 - (-((t - 1.0) * 2.0)).exp()) / 3.0).min(1.0)
-    } else {
-        (-2.0 / 3.0 - (1.0 - (-((-t - 1.0) * 2.0)).exp()) / 3.0).max(-1.0)
-    }
+    crate::dsp::clip::soft_clip(x)
 }
 
 #[inline(always)]
@@ -1087,6 +1236,257 @@ fn write_sample(slot: &mut [u8], v: f32, nego: &NegotiatedFormat) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// DSD pipeline (R7.3 / R7.5 / R7.7)
+// ---------------------------------------------------------------------------
+
+/// Open a DSF or DFF file (decided by extension), negotiate a
+/// 24-in-32 integer format at `rate.dop_carrier_rate()`, spawn the
+/// DSD decoder thread, and return an `ActiveDsd` ready for the
+/// render loop.
+fn start_dsd_playback(
+    ctx: &WorkerCtx,
+    path: &Path,
+    rate: crate::DsdRate,
+) -> EngineResult<ActiveDsd> {
+    use crate::dsd::{dff, dop::DopPacker, dsf, DsdGroup16, DsdStream};
+
+    // 1. Parse the DSD file.
+    let stream: DsdStream = {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        let file = std::fs::File::open(path)?;
+        let buf = std::io::BufReader::new(file);
+        match ext.as_str() {
+            "dsf" => dsf::read_dsf(buf)?,
+            "dff" => dff::read_dff(buf)?,
+            other => {
+                return Err(EngineError::DsdInvalidFile(format!(
+                    "unsupported DSD extension: {other}"
+                )))
+            }
+        }
+    };
+    if stream.rate != rate {
+        // Sanity check: orchestrator's metadata should match what
+        // the parser reports. A mismatch usually means the library
+        // index is stale; refuse rather than render at the wrong
+        // carrier rate.
+        return Err(EngineError::DsdInvalidFile(format!(
+            "DSD rate mismatch: orchestrator={:?} file={:?}",
+            rate, stream.rate
+        )));
+    }
+
+    // 2. Open the device and negotiate (32, 24, Int) at the carrier
+    //    rate.
+    let device_name = ctx.selected_device.lock().clone();
+    let device = find_device(device_name.as_deref())?;
+    let mut audio_client = device
+        .get_iaudioclient()
+        .map_err(|e| EngineError::Output(format!("get_iaudioclient: {e:?}")))?;
+
+    let carrier_sr = rate.dop_carrier_rate();
+    let channels = stream.channels;
+    let nego = negotiate_dsd_format(&audio_client, carrier_sr, channels)?;
+
+    ctx.shared.sample_rate.store(rate.hz(), Ordering::Relaxed);
+    ctx.shared
+        .channels
+        .store(channels as u32, Ordering::Relaxed);
+    ctx.shared.bit_depth.store(1, Ordering::Relaxed);
+    ctx.shared.underruns.store(0, Ordering::Relaxed);
+    let dur_ms = ((stream.frames() as f64 * 8.0 / rate.hz() as f64) * 1000.0) as u32;
+    ctx.shared.duration_ms.store(dur_ms, Ordering::Relaxed);
+    ctx.shared.position_ms.store(0, Ordering::Relaxed);
+    ctx.shared.set_device_format(nego.sample_rate, nego.channels);
+    ctx.shared.reset_bit_perfect_debounce();
+    ctx.is_native_rate.store(false, Ordering::Release);
+
+    let (_def_period, min_period) = audio_client
+        .get_device_period()
+        .map_err(|e| EngineError::Output(format!("get_device_period: {e:?}")))?;
+    let target_period = (min_period * 3 / 2).max(min_period);
+    let period_hns = audio_client
+        .calculate_aligned_period_near(target_period, Some(128), &nego.wave_format)
+        .map_err(|e| EngineError::Output(format!("calculate_aligned_period: {e:?}")))?;
+
+    let mode = StreamMode::EventsExclusive { period_hns };
+    if let Err(e) = audio_client.initialize_client(&nego.wave_format, &Direction::Render, &mode) {
+        return Err(EngineError::Output(format!("initialize_client (DSD): {e:?}")));
+    }
+
+    let h_event = audio_client
+        .set_get_eventhandle()
+        .map_err(|e| EngineError::Output(format!("set_get_eventhandle: {e:?}")))?;
+    let render_client = audio_client
+        .get_audiorenderclient()
+        .map_err(|e| EngineError::Output(format!("get_audiorenderclient: {e:?}")))?;
+
+    // 3. SPSC ring carrying *DoP-packed* i32 samples (interleaved).
+    //    Sized like the PCM ring so a brief stall on the WASAPI
+    //    side does not starve the renderer.
+    let (mut producer, consumer) = RingBuffer::<i32>::new(RING_CAPACITY_SAMPLES);
+
+    let decoder_alive = Arc::new(AtomicBool::new(true));
+    let alive_clone = Arc::clone(&decoder_alive);
+    let decoder_handle = thread::Builder::new()
+        .name("qobee-wasapi-dsd-decoder".into())
+        .spawn(move || {
+            let mut packer = DopPacker::new(channels);
+            let groups = stream.dop_groups();
+            let bytes = stream.bytes_per_channel;
+            let lsb_first = stream.lsb_first;
+            for g in 0..groups {
+                if !alive_clone.load(Ordering::Acquire) {
+                    return;
+                }
+                // Build a DsdGroup16 from two consecutive bytes per
+                // channel. The packer expects the *oldest* DSD bit
+                // in the MSB of the 16-bit slice; convert
+                // accordingly based on the source's bit ordering.
+                let mut per_channel = Vec::with_capacity(channels as usize);
+                for c in 0..channels as usize {
+                    let b0 = bytes[c][g * 2];
+                    let b1 = bytes[c][g * 2 + 1];
+                    let v = if lsb_first {
+                        // DSF: bit 0 of each byte is the oldest in
+                        // time. Reverse the bits of each byte and
+                        // place the older byte in the MSB position.
+                        let r0 = b0.reverse_bits();
+                        let r1 = b1.reverse_bits();
+                        ((r0 as u16) << 8) | (r1 as u16)
+                    } else {
+                        // DFF: bit 7 of each byte is the oldest in
+                        // time. The older byte already lands in the
+                        // MSB position with no reordering.
+                        ((b0 as u16) << 8) | (b1 as u16)
+                    };
+                    per_channel.push(v);
+                }
+                let group = DsdGroup16 { per_channel };
+                let samples = packer.pack(&group);
+                // Push every i32 onto the ring; spin briefly when
+                // the consumer is behind.
+                for s in samples {
+                    while alive_clone.load(Ordering::Acquire) {
+                        match producer.push(s) {
+                            Ok(()) => break,
+                            Err(_) => std::thread::sleep(std::time::Duration::from_micros(500)),
+                        }
+                    }
+                }
+            }
+        })
+        .map_err(|e| EngineError::Internal(format!("DSD decoder spawn: {e}")))?;
+
+    Ok(ActiveDsd {
+        audio_client,
+        render_client,
+        h_event,
+        sample_rate: nego.sample_rate,
+        channels,
+        consumer,
+        decoder_alive,
+        decoder_handle: Some(decoder_handle),
+        started: false,
+    })
+}
+
+/// Try the DoP-required `(32, 24, Int)` format only. Anything else
+/// would not carry the marker correctly, so we don't fall back to
+/// the PCM negotiation table here.
+fn negotiate_dsd_format(
+    audio_client: &wasapi::AudioClient,
+    sr: u32,
+    channels: u16,
+) -> EngineResult<NegotiatedFormat> {
+    let wf = WaveFormat::new(32, 24, &SampleType::Int, sr as usize, channels as usize, None);
+    if let Ok(resolved) = audio_client.is_supported_exclusive_with_quirks(&wf) {
+        return Ok(NegotiatedFormat {
+            wave_format: resolved,
+            sample_rate: sr,
+            channels,
+            src_channels: channels,
+            bytes_per_sample: 4,
+            sample_type: SampleType::Int,
+            valid_bits: 24,
+        });
+    }
+    Err(EngineError::Output(format!(
+        "DoP format (32-bit, 24 valid, Int) at {sr} Hz / {channels} ch refused by device"
+    )))
+}
+
+/// Render one period of DoP-packed samples to the device. Same
+/// shape as `render_one_period` but copies `i32` straight from the
+/// ring without volume / dither / soft-clip — the DSD pipeline is
+/// strictly bypass.
+fn render_one_period_dsd(track: &mut ActiveDsd, ctx: &WorkerCtx) -> EngineResult<()> {
+    let block_align = 4 * track.channels as usize;
+
+    if ctx.shared.drain_ring.load(Ordering::Acquire) {
+        while track.consumer.pop().is_ok() {}
+    }
+
+    let avail = track
+        .audio_client
+        .get_available_space_in_frames()
+        .map_err(|e| EngineError::Output(format!("get_available_space (DSD): {e:?}")))?
+        as usize;
+    if avail == 0 {
+        let _ = track.h_event.wait_for_event(200);
+        return Ok(());
+    }
+
+    let frames_to_write = avail;
+    let mut bytes: Vec<u8> = vec![0u8; frames_to_write * block_align];
+    let paused = ctx.shared.paused.load(Ordering::Acquire);
+
+    if !paused {
+        let mut wrote = 0usize;
+        for frame in 0..frames_to_write {
+            let mut frame_ok = true;
+            let frame_off = frame * block_align;
+            for c in 0..track.channels as usize {
+                match track.consumer.pop() {
+                    Ok(v) => {
+                        let off = frame_off + c * 4;
+                        bytes[off..off + 4].copy_from_slice(&v.to_le_bytes());
+                    }
+                    Err(_) => {
+                        ctx.shared.underruns.fetch_add(1, Ordering::Relaxed);
+                        frame_ok = false;
+                        break;
+                    }
+                }
+            }
+            if !frame_ok {
+                break;
+            }
+            wrote += 1;
+        }
+        // Position is updated coarsely from frames written. The DoP
+        // carrier rate is `rate.hz() / 16` so frames-to-time is just
+        // `frames / sample_rate`.
+        let pos_ms = ctx.shared.position_ms.load(Ordering::Relaxed) as u64
+            + (wrote as u64) * 1000 / track.sample_rate.max(1) as u64;
+        ctx.shared
+            .position_ms
+            .store(pos_ms.min(u32::MAX as u64) as u32, Ordering::Relaxed);
+    }
+
+    track
+        .render_client
+        .write_to_device(frames_to_write, &bytes, None)
+        .map_err(|e| EngineError::Output(format!("write_to_device (DSD): {e:?}")))?;
+    let _ = track.h_event.wait_for_event(200);
+    Ok(())
+}
+
 /// List WASAPI render endpoints for the UI device picker. Names
 /// match what CPAL returns for the same hardware.
 pub fn list_render_devices() -> EngineResult<Vec<String>> {
@@ -1108,4 +1508,77 @@ pub fn list_render_devices() -> EngineResult<Vec<String>> {
         }
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// `WasapiExclusiveEngine::state` must populate the new
+    /// `bit_perfect` field as `Some(...)` once a device format has
+    /// been published â€” no need to actually open a WASAPI session
+    /// (which would require a Windows render endpoint not available
+    /// in CI). Mirrors the equivalent test in `backend_cpal_shared`.
+    #[test]
+    fn wasapi_engine_state_publishes_bit_perfect_after_device_format_set() {
+        let engine = match WasapiExclusiveEngine::new() {
+            Ok(e) => e,
+            Err(e) => {
+                // CI runners without a working WASAPI host (rare, but
+                // possible on bare images) should not flake this
+                // test. Skip with a tracing line so the absence is
+                // visible in the run log.
+                eprintln!("skipping: WASAPI engine boot failed: {e}");
+                return;
+            }
+        };
+
+        engine.shared.set_device_format(48_000, 2);
+        engine.shared.sample_rate.store(48_000, Ordering::Relaxed);
+        engine.shared.channels.store(2, Ordering::Relaxed);
+        engine.shared.bit_depth.store(24, Ordering::Relaxed);
+        // Pretend the negotiation produced the source rate exactly
+        // (i.e. a bit-perfect candidate run) so the `is_native_rate`
+        // flag carries through the snapshot.
+        engine.is_native_rate.store(true, Ordering::Release);
+        *engine.status.lock() = PlaybackStatus::Playing;
+
+        let state = AudioEngine::state(&engine);
+        assert!(
+            state.bit_perfect.is_some(),
+            "device format published â‡’ bit_perfect snapshot must be Some"
+        );
+        let health = state.bit_perfect.unwrap();
+        assert_eq!(health.device_sample_rate, Some(48_000));
+        assert_eq!(health.source_sample_rate, Some(48_000));
+        assert_eq!(health.effective_output_mode, EffectiveOutputMode::Exclusive);
+        assert!(health.is_native_rate);
+    }
+
+    /// Conversely, a freshly-booted engine with no device open must
+    /// return `None` for `bit_perfect`. This guarantees the wire
+    /// format stays compact while idle (R5.7).
+    #[test]
+    fn wasapi_engine_state_carries_bit_perfect_field_default_none() {
+        let engine = match WasapiExclusiveEngine::new() {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("skipping: WASAPI engine boot failed: {e}");
+                return;
+            }
+        };
+        let state = AudioEngine::state(&engine);
+        assert!(state.bit_perfect.is_none());
+
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(
+            !json.contains("\"bit_perfect\":"),
+            "bit_perfect=None must be skipped on the wire, got {json}"
+        );
+    }
 }

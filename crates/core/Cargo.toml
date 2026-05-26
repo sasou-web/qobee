@@ -19,3 +19,18 @@ crossbeam-channel = { workspace = true }
 
 qobee-engine = { workspace = true }
 qobee-library = { workspace = true }
+
+# Used by `Player::load_convolver_ir` (R9.3) to resample a stereo
+# WAV impulse response from its native sample rate to the device
+# sample rate before pushing it into the engine's `Convolver_Stage`.
+rubato = { workspace = true }
+
+# Used by `crate::diagnostic::run_null_test` (Phase F) to resolve
+# the per-user `%APPDATA%/Qobee/diagnostic/` directory where the
+# generated test WAV and the captured loopback are written and then
+# deleted.
+dirs = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tracing-test = { workspace = true }

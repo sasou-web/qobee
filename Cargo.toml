@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -20,6 +20,7 @@ repository = "https://github.com/qobee/qobee"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 rtrb = "0.3"
+arc-swap = "1"
 
 # Serde stack
 serde = { version = "1.0", features = ["derive"] }
@@ -62,6 +63,12 @@ cpal = "0.17"
 # mixer's rate differs from the file's rate; see backend_cpal_shared.rs).
 rubato = "0.16"
 
+# Real-time-safe partitioned FFT convolver (R9 — `Convolver_Stage`).
+# Used only by `crates/engine/src/dsp/convolver.rs`. Alternative
+# `realfft` manual partitioning kept as a fallback if upstream goes
+# stale.
+fft-convolver = "0.3"
+
 # Tag / cover extraction
 lofty = "0.24"
 
@@ -71,6 +78,11 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 # Tauri 2.x
 tauri = { version = "2.11", features = [] }
 tauri-build = { version = "2.4", features = [] }
+
+# Property-based testing (used in [dev-dependencies] of crates/engine and
+# crates/core; see audio-quality-improvements task 6).
+proptest = "1.5"
+tracing-test = "0.2"
 
 # Internal crates
 qobee-engine = { path = "crates/engine" }

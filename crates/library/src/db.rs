@@ -35,7 +35,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     cover_key       TEXT,
     mtime           INTEGER NOT NULL DEFAULT 0,
     replaygain_track_db REAL,
-    replaygain_album_db REAL
+    replaygain_album_db REAL,
+    replaygain_track_peak REAL,
+    replaygain_album_peak REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_tracks_album   ON tracks(album, album_artist);
@@ -107,6 +109,8 @@ impl Database {
         for stmt in [
             "ALTER TABLE tracks ADD COLUMN replaygain_track_db REAL",
             "ALTER TABLE tracks ADD COLUMN replaygain_album_db REAL",
+            "ALTER TABLE tracks ADD COLUMN replaygain_track_peak REAL",
+            "ALTER TABLE tracks ADD COLUMN replaygain_album_peak REAL",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 let msg = e.to_string();
@@ -140,9 +144,10 @@ impl Database {
                 path, title, artist, album, album_artist,
                 track_number, disc_number, year, genre,
                 duration_seconds, sample_rate, bit_depth, channels,
-                cover_key, mtime, replaygain_track_db, replaygain_album_db
+                cover_key, mtime, replaygain_track_db, replaygain_album_db,
+                replaygain_track_peak, replaygain_album_peak
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
             ON CONFLICT(path) DO UPDATE SET
                 title = excluded.title,
                 artist = excluded.artist,
@@ -159,7 +164,9 @@ impl Database {
                 cover_key = excluded.cover_key,
                 mtime = excluded.mtime,
                 replaygain_track_db = excluded.replaygain_track_db,
-                replaygain_album_db = excluded.replaygain_album_db
+                replaygain_album_db = excluded.replaygain_album_db,
+                replaygain_track_peak = excluded.replaygain_track_peak,
+                replaygain_album_peak = excluded.replaygain_album_peak
             "#,
             params![
                 track.path,
@@ -179,6 +186,8 @@ impl Database {
                 mtime,
                 track.replaygain_track_db.map(|v| v as f64),
                 track.replaygain_album_db.map(|v| v as f64),
+                track.replaygain_track_peak.map(|v| v as f64),
+                track.replaygain_album_peak.map(|v| v as f64),
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -302,7 +311,8 @@ impl Database {
             r#"
             SELECT id, path, title, artist, album, album_artist,
                    track_number, disc_number, year, genre,
-                   duration_seconds, sample_rate, bit_depth, channels, cover_key, replaygain_track_db, replaygain_album_db
+                   duration_seconds, sample_rate, bit_depth, channels, cover_key, replaygain_track_db, replaygain_album_db,
+                   replaygain_track_peak, replaygain_album_peak
             FROM tracks
             WHERE album = ?1 AND COALESCE(album_artist, artist) = ?2
             ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 0), title COLLATE NOCASE
@@ -322,7 +332,8 @@ impl Database {
                 r#"
                 SELECT id, path, title, artist, album, album_artist,
                        track_number, disc_number, year, genre,
-                       duration_seconds, sample_rate, bit_depth, channels, cover_key, replaygain_track_db, replaygain_album_db
+                       duration_seconds, sample_rate, bit_depth, channels, cover_key, replaygain_track_db, replaygain_album_db,
+                       replaygain_track_peak, replaygain_album_peak
                 FROM tracks
                 WHERE id = ?1
                 "#,
@@ -391,7 +402,8 @@ impl Database {
             r#"
             SELECT id, path, title, artist, album, album_artist,
                    track_number, disc_number, year, genre,
-                   duration_seconds, sample_rate, bit_depth, channels, cover_key, replaygain_track_db, replaygain_album_db
+                   duration_seconds, sample_rate, bit_depth, channels, cover_key, replaygain_track_db, replaygain_album_db,
+                   replaygain_track_peak, replaygain_album_peak
             FROM tracks
             WHERE album = ?1 AND COALESCE(album_artist, artist) = ?2
             ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 0), title COLLATE NOCASE
@@ -426,7 +438,8 @@ impl Database {
             r#"
             SELECT id, path, title, artist, album, album_artist,
                    track_number, disc_number, year, genre,
-                   duration_seconds, sample_rate, bit_depth, channels, cover_key, replaygain_track_db, replaygain_album_db
+                   duration_seconds, sample_rate, bit_depth, channels, cover_key, replaygain_track_db, replaygain_album_db,
+                   replaygain_track_peak, replaygain_album_peak
             FROM tracks
             WHERE title  LIKE ?1 ESCAPE '\'
                OR artist LIKE ?1 ESCAPE '\'
@@ -605,7 +618,8 @@ impl Database {
             r#"
             SELECT t.id, t.path, t.title, t.artist, t.album, t.album_artist,
                    t.track_number, t.disc_number, t.year, t.genre,
-                   t.duration_seconds, t.sample_rate, t.bit_depth, t.channels, t.cover_key, t.replaygain_track_db, t.replaygain_album_db
+                   t.duration_seconds, t.sample_rate, t.bit_depth, t.channels, t.cover_key, t.replaygain_track_db, t.replaygain_album_db,
+                   t.replaygain_track_peak, t.replaygain_album_peak
             FROM (
                 SELECT track_id, MAX(played_at) AS played_at
                 FROM play_history
@@ -887,7 +901,8 @@ impl Database {
             r#"
             SELECT t.id, t.path, t.title, t.artist, t.album, t.album_artist,
                    t.track_number, t.disc_number, t.year, t.genre,
-                   t.duration_seconds, t.sample_rate, t.bit_depth, t.channels, t.cover_key, t.replaygain_track_db, t.replaygain_album_db
+                   t.duration_seconds, t.sample_rate, t.bit_depth, t.channels, t.cover_key, t.replaygain_track_db, t.replaygain_album_db,
+                   t.replaygain_track_peak, t.replaygain_album_peak
             FROM playlist_tracks pt
             JOIN tracks t ON t.id = pt.track_id
             WHERE pt.playlist_id = ?1
@@ -1206,5 +1221,101 @@ fn track_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         cover_key: row.get(14)?,
         replaygain_track_db: row.get::<_, Option<f64>>(15).ok().flatten().map(|v| v as f32),
         replaygain_album_db: row.get::<_, Option<f64>>(16).ok().flatten().map(|v| v as f32),
+        replaygain_track_peak: row.get::<_, Option<f64>>(17).ok().flatten().map(|v| v as f32),
+        replaygain_album_peak: row.get::<_, Option<f64>>(18).ok().flatten().map(|v| v as f32),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a synthetic in-memory `Track` that does not refer to any
+    /// real file on disk. `upsert_track` calls `fs::metadata(...)` to
+    /// fetch a mtime; the call fails silently and we get `mtime = 0`,
+    /// which is fine for the round-trip tests.
+    fn make_track(path: &str, peak: Option<f32>, album_peak: Option<f32>) -> Track {
+        Track {
+            id: 0,
+            track_uid: String::new(),
+            path: path.to_string(),
+            title: "Title".into(),
+            artist: "Artist".into(),
+            album: "Album".into(),
+            album_artist: None,
+            track_number: None,
+            disc_number: None,
+            year: None,
+            genre: None,
+            duration_seconds: 0.0,
+            sample_rate: None,
+            bit_depth: None,
+            channels: None,
+            replaygain_track_db: None,
+            replaygain_album_db: None,
+            replaygain_track_peak: peak,
+            replaygain_album_peak: album_peak,
+            cover_key: None,
+        }
+    }
+
+    /// PRAGMA table_info returns column metadata. We assert the two
+    /// new peak columns are present after `Database::open`, regardless
+    /// of whether the table was created from `SCHEMA` or migrated via
+    /// the idempotent `ALTER TABLE` statements.
+    #[test]
+    fn replaygain_peak_columns_exist_after_open() {
+        let db = Database::open(Path::new(":memory:")).expect("open in-memory db");
+        let mut stmt = db
+            .conn
+            .prepare("PRAGMA table_info(tracks)")
+            .expect("pragma");
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert!(
+            columns.iter().any(|c| c == "replaygain_track_peak"),
+            "expected `replaygain_track_peak` in columns: {columns:?}",
+        );
+        assert!(
+            columns.iter().any(|c| c == "replaygain_album_peak"),
+            "expected `replaygain_album_peak` in columns: {columns:?}",
+        );
+    }
+
+    /// Inserting peak values must round-trip back through `get_track`
+    /// at f32 precision. We use a generous epsilon since the column is
+    /// stored as REAL (f64) and the model is f32.
+    #[test]
+    fn track_peak_round_trip_with_values() {
+        let mut db = Database::open(Path::new(":memory:")).expect("open in-memory db");
+        let track = make_track("/synthetic/path/with-peaks.flac", Some(0.987654), Some(1.0234));
+        let id = db.upsert_track(&track, None).expect("upsert");
+        let got = db
+            .get_track(id)
+            .expect("get_track")
+            .expect("track exists");
+        let tp = got.replaygain_track_peak.expect("track peak set");
+        let ap = got.replaygain_album_peak.expect("album peak set");
+        assert!((tp - 0.987654_f32).abs() < 1e-5, "track peak round-trip: got {tp}");
+        assert!((ap - 1.0234_f32).abs() < 1e-5, "album peak round-trip: got {ap}");
+    }
+
+    /// `None` peaks (the common case for non-RG-tagged files) must
+    /// survive the round-trip as `None`, not as `Some(0.0)` or a
+    /// silent default.
+    #[test]
+    fn track_peak_round_trip_with_none() {
+        let mut db = Database::open(Path::new(":memory:")).expect("open in-memory db");
+        let track = make_track("/synthetic/path/no-peaks.flac", None, None);
+        let id = db.upsert_track(&track, None).expect("upsert");
+        let got = db
+            .get_track(id)
+            .expect("get_track")
+            .expect("track exists");
+        assert!(got.replaygain_track_peak.is_none(), "expected None, got {:?}", got.replaygain_track_peak);
+        assert!(got.replaygain_album_peak.is_none(), "expected None, got {:?}", got.replaygain_album_peak);
+    }
 }

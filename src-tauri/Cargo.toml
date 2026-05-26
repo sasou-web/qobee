@@ -37,3 +37,9 @@ qobee-engine = { workspace = true }
 qobee-library = { workspace = true }
 qobee-core = { workspace = true }
 lofty = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Used by `commands::get_device_mix_format` to read
+# `IAudioClient::GetMixFormat()` directly without spinning up a full
+# WASAPI exclusive session. Same pinned version as `qobee-engine`.
+wasapi = "0.23"

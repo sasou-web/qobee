@@ -15,8 +15,8 @@ pub mod scan;
 
 pub use db::Database;
 pub use model::{
-    Album, AlbumDetail, AlbumKind, AlbumWithKind, Artist, ArtistDetail, Genre, LibraryRoot,
-    LibraryStats, Playlist, PlaylistDetail, ScanProgress, SearchResults, Track,
+    Album, AlbumDetail, AlbumKind, AlbumWithKind, Artist, ArtistDetail, DsdRate, Genre,
+    LibraryRoot, LibraryStats, Playlist, PlaylistDetail, ScanProgress, SearchResults, Track,
 };
 pub use scan::{scan_folder, ScanOptions, ScanReport};
 

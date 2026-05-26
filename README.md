@@ -1,4 +1,4 @@
-# Qobee
+#aA+ Qobee
 
 A local audio player for Windows, focused on fidelity. Indexes one or
 more music folders, plays FLAC and other lossless formats through the
@@ -53,7 +53,8 @@ than ship a misleading badge.
 - **Rust** workspace with separate crates for the audio engine,
   library indexing and orchestration:
   - `crates/engine` — Symphonia (decoding), CPAL (Shared output),
-    biquad EQ, future WASAPI Exclusive seam.
+    WASAPI Exclusive backend, biquad EQ, and a fidelity-first DSP
+    chain shared by both backends (see "Audio chain" below).
   - `crates/library` — `walkdir` + `lofty` for tag extraction,
     `rusqlite` (bundled) for storage, embedded covers cached on
     disk, FTS-style search, settings table.
@@ -64,6 +65,54 @@ than ship a misleading badge.
   Rich Presence worker and a cover-hosting worker (background
   uploads to a public host so Discord can render local album art).
 - **Svelte 5** + **TypeScript strict** + **Vite** frontend in `ui/`.
+
+### Audio chain
+
+The engine runs a single, deterministic DSP pipeline on top of both
+the Shared and Exclusive backends. Every stage is bypassable and
+honest about what it does — the truthful `is_bit_perfect` badge
+reflects the actual chain, not a marketing flag.
+
+- **ReplayGain peak protection.** The pre-gain stage combines the
+  RG track/album gain, a configurable safety headroom and the
+  source's true peak (read from `REPLAYGAIN_TRACK_PEAK` /
+  `_ALBUM_PEAK` tags) so the output never exceeds the chosen
+  ceiling. Missing peak tags fall back to a conservative `1.0`,
+  and the attenuation actually applied is reported in the player
+  state.
+- **Dither.** Three profiles: `tpdf` (legacy white triangular PDF),
+  `shaped_hp` (HF-emphasis shaping), and `shaped_f_weighted` (the
+  default — F-weighted noise shaping that pushes the noise floor
+  away from the ear's peak sensitivity). The stage is in exact
+  bypass when the output is wider than 16 bits.
+- **Peak limiter.** Three modes: `off` (passthrough), `soft_clip`
+  (smooth tanh-style clipper, legacy behaviour), and
+  `lookahead_limiter` (the default — true-peak look-ahead limiter
+  with configurable ceiling, look-ahead and release).
+- **Logarithmic volume.** The slider maps to a dB scale by default
+  (`logarithmic` curve, configurable floor) so a small movement at
+  low levels behaves like the volume control on a real amplifier.
+  The legacy `quadratic` curve remains available.
+- **Crossfeed.** Bauer-style stereo-to-headphones crossfeed with
+  three presets (`bauer`, `bauer_strong`, `custom`) and tunable
+  inter-aural delay and low-pass cutoff. Off by default.
+- **DSD / DoP.** Native decoding of DSF and DFF files, with DSD
+  over PCM (DoP) packing for WASAPI Exclusive devices that accept
+  it.
+- **Convolver.** FFT-partitioned IR convolver for room-correction
+  or headphone-EQ filters. Loads any IR the user picks, with a
+  per-IR gain trim to keep the output within the limiter ceiling.
+- **Balance + per-channel trim.** Stereo balance plus an optional
+  per-channel trim vector (≤8 channels) for asymmetric setups.
+- **Bit-Perfect Health panel.** A live status badge surfaces every
+  factor that breaks bit-perfect — non-native sample rate, channel
+  upmix, non-unity volume, EQ engaged, ReplayGain attenuation,
+  dither active, limiter biting — so the user knows exactly which
+  stage is colouring the sound.
+- **Null-test diagnostic.** Plays a known reference and compares
+  it against either a loopback capture or the pre-render buffer,
+  reporting peak/RMS difference and a `BitPerfect / Modified /
+  Inconclusive` verdict.
 
 Pinned versions:
 
@@ -337,6 +386,22 @@ The MSI / NSIS installers land under `src-tauri/target/release/bundle/`.
 - Repeat (off / track / queue), shuffle, and endless playback.
 - 10-band peaking EQ at ISO octave centers (Q=1.0, ±12 dB), with
   presets and an automatic bypass when every band is at 0 dB.
+- **Full audio DSP chain**, shared between Shared and Exclusive
+  backends and exposed in **Settings → Audio**: ReplayGain
+  true-peak protection with safety headroom, dither (TPDF /
+  shaped HP / shaped F-weighted), peak limiter (off / soft-clip /
+  look-ahead, on by default), logarithmic volume curve with a
+  configurable floor, Bauer-style crossfeed (presets + custom),
+  native DSD/DoP playback, FFT-partitioned IR convolver, balance
+  and per-channel trim. See "Audio settings keys" below for the
+  full key list.
+- **Bit-Perfect Health badge** in the player bar that lists every
+  factor breaking bit-perfect (non-native rate, channel upmix,
+  non-unity volume, EQ on, ReplayGain attenuation, dither, limiter
+  biting) instead of a binary green light.
+- **Null-test diagnostic** in Settings → Diagnostics that plays a
+  reference signal and reports peak/RMS difference plus a
+  `BitPerfect / Modified / Inconclusive` verdict.
 - Search across titles, artists and albums.
 - Recently played tracks / albums / artists on the home page.
 - Themes (system / dark / light), configurable accent color, and
@@ -366,6 +431,38 @@ The MSI / NSIS installers land under `src-tauri/target/release/bundle/`.
   privacy notice explains exactly what gets uploaded and where.
 - The player bar always shows the effective output mode and a
   truthful bit-perfect badge.
+
+## Audio settings keys
+
+Every audio preference is persisted as a JSON value in the SQLite
+`settings` table under an `audio.*` key. Booleans, numbers and
+arrays are stored as JSON; enums are stored as `snake_case`
+strings. Out-of-range values read at boot are clamped and
+rewritten; missing keys are created with their default. The full
+list is below; bounds and defaults are kept in sync with
+`crates/engine/src/audio_settings.rs` and the design document.
+
+| Key                                | Type             | Default              | Bounds                                          | Description                                                       |
+| ---------------------------------- | ---------------- | -------------------- | ----------------------------------------------- | ----------------------------------------------------------------- |
+| `audio.rg_peak_protection`         | bool             | `true`               | —                                               | Cap pre-gain so RG-boosted peaks never exceed the limiter ceiling.|
+| `audio.rg_safety_headroom_db`      | f32              | `1.0`                | `[0.0, 3.0]`                                    | Extra headroom subtracted from the ceiling when peak protection is on. |
+| `audio.dither_profile`             | enum             | `shaped_f_weighted`  | `tpdf` \| `shaped_hp` \| `shaped_f_weighted`    | Noise profile used when output is ≤ 16 bits.                      |
+| `audio.peak_limiter_mode`          | enum             | `lookahead_limiter`  | `off` \| `soft_clip` \| `lookahead_limiter`     | Final stage protecting the DAC from inter-sample / peak overshoot.|
+| `audio.peak_limiter_ceiling_dbfs`  | f32              | `-1.0`               | `[-3.0, 0.0]`                                   | True-peak ceiling enforced by the limiter.                        |
+| `audio.peak_limiter_lookahead_ms`  | f32              | `5.0`                | `[2.0, 10.0]`                                   | Look-ahead window for the limiter.                                |
+| `audio.peak_limiter_release_ms`    | f32              | `100.0`              | `[20.0, 500.0]`                                 | Release time of the limiter envelope.                             |
+| `audio.volume_curve`               | enum             | `logarithmic`        | `quadratic` \| `logarithmic`                    | Slider-to-gain mapping for software volume.                       |
+| `audio.volume_floor_db`            | f32              | `-60.0`              | `[-80.0, -30.0]`                                | Minimum gain (in dB) the slider can reach above 0 % (mute is exact). |
+| `audio.crossfeed_enabled`          | bool             | `false`              | —                                               | Enables Bauer-style headphones crossfeed.                         |
+| `audio.crossfeed_preset`           | enum             | `bauer`              | `bauer` \| `bauer_strong` \| `custom`           | Crossfeed preset; `custom` honours the delay/cutoff fields below. |
+| `audio.crossfeed_delay_us`         | f32              | `300.0`              | `[200.0, 400.0]`                                | Inter-aural delay in microseconds (used by `custom`).             |
+| `audio.crossfeed_lp_cutoff_hz`     | f32              | `700.0`              | `[500.0, 1500.0]`                               | Crossfeed low-pass cutoff (used by `custom`).                     |
+| `audio.resampler_quality`          | enum             | `best`               | `standard` \| `best`                            | Sinc length / oversampling factor of the rubato resampler.        |
+| `audio.convolver_enabled`          | bool             | `false`              | —                                               | Enables the FFT-partitioned IR convolver.                         |
+| `audio.convolver_ir_path`          | string \| null   | `null`               | readable file path                              | Impulse response file picked from disk.                           |
+| `audio.convolver_gain_db`          | f32              | `-6.0`               | `[-24.0, 0.0]`                                  | Trim applied to the convolver output to stay below the ceiling.   |
+| `audio.balance`                    | f32              | `0.0`                | `[-1.0, 1.0]`                                   | Stereo balance (-1 = full left, +1 = full right).                 |
+| `audio.trim_db_per_channel`        | array of f32     | `[]`                 | length ≤ 8, each ∈ `[-12.0, 0.0]`               | Per-channel trim in dB for asymmetric setups.                     |
 
 ## What is intentionally not in yet
 
