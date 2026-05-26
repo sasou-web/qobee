@@ -176,8 +176,7 @@ impl PreGainStage {
             match self.curve {
                 VolumeCurve::Quadratic => slider.clamp(0.0, 1.0).powi(2),
                 VolumeCurve::Logarithmic => {
-                    let db = self.floor_db
-                        + (0.0 - self.floor_db) * slider.clamp(0.0, 1.0);
+                    let db = self.floor_db + (0.0 - self.floor_db) * slider.clamp(0.0, 1.0);
                     10f32.powf(db / 20.0)
                 }
             }
@@ -190,12 +189,7 @@ impl PreGainStage {
 }
 
 impl DspStage for PreGainStage {
-    fn reconfigure(
-        &mut self,
-        settings: &AudioSettings,
-        _sample_rate: u32,
-        _channels: u16,
-    ) {
+    fn reconfigure(&mut self, settings: &AudioSettings, _sample_rate: u32, _channels: u16) {
         self.peak_protection_enabled = settings.rg_peak_protection;
         self.safety_headroom_db = settings.rg_safety_headroom_db;
         self.ceiling_dbfs = settings.peak_limiter_ceiling_dbfs;
@@ -251,7 +245,15 @@ mod tests {
     fn process_inplace_passthrough_when_bypass() {
         let mut s = PreGainStage::new(&settings(), 48_000, 2);
         let original: Vec<f32> = vec![
-            0.0, 1.0, -1.0, 0.5, -0.5, 0.123_456_7, -0.987_654_3, 1e-9, -1e-9,
+            0.0,
+            1.0,
+            -1.0,
+            0.5,
+            -0.5,
+            0.123_456_7,
+            -0.987_654_3,
+            1e-9,
+            -1e-9,
             0.999_999_94,
         ];
         let mut buf = original.clone();
@@ -275,7 +277,10 @@ mod tests {
         });
 
         assert_eq!(s.linear_gain(), 0.0, "mute must be exact zero");
-        assert!(!s.is_bypass(), "mute is not a bypass — output must be silenced");
+        assert!(
+            !s.is_bypass(),
+            "mute is not a bypass — output must be silenced"
+        );
 
         let mut buf = vec![1.0_f32; 256];
         s.process_inplace(&mut buf);

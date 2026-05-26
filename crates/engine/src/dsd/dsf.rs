@@ -39,6 +39,7 @@ const BLOCK_SIZE: usize = 4096;
 /// Read a DSF file from `r`, returning a fully-buffered
 /// [`DsdStream`]. The reader is consumed up to the end of the data
 /// chunk; trailing ID3v2 metadata (if any) is ignored.
+#[allow(clippy::needless_range_loop)]
 pub fn read_dsf<R: Read + Seek>(mut r: R) -> EngineResult<DsdStream> {
     // -------- DSD chunk (28 bytes) --------
     let mut header = [0u8; 28];
@@ -137,8 +138,8 @@ pub fn read_dsf<R: Read + Seek>(mut r: R) -> EngineResult<DsdStream> {
 
     // Bytes per channel = ceil(sample_count / 8) padded up to a
     // multiple of `block`.
-    let bytes_per_ch_unpadded = ((sample_count + 7) / 8) as usize;
-    let blocks_per_ch = (bytes_per_ch_unpadded + block - 1) / block;
+    let bytes_per_ch_unpadded = sample_count.div_ceil(8) as usize;
+    let blocks_per_ch = bytes_per_ch_unpadded.div_ceil(block);
     let bytes_per_ch_padded = blocks_per_ch * block;
     let total_expected = bytes_per_ch_padded * channel_num as usize;
     if payload_len < total_expected {
@@ -151,8 +152,9 @@ pub fn read_dsf<R: Read + Seek>(mut r: R) -> EngineResult<DsdStream> {
     r.read_exact(&mut payload)
         .map_err(|e| EngineError::DsdInvalidFile(format!("data payload: {e}")))?;
 
-    let mut bytes_per_channel: Vec<Vec<u8>> =
-        (0..channel_num).map(|_| Vec::with_capacity(bytes_per_ch_unpadded)).collect();
+    let mut bytes_per_channel: Vec<Vec<u8>> = (0..channel_num)
+        .map(|_| Vec::with_capacity(bytes_per_ch_unpadded))
+        .collect();
     for blk in 0..blocks_per_ch {
         for c in 0..channel_num as usize {
             let offset = (blk * channel_num as usize + c) * block;
@@ -191,7 +193,7 @@ pub fn write_dsf<W: Write>(stream: &DsdStream, w: &mut W) -> EngineResult<()> {
         ));
     }
     let block = BLOCK_SIZE;
-    let blocks_per_ch = (bytes_per_ch_unpadded + block - 1) / block;
+    let blocks_per_ch = bytes_per_ch_unpadded.div_ceil(block);
     let bytes_per_ch_padded = blocks_per_ch * block;
     let total_payload = bytes_per_ch_padded * stream.channels as usize;
     let data_chunk_size = (12 + total_payload) as u64;
@@ -253,9 +255,8 @@ pub fn write_dsf<W: Write>(stream: &DsdStream, w: &mut W) -> EngineResult<()> {
                     .map_err(|e| EngineError::DsdInvalidFile(format!("write block: {e}")))?;
             }
             if take < block {
-                w.write_all(&zero_pad[..block - take]).map_err(|e| {
-                    EngineError::DsdInvalidFile(format!("write block pad: {e}"))
-                })?;
+                w.write_all(&zero_pad[..block - take])
+                    .map_err(|e| EngineError::DsdInvalidFile(format!("write block pad: {e}")))?;
             }
         }
     }

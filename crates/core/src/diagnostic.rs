@@ -34,7 +34,7 @@ use qobee_engine::diagnostic::{
     align_by_cross_correlation, compute_diff, generate_test_wav, NullTestStats,
     DEFAULT_TEST_WAV_SEED,
 };
-use qobee_engine::{AudioEngine, EngineEvent, EffectiveOutputMode, OutputMode};
+use qobee_engine::{AudioEngine, EffectiveOutputMode, EngineEvent, OutputMode};
 
 use crate::player::PlayerHandle;
 
@@ -179,9 +179,7 @@ pub fn run_null_test(player: &PlayerHandle) -> NullTestReport {
     }
 
     let report = match captured_via {
-        NullTestSource::Loopback => {
-            run_loopback_branch(player, mode, &source_path, &capture_path)
-        }
+        NullTestSource::Loopback => run_loopback_branch(player, mode, &source_path, &capture_path),
         NullTestSource::PreRender => {
             run_pre_render_branch(player, mode, &source_path, &capture_path)
         }
@@ -404,7 +402,8 @@ fn read_wav_f32(path: &Path) -> Result<Vec<f32>, String> {
                 if size < 16 {
                     return Err("short fmt chunk".to_string());
                 }
-                format_tag = u16::from_le_bytes(bytes[body_start..body_start + 2].try_into().unwrap());
+                format_tag =
+                    u16::from_le_bytes(bytes[body_start..body_start + 2].try_into().unwrap());
                 bits_per_sample =
                     u16::from_le_bytes(bytes[body_start + 14..body_start + 16].try_into().unwrap());
             }
@@ -471,8 +470,11 @@ mod tests {
             samples_diff_count: 0,
             aligned_frames: 100,
         };
-        let report =
-            NullTestReport::from_stats(EffectiveOutputMode::Shared, NullTestSource::Loopback, stats_zero);
+        let report = NullTestReport::from_stats(
+            EffectiveOutputMode::Shared,
+            NullTestSource::Loopback,
+            stats_zero,
+        );
         assert_eq!(report.conclusion, NullTestConclusion::BitPerfect);
 
         let stats_one = NullTestStats {
@@ -481,8 +483,11 @@ mod tests {
             samples_diff_count: 1,
             aligned_frames: 100,
         };
-        let report =
-            NullTestReport::from_stats(EffectiveOutputMode::Shared, NullTestSource::Loopback, stats_one);
+        let report = NullTestReport::from_stats(
+            EffectiveOutputMode::Shared,
+            NullTestSource::Loopback,
+            stats_one,
+        );
         assert_eq!(report.conclusion, NullTestConclusion::Modified);
     }
 }

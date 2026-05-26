@@ -22,20 +22,16 @@ pub struct QueueSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RepeatMode {
     /// No repeat. End of queue stops playback (or triggers
     /// auto-shuffle, depending on Player config).
+    #[default]
     Off,
     /// Loop on the current track forever.
     Track,
     /// Loop the entire queue.
     Queue,
-}
-
-impl Default for RepeatMode {
-    fn default() -> Self {
-        RepeatMode::Off
-    }
 }
 
 #[derive(Default)]
@@ -85,8 +81,7 @@ impl Queue {
             let head = cursor
                 .and_then(|i| tracks.get(i).copied())
                 .unwrap_or_else(|| tracks[0]);
-            let mut rest: Vec<TrackId> =
-                tracks.iter().copied().filter(|id| *id != head).collect();
+            let mut rest: Vec<TrackId> = tracks.iter().copied().filter(|id| *id != head).collect();
             shuffle_in_place(&mut rest);
             let mut shuffled = Vec::with_capacity(tracks.len());
             shuffled.push(head);
@@ -296,8 +291,7 @@ impl Queue {
             // Save original (already saved when replace() was called)
             // and reshuffle the tail around the current track.
             let head = cur_id.unwrap_or_else(|| g.items[0]);
-            let mut rest: Vec<TrackId> =
-                g.items.iter().copied().filter(|id| *id != head).collect();
+            let mut rest: Vec<TrackId> = g.items.iter().copied().filter(|id| *id != head).collect();
             shuffle_in_place(&mut rest);
             let mut shuffled = Vec::with_capacity(g.items.len());
             shuffled.push(head);

@@ -11,9 +11,7 @@
 //!     a single sample differs by 1 LSB.
 
 use proptest::prelude::*;
-use qobee_engine::diagnostic::{
-    align_by_cross_correlation, compute_diff, generate_test_wav,
-};
+use qobee_engine::diagnostic::{align_by_cross_correlation, compute_diff, generate_test_wav};
 
 /// Resolve a unique scratch path under `%TEMP%/qobee-null-test/`.
 fn temp_path(stem: &str) -> std::path::PathBuf {
@@ -84,16 +82,16 @@ proptest! {
         // buffer is at least as long as the source.
         let mut captured = Vec::with_capacity(source_len + 8_192);
         if lag >= 0 {
-            captured.extend(std::iter::repeat(0.0f32).take(lag as usize));
+            captured.extend(std::iter::repeat_n(0.0f32, lag as usize));
             captured.extend_from_slice(&source);
-            captured.extend(std::iter::repeat(0.0f32).take(8_192));
+            captured.extend(std::iter::repeat_n(0.0f32, 8_192));
         } else {
             // Negative lag: captured is advanced. Drop the first
             // `|lag|` samples of source.
             let drop = (-lag) as usize;
             if drop < source.len() {
                 captured.extend_from_slice(&source[drop..]);
-                captured.extend(std::iter::repeat(0.0f32).take(8_192));
+                captured.extend(std::iter::repeat_n(0.0f32, 8_192));
             } else {
                 // Degenerate case: skip.
                 return Ok(());

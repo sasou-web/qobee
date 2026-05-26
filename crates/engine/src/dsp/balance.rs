@@ -337,7 +337,10 @@ mod tests {
                 "left must be silenced at frame {f}, got {}",
                 buf[f * 2]
             );
-            assert!((buf[f * 2 + 1] - 1.0).abs() < 1e-6, "right must stay at 1.0");
+            assert!(
+                (buf[f * 2 + 1] - 1.0).abs() < 1e-6,
+                "right must stay at 1.0"
+            );
         }
     }
 
@@ -389,9 +392,9 @@ mod tests {
         let expected_l = 10f32.powf(-6.0 / 20.0);
         assert!((buf[0] - expected_l).abs() < 1e-5, "ch0 = trim -6 dB");
         assert!((buf[1] - 1.0).abs() < 1e-6, "ch1 = trim 0 dB");
-        for c in 2..n {
+        for (c, &v) in buf.iter().enumerate().skip(2) {
             assert!(
-                (buf[c] - 1.0).abs() < 1e-6,
+                (v - 1.0).abs() < 1e-6,
                 "ch{c} must stay at unity (no trim specified)"
             );
         }
@@ -473,6 +476,9 @@ mod tests {
 
         // Once the ramp has completed and the targets are unity, the
         // stage is back to a true passthrough.
-        assert!(s.is_bypass(), "after ramp finishes, is_bypass() must be true again");
+        assert!(
+            s.is_bypass(),
+            "after ramp finishes, is_bypass() must be true again"
+        );
     }
 }

@@ -67,9 +67,7 @@ pub fn read_dff<R: Read + Seek>(mut r: R) -> EngineResult<DsdStream> {
         match r.read_exact(&mut header) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(e) => {
-                return Err(EngineError::DsdInvalidFile(format!("chunk id: {e}")))
-            }
+            Err(e) => return Err(EngineError::DsdInvalidFile(format!("chunk id: {e}"))),
         }
         // FRM8/DSD/DST carry a 64-bit size; everything else uses 32-bit.
         let size = if &header == b"FRM8" || &header == b"DSD " || &header == b"DST " {
@@ -102,20 +100,17 @@ pub fn read_dff<R: Read + Seek>(mut r: R) -> EngineResult<DsdStream> {
                 let mut remaining = (size as i64).saturating_sub(4);
                 while remaining > 0 {
                     let mut sub_id = [0u8; 4];
-                    r.read_exact(&mut sub_id).map_err(|e| {
-                        EngineError::DsdInvalidFile(format!("PROP sub id: {e}"))
-                    })?;
+                    r.read_exact(&mut sub_id)
+                        .map_err(|e| EngineError::DsdInvalidFile(format!("PROP sub id: {e}")))?;
                     let mut sub_sz_buf = [0u8; 4];
-                    r.read_exact(&mut sub_sz_buf).map_err(|e| {
-                        EngineError::DsdInvalidFile(format!("PROP sub size: {e}"))
-                    })?;
+                    r.read_exact(&mut sub_sz_buf)
+                        .map_err(|e| EngineError::DsdInvalidFile(format!("PROP sub size: {e}")))?;
                     let sub_sz = u32::from_be_bytes(sub_sz_buf);
                     match &sub_id {
                         b"FS  " => {
                             let mut fs_buf = [0u8; 4];
-                            r.read_exact(&mut fs_buf).map_err(|e| {
-                                EngineError::DsdInvalidFile(format!("FS: {e}"))
-                            })?;
+                            r.read_exact(&mut fs_buf)
+                                .map_err(|e| EngineError::DsdInvalidFile(format!("FS: {e}")))?;
                             sample_rate = Some(u32::from_be_bytes(fs_buf));
                             // Skip any trailing padding inside the sub-chunk.
                             let pad = (sub_sz as i64).saturating_sub(4);
@@ -127,9 +122,8 @@ pub fn read_dff<R: Read + Seek>(mut r: R) -> EngineResult<DsdStream> {
                         }
                         b"CHNL" => {
                             let mut nc_buf = [0u8; 2];
-                            r.read_exact(&mut nc_buf).map_err(|e| {
-                                EngineError::DsdInvalidFile(format!("CHNL: {e}"))
-                            })?;
+                            r.read_exact(&mut nc_buf)
+                                .map_err(|e| EngineError::DsdInvalidFile(format!("CHNL: {e}")))?;
                             let nc = u16::from_be_bytes(nc_buf);
                             channels = Some(nc);
                             // Each channel id is 4 bytes; skip the
@@ -154,9 +148,8 @@ pub fn read_dff<R: Read + Seek>(mut r: R) -> EngineResult<DsdStream> {
             }
             b"DSD " => {
                 let mut buf = vec![0u8; size as usize];
-                r.read_exact(&mut buf).map_err(|e| {
-                    EngineError::DsdInvalidFile(format!("DSD payload: {e}"))
-                })?;
+                r.read_exact(&mut buf)
+                    .map_err(|e| EngineError::DsdInvalidFile(format!("DSD payload: {e}")))?;
                 audio = Some(buf);
             }
             b"DST " => {
@@ -166,9 +159,8 @@ pub fn read_dff<R: Read + Seek>(mut r: R) -> EngineResult<DsdStream> {
             }
             _ => {
                 let pad = size as i64 + (size as i64 & 1);
-                r.seek(SeekFrom::Current(pad)).map_err(|e| {
-                    EngineError::DsdInvalidFile(format!("unknown chunk skip: {e}"))
-                })?;
+                r.seek(SeekFrom::Current(pad))
+                    .map_err(|e| EngineError::DsdInvalidFile(format!("unknown chunk skip: {e}")))?;
                 continue;
             }
         }
@@ -180,15 +172,13 @@ pub fn read_dff<R: Read + Seek>(mut r: R) -> EngineResult<DsdStream> {
         }
     }
 
-    let sample_rate = sample_rate
-        .ok_or_else(|| EngineError::DsdInvalidFile("missing FS chunk".into()))?;
-    let channels = channels
-        .ok_or_else(|| EngineError::DsdInvalidFile("missing CHNL chunk".into()))?;
-    let audio = audio
-        .ok_or_else(|| EngineError::DsdInvalidFile("missing DSD payload".into()))?;
-    let rate = DsdRate::from_hz_bits(sample_rate, 1).ok_or_else(|| {
-        EngineError::DsdInvalidFile(format!("unsupported FS: {sample_rate}"))
-    })?;
+    let sample_rate =
+        sample_rate.ok_or_else(|| EngineError::DsdInvalidFile("missing FS chunk".into()))?;
+    let channels =
+        channels.ok_or_else(|| EngineError::DsdInvalidFile("missing CHNL chunk".into()))?;
+    let audio = audio.ok_or_else(|| EngineError::DsdInvalidFile("missing DSD payload".into()))?;
+    let rate = DsdRate::from_hz_bits(sample_rate, 1)
+        .ok_or_else(|| EngineError::DsdInvalidFile(format!("unsupported FS: {sample_rate}")))?;
     if channels == 0 {
         return Err(EngineError::DsdInvalidFile("channels = 0".into()));
     }
@@ -255,10 +245,7 @@ pub fn write_dff<W: Write>(stream: &DsdStream, w: &mut W) -> EngineResult<()> {
     let audio_pad = audio_len & 1;
 
     // FRM8 inner content: type(4) + FVER(8 + 4) + PROP(8 + body) + DSD(12 + audio + pad)
-    let frm8_body_len = 4
-        + (8 + 4)
-        + (8 + prop_body_len)
-        + (12 + audio_len + audio_pad);
+    let frm8_body_len = 4 + (8 + 4) + (8 + prop_body_len) + (12 + audio_len + audio_pad);
 
     // -------- FRM8 outer chunk --------
     w.write_all(b"FRM8")
@@ -301,9 +288,8 @@ pub fn write_dff<W: Write>(stream: &DsdStream, w: &mut W) -> EngineResult<()> {
         .map_err(|e| EngineError::DsdInvalidFile(format!("write CHNL nc: {e}")))?;
     // Channel IDs: padded zeros, four bytes each.
     for _ in 0..nc {
-        w.write_all(&[0u8; 4]).map_err(|e| {
-            EngineError::DsdInvalidFile(format!("write CHNL id: {e}"))
-        })?;
+        w.write_all(&[0u8; 4])
+            .map_err(|e| EngineError::DsdInvalidFile(format!("write CHNL id: {e}")))?;
     }
     if chnl_body_len_padded != chnl_body_len {
         w.write_all(&[0u8])
@@ -317,9 +303,8 @@ pub fn write_dff<W: Write>(stream: &DsdStream, w: &mut W) -> EngineResult<()> {
         .map_err(|e| EngineError::DsdInvalidFile(format!("write DSD size: {e}")))?;
     for f in 0..frames_per_ch {
         for c in 0..nc {
-            w.write_all(&[stream.bytes_per_channel[c][f]]).map_err(|e| {
-                EngineError::DsdInvalidFile(format!("write audio: {e}"))
-            })?;
+            w.write_all(&[stream.bytes_per_channel[c][f]])
+                .map_err(|e| EngineError::DsdInvalidFile(format!("write audio: {e}")))?;
         }
     }
     if audio_pad != 0 {

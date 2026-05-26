@@ -19,9 +19,7 @@ use crate::error::{EngineError, EngineResult};
 pub fn capture_loopback(device_name: Option<&str>, duration: Duration) -> EngineResult<Vec<f32>> {
     use std::collections::VecDeque;
 
-    use wasapi::{
-        initialize_mta, Direction, DeviceEnumerator, SampleType, StreamMode, WaveFormat,
-    };
+    use wasapi::{initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
 
     // COM init is idempotent on this thread.
     let _ = initialize_mta().ok();
@@ -63,9 +61,9 @@ pub fn capture_loopback(device_name: Option<&str>, duration: Duration) -> Engine
             .map_err(|e| EngineError::NullTestLoopbackFailed(format!("default device: {e:?}")))?,
     };
 
-    let mut audio_client = device.get_iaudioclient().map_err(|e| {
-        EngineError::NullTestLoopbackFailed(format!("get_iaudioclient: {e:?}"))
-    })?;
+    let mut audio_client = device
+        .get_iaudioclient()
+        .map_err(|e| EngineError::NullTestLoopbackFailed(format!("get_iaudioclient: {e:?}")))?;
     let mix_format = audio_client
         .get_mixformat()
         .map_err(|e| EngineError::NullTestLoopbackFailed(format!("get_mixformat: {e:?}")))?;
@@ -104,11 +102,9 @@ pub fn capture_loopback(device_name: Option<&str>, duration: Duration) -> Engine
     let h_event = audio_client
         .set_get_eventhandle()
         .map_err(|e| EngineError::NullTestLoopbackFailed(format!("set_get_eventhandle: {e:?}")))?;
-    let capture_client = audio_client
-        .get_audiocaptureclient()
-        .map_err(|e| {
-            EngineError::NullTestLoopbackFailed(format!("get_audiocaptureclient: {e:?}"))
-        })?;
+    let capture_client = audio_client.get_audiocaptureclient().map_err(|e| {
+        EngineError::NullTestLoopbackFailed(format!("get_audiocaptureclient: {e:?}"))
+    })?;
     audio_client
         .start_stream()
         .map_err(|e| EngineError::NullTestLoopbackFailed(format!("start_stream: {e:?}")))?;

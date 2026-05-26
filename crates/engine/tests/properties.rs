@@ -82,7 +82,10 @@ fn seedable_silence_is_deterministic_and_correctly_sized() {
     let b = seedable_silence(44_100, 2);
     assert_eq!(a, b, "silence generator must be deterministic");
     assert_eq!(a.len(), 44_100 * 2 * 2, "2 s × 44.1 kHz × 2 channels");
-    assert!(a.iter().all(|&s| s == 0.0), "every sample must be exactly zero");
+    assert!(
+        a.iter().all(|&s| s == 0.0),
+        "every sample must be exactly zero"
+    );
 
     // Different config -> different size, still all zeros.
     let mono = seedable_silence(48_000, 1);
@@ -201,8 +204,8 @@ fn r1_3_missing_peak_falls_back_to_full_scale() {
     };
     let mut stage = PreGainStage::new(&settings, 48_000, 2);
     stage.set_context(PreGainContext {
-        rg_db: Some(6.0),  // demanding a +6 dB boost
-        rg_peak: None,     // no peak tag → fallback 1.0
+        rg_db: Some(6.0), // demanding a +6 dB boost
+        rg_peak: None,    // no peak tag → fallback 1.0
         slider: 1.0,
     });
     // ceiling × safety = 10^(-2/20) ≈ 0.7943; demanded ≈ 1.995.
@@ -391,24 +394,36 @@ fn property_22_channel_balance_bypass_is_sample_exact_passthrough() {
 // the right channel.
 #[test]
 fn r10_2_balance_minus_one_silences_right() {
-    let mut audio = AudioSettings::default();
-    audio.balance = -1.0;
+    let audio = AudioSettings {
+        balance: -1.0,
+        ..AudioSettings::default()
+    };
     let mut stage = ChannelBalanceStage::new(&audio, 48_000, 2);
     stage.reset(); // snap to target — skip the 50 ms ramp
     let mut buf = vec![1.0_f32, 1.0, 1.0, 1.0]; // 2 stereo frames
     stage.process_inplace(&mut buf);
     assert!((buf[0] - 1.0).abs() < 1e-6, "L frame 0 must stay at 1.0");
-    assert!(buf[1].abs() < 1e-6, "R frame 0 must be silenced, got {}", buf[1]);
+    assert!(
+        buf[1].abs() < 1e-6,
+        "R frame 0 must be silenced, got {}",
+        buf[1]
+    );
     assert!((buf[2] - 1.0).abs() < 1e-6, "L frame 1 must stay at 1.0");
-    assert!(buf[3].abs() < 1e-6, "R frame 1 must be silenced, got {}", buf[3]);
+    assert!(
+        buf[3].abs() < 1e-6,
+        "R frame 1 must be silenced, got {}",
+        buf[3]
+    );
 }
 
 // Feature: audio-quality-improvements, R10.3 — `trim_db[0] = -6.0` dB
 // attenuates channel 0 by exactly -6 dB linear.
 #[test]
 fn r10_3_trim_minus_six_db_attenuates_left() {
-    let mut audio = AudioSettings::default();
-    audio.trim_db_per_channel = vec![-6.0, 0.0];
+    let audio = AudioSettings {
+        trim_db_per_channel: vec![-6.0, 0.0],
+        ..AudioSettings::default()
+    };
     let mut stage = ChannelBalanceStage::new(&audio, 48_000, 2);
     stage.reset();
     let mut buf = vec![1.0_f32, 1.0]; // one stereo frame
@@ -425,7 +440,6 @@ fn r10_3_trim_minus_six_db_attenuates_left() {
         buf[1]
     );
 }
-
 
 // -----------------------------------------------------------------------------
 // Phase B — Crossfeed_Stage property and example tests (task 13)
@@ -500,7 +514,10 @@ fn r6_5_mono_with_crossfeed_enabled_is_bypass() {
     let original = vec![0.1_f32, -0.2, 0.3, -0.4, 0.5, -0.5, 1.0, -1.0];
     let mut buf = original.clone();
     stage.process_inplace(&mut buf);
-    assert_eq!(buf, original, "mono passthrough must be bit-for-bit identity");
+    assert_eq!(
+        buf, original,
+        "mono passthrough must be bit-for-bit identity"
+    );
 }
 
 // Feature: audio-quality-improvements, R6 — stereo flow with crossfeed

@@ -127,10 +127,7 @@ impl DsdStream {
     /// container's byte granularity). Equal to
     /// `bytes_per_channel[0].len()` after a successful parse.
     pub fn frames(&self) -> usize {
-        self.bytes_per_channel
-            .first()
-            .map(|c| c.len())
-            .unwrap_or(0)
+        self.bytes_per_channel.first().map(|c| c.len()).unwrap_or(0)
     }
 
     /// Number of 16-bit DoP groups produceable from this stream

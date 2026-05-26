@@ -32,8 +32,8 @@ pub fn log_dir() -> Option<PathBuf> {
 ///
 /// Filter respects `RUST_LOG` if set, falling back to `qobee=info,warn`.
 pub fn init() -> Option<WorkerGuard> {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("qobee=info,warn"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("qobee=info,warn"));
 
     let stdout_layer = fmt::layer()
         .with_target(true)
@@ -55,7 +55,9 @@ pub fn init() -> Option<WorkerGuard> {
         None => (None, None),
     };
 
-    let registry = tracing_subscriber::registry().with(filter).with(stdout_layer);
+    let registry = tracing_subscriber::registry()
+        .with(filter)
+        .with(stdout_layer);
     if let Some(file_layer) = file_layer {
         let _ = registry.with(file_layer).try_init();
     } else {

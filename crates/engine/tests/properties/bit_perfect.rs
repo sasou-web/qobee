@@ -16,9 +16,7 @@
 
 use proptest::prelude::*;
 
-use qobee_engine::{
-    BitPerfectHealth, BitPerfectStatus, EffectiveOutputMode, PeakLimiterMode,
-};
+use qobee_engine::{BitPerfectHealth, BitPerfectStatus, EffectiveOutputMode, PeakLimiterMode};
 
 use crate::properties::any_bit_perfect_inputs;
 

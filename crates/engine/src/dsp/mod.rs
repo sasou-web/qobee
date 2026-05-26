@@ -283,12 +283,7 @@ impl PcmChain {
     /// Propagate a new settings snapshot to every stage and update the
     /// cached `settings_version`. Called on chunk boundaries by the
     /// decoder thread when it observes a version change.
-    pub fn reconfigure(
-        &mut self,
-        settings: &AudioSettings,
-        sample_rate: u32,
-        channels: u16,
-    ) {
+    pub fn reconfigure(&mut self, settings: &AudioSettings, sample_rate: u32, channels: u16) {
         self.sample_rate = sample_rate;
         self.channels = channels;
         self.settings_version = settings.version;
@@ -414,7 +409,10 @@ mod tests {
         assert!(snap.crossfeed_off);
         assert!(snap.eq_bypass);
         assert!(snap.convolver_off);
-        assert!(!snap.limiter_off, "default LookaheadLimiter must report active");
+        assert!(
+            !snap.limiter_off,
+            "default LookaheadLimiter must report active"
+        );
         assert!(snap.dither_bypass);
     }
 
@@ -477,9 +475,11 @@ mod tests {
         // to ≤ 10^(-3/20) ≈ 0.7079 in absolute value. If the limiter
         // ran *before* pre_gain, the source at 0.5 would not trip the
         // ceiling and the boost would push the output above 1.0.
-        let mut settings = AudioSettings::default();
-        settings.peak_limiter_ceiling_dbfs = -3.0;
-        settings.peak_limiter_mode = crate::audio_settings::PeakLimiterMode::LookaheadLimiter;
+        let settings = AudioSettings {
+            peak_limiter_ceiling_dbfs: -3.0,
+            peak_limiter_mode: crate::audio_settings::PeakLimiterMode::LookaheadLimiter,
+            ..AudioSettings::default()
+        };
 
         let mut chain = PcmChain::new(&settings, 48_000, 2);
         // Push a fresh per-track context: +6 dB of RG, peak protection
@@ -548,9 +548,7 @@ mod tests {
     #[test]
     #[ignore]
     fn bench_dsp_chain_cost() {
-        use crate::audio_settings::{
-            CrossfeedPreset, DitherProfile, PeakLimiterMode,
-        };
+        use crate::audio_settings::{CrossfeedPreset, DitherProfile, PeakLimiterMode};
         use std::time::Instant;
 
         const SAMPLE_RATE: u32 = 192_000;
@@ -583,9 +581,7 @@ mod tests {
                 } else {
                     let w = 0.5
                         * (1.0
-                            - (2.0 * std::f32::consts::PI * i as f32
-                                / (ir_len - 1) as f32)
-                                .cos());
+                            - (2.0 * std::f32::consts::PI * i as f32 / (ir_len - 1) as f32).cos());
                     let decay = (-5.0 * i as f32 / ir_len as f32).exp();
                     0.05 * w * decay
                 }
@@ -613,6 +609,7 @@ mod tests {
             ..AudioSettings::default()
         };
 
+        #[allow(clippy::too_many_arguments)]
         fn run_cfg(
             label: &str,
             settings: &AudioSettings,
@@ -653,7 +650,17 @@ mod tests {
             );
         }
 
-        run_cfg("all-off", &cfg_a, SAMPLE_RATE, CHANNELS, &buffer, BLOCK_FRAMES, None, None, None);
+        run_cfg(
+            "all-off",
+            &cfg_a,
+            SAMPLE_RATE,
+            CHANNELS,
+            &buffer,
+            BLOCK_FRAMES,
+            None,
+            None,
+            None,
+        );
         run_cfg(
             "defaults",
             &cfg_b,

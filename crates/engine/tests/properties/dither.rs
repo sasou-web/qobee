@@ -201,8 +201,8 @@ fn property_3_shaped_f_weighted_spectrum_within_bounds() {
     // Total noise power. Compute as `10 · log10(mean(x²))` directly
     // from the time-domain samples — equivalent to integrating the
     // power spectrum across every bin.
-    let mean_sq: f64 = buf.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>()
-        / (buf.len() as f64);
+    let mean_sq: f64 =
+        buf.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() / (buf.len() as f64);
     let total_db = 10.0_f64 * mean_sq.max(1e-300).log10();
     assert!(
         (-96.5_f64..=-92.5_f64).contains(&total_db),
@@ -314,10 +314,7 @@ mod helper_tests {
         // peak. We just assert the sine is clearly detected (within
         // 30 dB of full-scale) and the off-band reading is far
         // lower.
-        assert!(
-            in_band > -30.0,
-            "in-band reading too low: {in_band} dBFS"
-        );
+        assert!(in_band > -30.0, "in-band reading too low: {in_band} dBFS");
         assert!(
             out_band < -50.0,
             "off-band reading too high: {out_band} dBFS"

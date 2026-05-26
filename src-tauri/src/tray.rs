@@ -66,9 +66,11 @@ pub fn ensure_tray<R: Runtime>(
 
     let menu = build_menu(app, "Qobee")?;
     let tray = TrayIconBuilder::with_id("qobee-main")
-        .icon(app.default_window_icon().cloned().ok_or_else(|| {
-            tauri::Error::Anyhow(anyhow::anyhow!("no default window icon"))
-        })?)
+        .icon(
+            app.default_window_icon()
+                .cloned()
+                .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("no default window icon")))?,
+        )
         .tooltip("Qobee")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -112,10 +114,7 @@ pub fn set_now_playing<R: Runtime>(
     Ok(())
 }
 
-fn build_menu<R: Runtime>(
-    app: &AppHandle<R>,
-    now_playing_label: &str,
-) -> tauri::Result<Menu<R>> {
+fn build_menu<R: Runtime>(app: &AppHandle<R>, now_playing_label: &str) -> tauri::Result<Menu<R>> {
     let np_text = if now_playing_label.is_empty() {
         "Nothing playing".to_string()
     } else {
@@ -163,10 +162,7 @@ fn dispatch_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
             if let Some(state) = app.try_state::<AppState>() {
                 let player = state.player();
                 let snap = player.state();
-                if matches!(
-                    snap.status,
-                    qobee_engine::PlaybackStatus::Playing
-                ) {
+                if matches!(snap.status, qobee_engine::PlaybackStatus::Playing) {
                     let _ = player.pause();
                 } else {
                     let _ = player.resume();

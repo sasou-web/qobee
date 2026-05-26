@@ -226,14 +226,10 @@ fn property_7_peak_limiter_off_is_sample_exact_passthrough() {
 //
 // **Validates: Requirements R3.4**
 #[test]
+#[allow(clippy::needless_range_loop)]
 fn r3_4_sine_minus_3_dbfs_with_ceiling_minus_1_dbfs() {
     let sr = 48_000_u32;
-    let settings = limiter_settings(
-        PeakLimiterMode::LookaheadLimiter,
-        -1.0,
-        5.0,
-        100.0,
-    );
+    let settings = limiter_settings(PeakLimiterMode::LookaheadLimiter, -1.0, 5.0, 100.0);
     let mut limiter = PeakLimiter::new(&settings, sr, 1);
 
     // 1 second of 1 kHz sine at -3 dBFS.

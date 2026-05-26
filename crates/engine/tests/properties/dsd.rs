@@ -262,7 +262,9 @@ fn wasapi_exclusive_dsd64_no_underrun_for_5_seconds() {
     AudioEngine::play(&engine).expect("play");
 
     // Let it run for the full simulated duration.
-    std::thread::sleep(std::time::Duration::from_millis(((secs * 1000.0) as u64) + 500));
+    std::thread::sleep(std::time::Duration::from_millis(
+        ((secs * 1000.0) as u64) + 500,
+    ));
 
     let state = AudioEngine::state(&engine);
     assert_eq!(

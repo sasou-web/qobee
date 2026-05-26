@@ -91,12 +91,10 @@ fn read_embedded_lyrics(audio_path: &Path) -> Option<String> {
 fn looks_like_lrc(text: &str) -> bool {
     // A reasonable LRC heuristic: at least one line starts with
     // `[<digits>:`.
-    text.lines()
-        .take(20)
-        .any(|line| {
-            let t = line.trim_start();
-            t.starts_with('[') && t.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
-        })
+    text.lines().take(20).any(|line| {
+        let t = line.trim_start();
+        t.starts_with('[') && t.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
+    })
 }
 
 /// Parse an LRC body. Recognizes `[mm:ss]`, `[mm:ss.x]`, `[mm:ss.xx]`,
@@ -162,9 +160,7 @@ fn parse_lrc(body: &str) -> Vec<LyricLine> {
 fn parse_timestamp(content: &str) -> Option<u64> {
     // `mm:ss.xx`  (two digits of fractional seconds)
     // `mm:ss.xxx` (three digits, milliseconds)
-    let mut split = content.splitn(2, ':');
-    let mins_str = split.next()?;
-    let rest = split.next()?;
+    let (mins_str, rest) = content.split_once(':')?;
 
     let mins: u64 = mins_str.parse().ok()?;
 

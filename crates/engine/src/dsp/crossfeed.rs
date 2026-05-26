@@ -192,9 +192,7 @@ impl BiquadLowpass {
 
     #[inline]
     fn process(&mut self, x: f32) -> f32 {
-        let y = self.b0 * x
-            + self.b1 * self.x1
-            + self.b2 * self.x2
+        let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
             - self.a1 * self.y1
             - self.a2 * self.y2;
         self.x2 = self.x1;
@@ -528,10 +526,7 @@ mod tests {
         let mut buf: Vec<f32> = original.iter().take(len).copied().collect();
         let expected = buf.clone();
         s.process_inplace(&mut buf);
-        assert_eq!(
-            buf, expected,
-            "bypass must be sample-for-sample identity"
-        );
+        assert_eq!(buf, expected, "bypass must be sample-for-sample identity");
     }
 
     #[test]

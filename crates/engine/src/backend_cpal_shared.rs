@@ -1,4 +1,4 @@
-﻿//! CPAL-based Shared output backend.
+//! CPAL-based Shared output backend.
 //!
 //! This is the engine's only output backend. It pulls f32 interleaved
 //! PCM from a Symphonia decoder running on a worker thread, optionally
@@ -67,7 +67,10 @@ enum Command {
     /// current stream) stashes it in `Shared::pending_next`. The
     /// active decoder thread then picks it up at EOF without an audio
     /// callback gap.
-    PrepareNext { path: PathBuf, track_id: Option<String> },
+    PrepareNext {
+        path: PathBuf,
+        track_id: Option<String>,
+    },
     /// Drop a previously prepared next track (e.g. user changed the
     /// queue between prepare and EOT). Cheap; the decoder thread will
     /// just see an empty slot at end-of-stream.
@@ -210,7 +213,8 @@ pub(crate) struct Shared {
     pub(crate) dsd_rate_label: Mutex<Option<String>>,
     /// Pre-render sink installed by [`CpalSharedEngine::start_pre_render`]
     /// for the Exclusive-mode null-test branch (R11.3). When
-    /// [`PreRenderSink::is_active`] is true the decoder thread
+    /// [`crate::diagnostic::pre_render::PreRenderSink::is_active`]
+    /// is true the decoder thread
     /// writes its post-DSP chunks to this file *instead* of the
     /// audio device. Always present (the sink defaults to inactive)
     /// so the decoder thread never has to handle an `Option`.
@@ -439,9 +443,8 @@ impl Shared {
         convolver_off: bool,
         dither_bypass: bool,
     ) {
-        let bits = (eq_bypass as u32)
-            | ((convolver_off as u32) << 1)
-            | ((dither_bypass as u32) << 2);
+        let bits =
+            (eq_bypass as u32) | ((convolver_off as u32) << 1) | ((dither_bypass as u32) << 2);
         self.chain_bypass_bits.store(bits, Ordering::Relaxed);
     }
 
@@ -600,7 +603,10 @@ impl CpalSharedEngine {
         sample_rate: u32,
         channels: u16,
     ) -> EngineResult<()> {
-        if !matches!(*self.status.lock(), PlaybackStatus::Idle | PlaybackStatus::Stopped) {
+        if !matches!(
+            *self.status.lock(),
+            PlaybackStatus::Idle | PlaybackStatus::Stopped
+        ) {
             return Err(EngineError::InvalidState(
                 "pre-render requires the engine to be idle (no track loaded)",
             ));
@@ -1026,7 +1032,9 @@ fn run_worker(ctx: WorkerCtx) {
                     // decoder catches up.
                     ctx.shared.drain_ring.store(true, Ordering::Release);
                     ctx.shared.pending_seek_ms.store(ms, Ordering::Release);
-                    ctx.shared.position_ms.store(ms.max(0) as u32, Ordering::Relaxed);
+                    ctx.shared
+                        .position_ms
+                        .store(ms.max(0) as u32, Ordering::Relaxed);
                     let _ = ctx.event_tx.try_send(EngineEvent::Position {
                         position_seconds: secs,
                     });
@@ -1112,11 +1120,16 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
     let decoder = SymphoniaDecoder::open(path)?;
     let format = decoder.format();
 
-    ctx.shared.sample_rate.store(format.sample_rate, Ordering::Relaxed);
-    ctx.shared.channels.store(format.channels as u32, Ordering::Relaxed);
     ctx.shared
-        .bit_depth
-        .store(format.bit_depth.map(|b| b as u32).unwrap_or(0), Ordering::Relaxed);
+        .sample_rate
+        .store(format.sample_rate, Ordering::Relaxed);
+    ctx.shared
+        .channels
+        .store(format.channels as u32, Ordering::Relaxed);
+    ctx.shared.bit_depth.store(
+        format.bit_depth.map(|b| b as u32).unwrap_or(0),
+        Ordering::Relaxed,
+    );
     ctx.shared.underruns.store(0, Ordering::Relaxed);
     let dur_ms = (decoder.duration_seconds() * 1000.0) as u32;
     ctx.shared.duration_ms.store(dur_ms, Ordering::Relaxed);
@@ -1206,7 +1219,8 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
 
     // Publish the negotiated device format so `state()` can build a
     // [`BitPerfectHealth`] snapshot from a single atomic read.
-    ctx.shared.set_device_format(device_sample_rate, device_channels);
+    ctx.shared
+        .set_device_format(device_sample_rate, device_channels);
     ctx.shared.reset_bit_perfect_debounce();
 
     let (producer, consumer) = RingBuffer::<f32>::new(RING_CAPACITY_SAMPLES);
@@ -1312,9 +1326,7 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
 /// Exposed publicly so the integration tests in
 /// `tests/properties/resampler.rs` can reuse the exact same params
 /// the engine ships with.
-pub fn sinc_params_for(
-    quality: ResamplerQuality,
-) -> rubato::SincInterpolationParameters {
+pub fn sinc_params_for(quality: ResamplerQuality) -> rubato::SincInterpolationParameters {
     use rubato::{SincInterpolationParameters, SincInterpolationType, WindowFunction};
     match quality {
         ResamplerQuality::Standard => SincInterpolationParameters {
@@ -1334,6 +1346,7 @@ pub fn sinc_params_for(
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 pub(crate) fn run_decoder_thread(
     mut decoder: SymphoniaDecoder,
     mut producer: Producer<f32>,
@@ -1410,14 +1423,15 @@ pub(crate) fn run_decoder_thread(
 
     // Per-track EQ. Built at the *device* sample rate when we resample,
     // since EQ runs on the post-resampler signal.
-    let eq_sample_rate = if need_resample { dst_sample_rate } else { src_sample_rate };
+    let eq_sample_rate = if need_resample {
+        dst_sample_rate
+    } else {
+        src_sample_rate
+    };
     let mut eq = crate::eq::Equalizer::new(eq_sample_rate, channels);
     let mut eq_seen_version: u32 = u32::MAX; // forces an initial sync below
 
-    let sync_eq = |eq: &mut crate::eq::Equalizer,
-                   seen: &mut u32,
-                   shared: &Shared|
-     -> () {
+    let sync_eq = |eq: &mut crate::eq::Equalizer, seen: &mut u32, shared: &Shared| -> () {
         let cur = shared.eq_version.load(Ordering::Acquire);
         if cur != *seen {
             let gains = shared.eq_gains_db.lock().clone();
@@ -1439,11 +1453,7 @@ pub(crate) fn run_decoder_thread(
     };
     let mut pcm_chain = {
         let initial_settings = shared.audio_settings();
-        let mut chain = crate::dsp::PcmChain::new(
-            &initial_settings,
-            chain_sample_rate,
-            channels,
-        );
+        let mut chain = crate::dsp::PcmChain::new(&initial_settings, chain_sample_rate, channels);
         let initial_bit_depth = match shared.bit_depth.load(Ordering::Relaxed) {
             0 => None,
             v => Some(v as u8),
@@ -1462,8 +1472,7 @@ pub(crate) fn run_decoder_thread(
         shared.set_rg_attenuation_db(chain.pre_gain_attenuation_db());
         chain
     };
-    let mut last_pre_gain_ctx_version =
-        shared.pre_gain_context_version.load(Ordering::Acquire);
+    let mut last_pre_gain_ctx_version = shared.pre_gain_context_version.load(Ordering::Acquire);
     let mut last_seen_bit_depth: u32 = shared.bit_depth.load(Ordering::Relaxed);
     let mut last_pending_ir_version = shared.pending_ir_version.load(Ordering::Acquire);
 
@@ -1740,7 +1749,9 @@ pub(crate) fn run_decoder_thread(
                         decoder = new_decoder;
 
                         // Update the shared track metadata atomically.
-                        shared.duration_ms.store((new_dur * 1000.0) as u32, Ordering::Relaxed);
+                        shared
+                            .duration_ms
+                            .store((new_dur * 1000.0) as u32, Ordering::Relaxed);
                         shared.position_ms.store(0, Ordering::Relaxed);
                         shared
                             .bit_depth
@@ -1770,9 +1781,7 @@ pub(crate) fn run_decoder_thread(
                             error: None,
                         };
                         new_state.bit_perfect = build_bit_perfect_health(&shared, &new_state);
-                        let _ = event_tx.try_send(EngineEvent::StateChanged {
-                            state: new_state,
-                        });
+                        let _ = event_tx.try_send(EngineEvent::StateChanged { state: new_state });
 
                         tracing::info!(
                             target: "qobee::engine",
@@ -1825,8 +1834,9 @@ pub(crate) fn run_decoder_thread(
                             let mut interleaved: Vec<f32> = Vec::with_capacity(frames * n_ch);
                             for f in 0..frames {
                                 for c in 0..n_ch {
-                                    interleaved
-                                        .push(out.get(c).and_then(|v| v.get(f).copied()).unwrap_or(0.0));
+                                    interleaved.push(
+                                        out.get(c).and_then(|v| v.get(f).copied()).unwrap_or(0.0),
+                                    );
                                 }
                             }
                             sync_eq(&mut eq, &mut eq_seen_version, &shared);
@@ -2377,12 +2387,14 @@ mod tests {
         // Use a snapshot whose `version` field is intentionally bogus
         // to confirm `set_audio_settings` ignores it and bumps off the
         // currently published value.
-        let mut new_settings = AudioSettings::default();
-        new_settings.version = 999;
-        new_settings.peak_limiter_mode = PeakLimiterMode::Off;
-        new_settings.dither_profile = DitherProfile::Tpdf;
-        new_settings.volume_curve = VolumeCurve::Quadratic;
-        new_settings.volume_floor_db = -45.0;
+        let new_settings = AudioSettings {
+            version: 999,
+            peak_limiter_mode: PeakLimiterMode::Off,
+            dither_profile: DitherProfile::Tpdf,
+            volume_curve: VolumeCurve::Quadratic,
+            volume_floor_db: -45.0,
+            ..AudioSettings::default()
+        };
 
         shared.set_audio_settings(new_settings.clone());
 
@@ -2440,8 +2452,10 @@ mod tests {
         // Set the published settings to the legacy quadratic curve;
         // any half-slider value should produce vÂ² gain.
         let shared = Shared::new();
-        let mut s = AudioSettings::default();
-        s.volume_curve = VolumeCurve::Quadratic;
+        let s = AudioSettings {
+            volume_curve: VolumeCurve::Quadratic,
+            ..AudioSettings::default()
+        };
         shared.set_audio_settings(s);
 
         shared.set_volume_public(0.5);
@@ -2464,9 +2478,11 @@ mod tests {
         // Logarithmic at v=0.5 with floor=-60 dB lands at -30 dB =
         // 10^(-30/20) â‰ˆ 0.03162.
         let shared = Shared::new();
-        let mut s = AudioSettings::default();
-        s.volume_curve = VolumeCurve::Logarithmic;
-        s.volume_floor_db = -60.0;
+        let s = AudioSettings {
+            volume_curve: VolumeCurve::Logarithmic,
+            volume_floor_db: -60.0,
+            ..AudioSettings::default()
+        };
         shared.set_audio_settings(s);
 
         shared.set_volume_public(0.5);
@@ -2485,8 +2501,10 @@ mod tests {
         // bit-perfect badge).
         for curve in [VolumeCurve::Logarithmic, VolumeCurve::Quadratic] {
             let shared = Shared::new();
-            let mut s = AudioSettings::default();
-            s.volume_curve = curve;
+            let s = AudioSettings {
+                volume_curve: curve,
+                ..AudioSettings::default()
+            };
             shared.set_audio_settings(s);
 
             shared.set_volume_public(0.0);
@@ -2510,15 +2528,19 @@ mod tests {
         let shared = Shared::new();
         shared.set_volume_public(0.5);
 
-        let mut quad = AudioSettings::default();
-        quad.volume_curve = VolumeCurve::Quadratic;
+        let quad = AudioSettings {
+            volume_curve: VolumeCurve::Quadratic,
+            ..AudioSettings::default()
+        };
         shared.set_audio_settings(quad);
         let g_quad = shared.audible_gain();
         assert!((g_quad - 0.25).abs() < 1e-6);
 
-        let mut log = AudioSettings::default();
-        log.volume_curve = VolumeCurve::Logarithmic;
-        log.volume_floor_db = -60.0;
+        let log = AudioSettings {
+            volume_curve: VolumeCurve::Logarithmic,
+            volume_floor_db: -60.0,
+            ..AudioSettings::default()
+        };
         shared.set_audio_settings(log);
         let g_log = shared.audible_gain();
         let want = 10f32.powf(-30.0 / 20.0);

@@ -86,13 +86,14 @@ impl SymphoniaDecoder {
 
         // Compute total duration in seconds when both n_frames and time_base
         // are exposed by the demuxer.
-        let (duration_seconds, time_base_seconds) = match (codec_params.n_frames, codec_params.time_base) {
-            (Some(n), Some(tb)) => {
-                let secs = n as f64 * (tb.numer as f64) / (tb.denom as f64);
-                (secs, (tb.numer as f64) / (tb.denom as f64))
-            }
-            _ => (0.0, 1.0 / sample_rate as f64),
-        };
+        let (duration_seconds, time_base_seconds) =
+            match (codec_params.n_frames, codec_params.time_base) {
+                (Some(n), Some(tb)) => {
+                    let secs = n as f64 * (tb.numer as f64) / (tb.denom as f64);
+                    (secs, (tb.numer as f64) / (tb.denom as f64))
+                }
+                _ => (0.0, 1.0 / sample_rate as f64),
+            };
 
         let decoder = symphonia::default::get_codecs()
             .make(codec_params, &DecoderOptions::default())

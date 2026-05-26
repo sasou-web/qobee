@@ -353,14 +353,25 @@ mod tests {
     fn set_output_bits_16_activates_stage() {
         let mut s = DitherStage::new(&AudioSettings::default(), 48_000, 2);
         s.set_output_bits(Some(16));
-        assert!(!s.is_bypass(), "16-bit output must activate the dither stage");
+        assert!(
+            !s.is_bypass(),
+            "16-bit output must activate the dither stage"
+        );
     }
 
     #[test]
     fn bypass_path_is_sample_for_sample_passthrough() {
         let mut s = DitherStage::new(&AudioSettings::default(), 48_000, 2);
         let original: Vec<f32> = vec![
-            0.0, 1.0, -1.0, 0.5, -0.5, 0.123_456_7, -0.987_654_3, 1e-9, -1e-9,
+            0.0,
+            1.0,
+            -1.0,
+            0.5,
+            -0.5,
+            0.123_456_7,
+            -0.987_654_3,
+            1e-9,
+            -1e-9,
             0.999_999_94,
         ];
         let mut buf = original.clone();
@@ -406,11 +417,7 @@ mod tests {
 
     #[test]
     fn shaped_hp_silence_produces_finite_bounded_noise() {
-        let mut s = DitherStage::new(
-            &settings_with_profile(DitherProfile::ShapedHp),
-            48_000,
-            1,
-        );
+        let mut s = DitherStage::new(&settings_with_profile(DitherProfile::ShapedHp), 48_000, 1);
         s.set_output_bits(Some(16));
         let mut buf = vec![0.0_f32; 48_000];
         s.process_inplace(&mut buf);
@@ -489,10 +496,7 @@ mod tests {
         s.process_inplace(&mut buf);
 
         for (i, &y) in buf.iter().enumerate() {
-            assert!(
-                y <= upper,
-                "sample {i} = {y} exceeds upper clamp {upper}"
-            );
+            assert!(y <= upper, "sample {i} = {y} exceeds upper clamp {upper}");
             assert!(y >= -1.0, "sample {i} = {y} below lower clamp -1.0");
         }
     }

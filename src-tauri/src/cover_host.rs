@@ -80,7 +80,7 @@ struct Inner {
     /// Library handle used for the persistent URL cache (settings
     /// table) and the cover cache directory.
     library: Library,
-    /// Master switch: when `false`, [`Self::request_upload`] is a
+    /// Master switch: when `false`, [`CoverHost::request_upload`] is a
     /// no-op and the worker never sends bytes to a third party.
     /// Defaults to `false` for privacy: the user must opt in via
     /// Settings.
@@ -164,12 +164,7 @@ impl CoverHost {
 /// Persist a freshly uploaded URL both in memory and in the library
 /// settings table. Failures here are non-fatal: at worst we'll
 /// re-upload on the next session.
-fn remember(
-    library: &Library,
-    cache: &Mutex<HashMap<String, String>>,
-    cover_key: &str,
-    url: &str,
-) {
+fn remember(library: &Library, cache: &Mutex<HashMap<String, String>>, cover_key: &str, url: &str) {
     cache.lock().insert(cover_key.to_string(), url.to_string());
     let _ = library.set_setting(&settings_key(cover_key), url);
 }
@@ -293,7 +288,13 @@ fn upload_to_litterbox(
     filename: String,
     bytes: Vec<u8>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let mime = match filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+    let mime = match filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
         "webp" => "image/webp",

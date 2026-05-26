@@ -25,8 +25,10 @@ use serde::{Deserialize, Serialize};
 /// ReplayGain mode used by the player when starting a track.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ReplayGainMode {
     /// Don't apply any normalization.
+    #[default]
     Off,
     /// Apply per-track gain. Most consistent perceived loudness across
     /// a shuffled queue.
@@ -34,12 +36,6 @@ pub enum ReplayGainMode {
     /// Apply per-album gain. Preserves the relative dynamics within an
     /// album (the artist's intended balance between tracks).
     Album,
-}
-
-impl Default for ReplayGainMode {
-    fn default() -> Self {
-        ReplayGainMode::Off
-    }
 }
 
 impl ReplayGainMode {
@@ -68,9 +64,7 @@ impl ReplayGainMode {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PlayerEvent {
     /// State of the engine + currently selected track changed.
-    StateChanged {
-        state: qobee_engine::PlayerState,
-    },
+    StateChanged { state: qobee_engine::PlayerState },
     /// Position update emitted at decoder cadence.
     Position { position_seconds: f64 },
     /// Current track finished playing.
