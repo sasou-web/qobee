@@ -42,35 +42,30 @@
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    background: var(--bg-2);
-    border: 1px solid transparent;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: var(--radius-pill);
     height: var(--searchbar-height);
-    padding: 0 var(--space-4);
+    padding: 0 var(--space-3);
     color: var(--fg-2);
     transition: background var(--dur-base) var(--ease-out),
       border-color var(--dur-base) var(--ease-out),
-      box-shadow var(--dur-base) var(--ease-out),
       color var(--dur-base) var(--ease-out);
   }
   .search:hover {
-    background: var(--bg-3);
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.1);
     color: var(--fg-1);
   }
+  /* Focus state stays neutral on purpose: no accent ring or border
+     change so the header doesn't flash when the user types. */
   .search:focus-within {
-    background: var(--bg-2);
-    border-color: var(--accent);
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.12);
     color: var(--fg-1);
-    box-shadow: 0 0 0 3px var(--accent-glow);
   }
   .icon {
     display: inline-flex;
-    transition: transform var(--dur-base) var(--ease-spring),
-      color var(--dur-base) var(--ease-out);
-  }
-  .search:focus-within .icon {
-    color: var(--accent);
-    transform: scale(1.1);
   }
   input {
     flex: 1;
@@ -78,7 +73,7 @@
     border: none;
     outline: none;
     color: var(--fg-0);
-    font-size: 14px;
+    font-size: 13px;
     height: 100%;
   }
   input::placeholder {

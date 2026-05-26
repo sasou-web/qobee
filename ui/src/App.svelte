@@ -87,6 +87,38 @@
         // best-effort; drag-drop is a nice-to-have, not critical.
       });
 
+    // Listen for navigation requests forwarded by the tray menu /
+    // CLI args / `qobee://` deep links so the user lands on the
+    // requested view when the OS asks for it.
+    let cleanupDeepLink: (() => void) | null = null;
+    void import("@tauri-apps/api/event").then(({ listen }) =>
+      listen<string>("deep-link:navigate", (e) => {
+        switch (e.payload) {
+          case "home":
+            app.setView("home");
+            break;
+          case "library":
+          case "albums":
+            app.setView("albums");
+            break;
+          case "settings":
+            app.setView("settings");
+            break;
+          case "queue":
+            // The queue lives in a popover, not a route, so we
+            // open it on demand.
+            void import("./lib/queuePopover.svelte").then(({ queuePopover }) => {
+              queuePopover.toggle();
+            });
+            break;
+          default:
+            break;
+        }
+      }).then((un) => {
+        cleanupDeepLink = un;
+      }),
+    );
+
     void (async () => {
       await settings.load();
       await app.wire();
@@ -126,6 +158,7 @@
       window.removeEventListener("contextmenu", onContext);
       cleanupKeys();
       if (cleanupDrop) cleanupDrop();
+      if (cleanupDeepLink) cleanupDeepLink();
     };
   });
 
@@ -348,6 +381,10 @@
     grid-template-columns: var(--sidebar-width) 1fr;
     grid-template-rows: var(--titlebar-height) 1fr auto;
     height: 100%;
+    transition: var(
+      --sidebar-resize-transition,
+      grid-template-columns 220ms cubic-bezier(0.32, 0.72, 0, 1)
+    );
   }
   .content {
     grid-column: 2;

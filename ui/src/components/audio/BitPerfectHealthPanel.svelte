@@ -56,9 +56,24 @@
       case "green":
         return "Bit-perfect";
       case "amber":
-        return "Lossless vers le mixeur";
+        return "Lossless";
       case "red":
-        return "Chaîne modifiée";
+        return "DSP actif";
+    }
+  });
+
+  // Friendly one-liner explaining the badge state to a normal user.
+  // The detailed engine messages stay accessible through the
+  // "Détails techniques" disclosure below.
+  let summaryLabel = $derived.by(() => {
+    if (!health) return "";
+    switch (health.status) {
+      case "green":
+        return "Le flux atteint la sortie sans aucune transformation.";
+      case "amber":
+        return "Le flux passe par le mixeur Windows mais reste lossless.";
+      case "red":
+        return "Le moteur applique une correction (limiteur, EQ, volume…) avant la sortie.";
     }
   });
 
@@ -70,6 +85,11 @@
   let showSourceBlock = $derived(
     !!health && health.source_sample_rate != null
   );
+
+  // Technical message list collapsed by default — most users don't
+  // need to read the engine's bullet point list to understand the
+  // badge.
+  let showDetails = $state(false);
 </script>
 
 <div class="bp-panel" data-status={health?.status ?? "idle"}>
@@ -116,12 +136,26 @@
     {/if}
   </dl>
 
+  {#if health && summaryLabel}
+    <p class="summary">{summaryLabel}</p>
+  {/if}
+
   {#if health && health.messages.length > 0}
-    <ul class="messages">
-      {#each health.messages as msg, i (i)}
-        <li>{msg}</li>
-      {/each}
-    </ul>
+    <button
+      class="details-toggle"
+      type="button"
+      onclick={() => (showDetails = !showDetails)}
+    >
+      {showDetails ? "Masquer" : "Afficher"} les détails techniques
+      <span class="caret" class:open={showDetails}>▾</span>
+    </button>
+    {#if showDetails}
+      <ul class="messages">
+        {#each health.messages as msg, i (i)}
+          <li>{msg}</li>
+        {/each}
+      </ul>
+    {/if}
   {/if}
 
   {#if hasResampleMismatch}
@@ -217,6 +251,34 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+  .summary {
+    margin: 0;
+    color: var(--fg-1);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .details-toggle {
+    align-self: flex-start;
+    background: transparent;
+    border: none;
+    color: var(--accent);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .details-toggle:hover {
+    text-decoration: underline;
+  }
+  .caret {
+    display: inline-block;
+    transition: transform 0.15s ease;
+  }
+  .caret.open {
+    transform: rotate(180deg);
   }
   .settings-btn {
     align-self: flex-start;

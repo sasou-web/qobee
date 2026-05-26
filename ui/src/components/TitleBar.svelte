@@ -8,10 +8,18 @@
 
   import { onMount, onDestroy } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { app } from "../lib/stores.svelte";
   import SearchBar from "./SearchBar.svelte";
+  import Icon from "./Icon.svelte";
 
   let isMaximized = $state(false);
   let unlisten: (() => void) | null = null;
+
+  let isSettings = $derived(app.selectedView === "settings");
+
+  function openSettings(): void {
+    app.setView("settings");
+  }
 
   async function syncMaximized(): Promise<void> {
     try {
@@ -74,6 +82,16 @@
   </div>
 
   <div class="right" data-tauri-drag-region>
+    <button
+      class="ctrl settings-btn"
+      class:active={isSettings}
+      type="button"
+      aria-label="Settings"
+      title="Settings"
+      onclick={openSettings}
+    >
+      <Icon name="settings" size={14} />
+    </button>
     <div class="controls">
       <button
         class="ctrl"
@@ -141,13 +159,13 @@
   .titlebar {
     grid-column: 2;
     grid-row: 1;
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto;
     align-items: center;
-    justify-content: center;
     position: relative;
     height: var(--titlebar-height);
     background: var(--bg-0);
-    border-bottom: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
     -webkit-user-select: none;
     user-select: none;
     z-index: 10;
@@ -157,25 +175,18 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    /* Same gutter on both sides so the search pill is visually
-       centered over the whole content column. The right-hand window
-       controls sit on top via position: absolute and don't shift
-       this layout. */
-    width: 100%;
-    padding: 0 var(--window-controls-width);
+    height: 100%;
+    padding: 0 var(--space-4);
     min-width: 0;
-    background: var(--bg-0);
   }
   .center :global(.search) {
-    flex: 1;
-    max-width: 560px;
+    width: 100%;
+    max-width: 480px;
   }
 
   .right {
-    position: absolute;
-    top: 0;
-    right: 0;
     display: flex;
+    align-items: center;
     height: 100%;
     background: transparent;
   }
@@ -185,7 +196,7 @@
   }
 
   .ctrl {
-    width: 48px;
+    width: 46px;
     height: 100%;
     display: inline-flex;
     align-items: center;
@@ -194,17 +205,17 @@
     border: none;
     border-radius: 0;
     padding: 0;
-    color: var(--fg-1);
+    color: var(--fg-2);
     cursor: default;
     transition: background 100ms ease, color 100ms ease;
     -webkit-app-region: no-drag;
   }
   .ctrl:hover {
-    background: var(--bg-3);
+    background: rgba(255, 255, 255, 0.06);
     color: var(--fg-0);
   }
   .ctrl:active {
-    background: var(--bg-2);
+    background: rgba(255, 255, 255, 0.04);
   }
   .ctrl.close:hover {
     background: #c42b1c;
@@ -213,6 +224,22 @@
   .ctrl.close:active {
     background: #a82319;
     color: #ffffff;
+  }
+  .ctrl.settings-btn {
+    width: 38px;
+    margin-right: var(--space-2);
+    border-radius: 999px;
+    height: 28px;
+    align-self: center;
+    color: var(--fg-2);
+  }
+  .ctrl.settings-btn:hover {
+    color: var(--fg-0);
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .ctrl.settings-btn.active {
+    color: var(--accent);
+    background: var(--accent-soft);
   }
   .ctrl:focus {
     outline: none;

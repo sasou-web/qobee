@@ -15,14 +15,13 @@
     setRepeatMode,
     setShuffle,
     setVolume,
-    toggleMiniPlayer,
     type RepeatMode,
     type Track,
   } from "../lib/api";
   import { app } from "../lib/stores.svelte";
   import { settings } from "../lib/settings.svelte";
   import { volumeSettings } from "../lib/audioSettings.svelte";
-  import { formatVolumeDb, stepDb } from "../lib/volumeFormat";
+  import { stepDb } from "../lib/volumeFormat";
   import { formatDuration, formatOutputMode, formatQuality } from "../lib/format";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
@@ -172,18 +171,9 @@
   );
 
   // Lazily warm the cached `audio.volume_curve` / `audio.volume_floor_db`
-  // pair so the dB readout matches the engine's curve. The store
-  // returns spec defaults synchronously while the load is in flight.
+  // pair so wheel scrolls behave correctly. The store returns spec
+  // defaults synchronously while the load is in flight.
   void volumeSettings.ensureLoaded();
-
-  // R4.5 — display the slider's audible dB value next to the bar.
-  let volumeDbLabel = $derived(
-    formatVolumeDb(
-      app.player.volume,
-      volumeSettings.curve,
-      volumeSettings.floorDb
-    )
-  );
 
   async function togglePlay(): Promise<void> {
     try {
@@ -304,35 +294,42 @@
       <span class="time tabular">{formatDuration(app.player.position_seconds)}</span>
     </div>
 
-    <!-- Center: now-playing card (cover + title + artist + heart). -->
+    <!-- Center: now-playing card. The whole card opens the
+         fullscreen Now Playing view; album / artist links and the
+         heart stay independently clickable thanks to event
+         stoppers. -->
     <div
       class="center"
       class:has-track={nowTitle.length > 0}
+      class:playing={isPlaying}
       oncontextmenu={onNowContext}
       role="presentation"
     >
       <button
-        class="cover-wrap"
-        class:playing={isPlaying}
+        class="card-hit"
         onclick={() => nowPlayingFullscreen.toggle()}
         title={nowTitle ? "Open Now Playing (F)" : "Now Playing"}
         aria-label="Open Now Playing"
         type="button"
-      >
+      ></button>
+      <div class="cover-wrap">
         <Cover coverKey={nowCoverKey} size={42} title={nowTitle} />
         {#if isPlaying}
           <div class="eq" aria-hidden="true">
             <span></span><span></span><span></span>
           </div>
         {/if}
-      </button>
+      </div>
       <div class="text">
         <div class="title" title={nowTitle}>{nowTitle || "—"}</div>
         <div class="meta">
           {#if nowAlbum}
             <button
               class="link"
-              onclick={goToAlbum}
+              onclick={(e) => {
+                e.stopPropagation();
+                goToAlbum();
+              }}
               disabled={nowAlbumId === null}
               title={nowAlbumId === null ? nowAlbum : `Open ${nowAlbum}`}
             >
@@ -345,7 +342,10 @@
           {#if nowArtist}
             <button
               class="link"
-              onclick={goToArtist}
+              onclick={(e) => {
+                e.stopPropagation();
+                goToArtist();
+              }}
               title={`Open ${nowArtist}`}
             >
               {nowArtist}
@@ -359,7 +359,10 @@
       <button
         class="heart"
         class:filled={nowFavorite}
-        onclick={toggleFavorite}
+        onclick={(e) => {
+          e.stopPropagation();
+          void toggleFavorite();
+        }}
         disabled={!nowTrack}
         aria-label={nowFavorite ? "Remove from favorites" : "Add to favorites"}
         title={nowFavorite ? "Remove from favorites" : "Add to favorites"}
@@ -372,11 +375,8 @@
     <div class="right">
       <span class="time tabular remaining">−{formatDuration(remainingSeconds)}</span>
 
-      <span class="badge quality" title="Audio output">
-        {formatOutputMode(app.player.output_mode)} · {formatQuality(
-          app.player.sample_rate,
-          app.player.bit_depth
-        )}
+      <span class="badge quality" title={`${formatOutputMode(app.player.output_mode)} · ${formatQuality(app.player.sample_rate, app.player.bit_depth)}`}>
+        {formatQuality(app.player.sample_rate, app.player.bit_depth)}
       </span>
 
       <button
@@ -390,17 +390,8 @@
         <Icon name="queue" size={15} />
       </button>
 
-      <button
-        class="ctrl"
-        onclick={() => void toggleMiniPlayer(true)}
-        aria-label="Open mini player"
-        title="Mini player"
-      >
-        <Icon name="minimize-2" size={15} />
-      </button>
-
       <div class="volume" onwheel={handleVolumeWheel} role="group" aria-label="Volume">
-        <Icon name="volume" size={14} />
+        <Icon name="volume" size={13} />
         <input
           type="range"
           min="0"
@@ -410,10 +401,8 @@
           oninput={handleVolume}
           style:--range-fill={`${volumePct}%`}
           aria-label="Volume"
+          title={`Volume: ${volumePct}%`}
         />
-        <span class="vol-db tabular" title={`Volume audible: ${volumeDbLabel}`}>
-          {volumeDbLabel}
-        </span>
       </div>
     </div>
   </div>
@@ -421,28 +410,30 @@
 
 <style>
   .bar {
-    grid-column: 1 / -1;
+    grid-column: 2 / -1;
     grid-row: 3;
     position: relative;
     height: var(--player-height);
     background: var(--bg-1);
-    border-top: 1px solid var(--border);
-    /* Subtle inner glow above the bar separates it from content. */
-    box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.02);
+    border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+    /* Containment: the bar is allowed to shrink with the content
+       column so its grid never overflows past the right edge. */
+    min-width: 0;
+    overflow: hidden;
   }
 
-  /* Hairline seek input pinned to the top edge. The thumb is hidden
-     until the bar is hovered, keeping the line clean at rest. The
-     range itself is styled in global.css; we override the track height
-     here so it fits the strip. */
+  /* Hairline seek input pinned to the top edge. Stays a thin 2 px
+     line at rest, grows to 4 px on hover. The thumb only appears
+     when the bar is hovered, keeping the rendering clean and
+     unambiguous (no floating handle in the middle of the track). */
   .seek {
     position: absolute;
     top: 0;
     left: 0;
     right: 0;
     width: 100%;
-    height: 14px;
-    margin: -7px 0 0;
+    height: 12px;
+    margin: -6px 0 0;
     padding: 0;
     background: transparent;
     cursor: pointer;
@@ -450,34 +441,34 @@
     z-index: 2;
   }
   .seek::-webkit-slider-runnable-track {
-    height: 3px;
+    height: 2px;
     border-radius: 0;
     background: linear-gradient(
       to right,
       var(--accent) 0%,
       var(--accent) var(--range-fill),
-      var(--bg-3) var(--range-fill),
-      var(--bg-3) 100%
+      rgba(255, 255, 255, 0.08) var(--range-fill),
+      rgba(255, 255, 255, 0.08) 100%
     );
     transition: height var(--dur-fast) var(--ease-out);
   }
   .bar:hover .seek::-webkit-slider-runnable-track {
-    height: 5px;
+    height: 4px;
   }
   .seek::-moz-range-track {
-    height: 3px;
-    background: var(--bg-3);
+    height: 2px;
+    background: rgba(255, 255, 255, 0.08);
   }
   .seek::-moz-range-progress {
-    height: 3px;
+    height: 2px;
     background: var(--accent);
   }
   .seek::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 12px;
-    height: 12px;
-    margin-top: -4.5px;
+    width: 10px;
+    height: 10px;
+    margin-top: -4px;
     border-radius: 50%;
     background: var(--fg-0);
     box-shadow: 0 0 0 0 var(--accent-glow);
@@ -494,14 +485,25 @@
   .grid {
     height: 100%;
     display: grid;
-    grid-template-columns: 1fr minmax(280px, 1.4fr) 1fr;
+    /* Auto columns size from content with no hard floor; only the
+       center column claims a comfortable minimum. Each zone has
+       min-width: 0 so flex children inside are allowed to ellipsis
+       when the bar gets squeezed by a wide sidebar. */
+    grid-template-columns: auto minmax(220px, 1.4fr) auto;
     align-items: center;
-    gap: var(--space-5);
-    padding: 0 var(--space-5);
+    gap: var(--space-3);
+    padding: 0 var(--space-3);
+    min-width: 0;
+  }
+  .left,
+  .center,
+  .right {
+    min-width: 0;
   }
 
   /* --- shared button --- */
   .ctrl {
+    position: relative;
     width: 32px;
     height: 32px;
     border-radius: 50%;
@@ -510,41 +512,49 @@
     justify-content: center;
     background: transparent;
     border: none;
-    color: var(--fg-1);
+    color: var(--fg-2);
     cursor: pointer;
     padding: 0;
     transition: background var(--dur-fast) var(--ease-out),
       color var(--dur-fast) var(--ease-out),
       transform var(--dur-base) var(--ease-spring);
   }
-  .ctrl :global(svg) {
-    transition: transform var(--dur-base) var(--ease-spring);
-  }
   .ctrl:hover {
-    background: var(--bg-2);
+    background: rgba(255, 255, 255, 0.06);
     color: var(--fg-0);
   }
-  .ctrl:hover :global(svg) {
-    transform: scale(1.08);
-  }
   .ctrl:active:not(:disabled) {
-    transform: scale(0.94);
+    transform: scale(0.92);
   }
   .ctrl.active {
     color: var(--accent);
-    background: var(--accent-soft);
+  }
+  /* Active dot underneath shuffle / repeat / queue, more elegant
+     than the heavy accent-soft fill we used to carry. */
+  .ctrl.active::after {
+    content: "";
+    position: absolute;
+    bottom: 4px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 4px var(--accent-glow);
   }
   .ctrl.play {
-    width: 38px;
-    height: 38px;
+    width: 36px;
+    height: 36px;
     background: var(--fg-0);
     color: var(--bg-0);
-    box-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 4px 14px -4px rgba(0, 0, 0, 0.6);
   }
   .ctrl.play:hover {
     background: var(--fg-0);
-    transform: scale(1.06);
-    box-shadow: 0 6px 18px -4px var(--accent-glow);
+    transform: scale(1.05);
+    box-shadow: 0 6px 20px -4px var(--accent-glow);
+    color: var(--bg-0);
   }
   .ctrl.play:active:not(:disabled) {
     transform: scale(0.94);
@@ -552,16 +562,17 @@
   .ctrl.play.is-playing {
     background: var(--accent);
     color: #fff;
+    box-shadow: 0 4px 16px -4px var(--accent-glow);
   }
 
   /* --- left zone --- */
   .left {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
   }
   .time {
-    color: var(--fg-2);
+    color: var(--fg-3);
     font-size: 11px;
     transition: color var(--dur-fast) var(--ease-out);
   }
@@ -572,44 +583,57 @@
     margin-left: var(--space-3);
   }
   .bar:hover .time {
-    color: var(--fg-1);
+    color: var(--fg-2);
   }
 
   /* --- center zone --- */
   .center {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-3);
     min-width: 0;
-    padding: 6px 12px;
+    padding: 6px 12px 6px 8px;
     border-radius: var(--radius-md);
-    background: var(--bg-2);
-    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    cursor: pointer;
     transition: background var(--dur-fast) var(--ease-out),
       border-color var(--dur-fast) var(--ease-out);
   }
   .center.has-track:hover {
-    background: var(--bg-3);
-    border-color: var(--accent-soft);
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.08);
   }
-  .cover-wrap {
-    display: flex;
-    position: relative;
-    flex-shrink: 0;
+  /* Full-card clickable hit area sitting behind every visual
+     element. The cover, title, links and heart all sit on top of it
+     via z-index; clicks on those propagate normally and are stopped
+     by the inner buttons when needed. */
+  .card-hit {
+    position: absolute;
+    inset: 0;
     background: transparent;
     border: none;
+    border-radius: inherit;
     padding: 0;
+    margin: 0;
     cursor: pointer;
-    color: inherit;
-    transition: transform var(--dur-base) var(--ease-out);
+    z-index: 0;
   }
-  .cover-wrap:hover {
-    transform: scale(1.04);
+  .card-hit:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .cover-wrap {
+    position: relative;
+    flex-shrink: 0;
+    pointer-events: none;
+    z-index: 1;
   }
   .cover-wrap :global(.cover) {
     border-radius: var(--radius-s);
   }
-  .cover-wrap.playing {
+  .center.playing .cover-wrap {
     animation: breathe 4s var(--ease-in-out) infinite;
   }
   @keyframes breathe {
@@ -645,6 +669,8 @@
   .center .text {
     flex: 1;
     min-width: 0;
+    pointer-events: none;
+    z-index: 1;
   }
   .title {
     color: var(--fg-0);
@@ -684,6 +710,9 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     min-width: 0;
+    pointer-events: auto;
+    position: relative;
+    z-index: 2;
     transition: color var(--dur-fast) var(--ease-out);
   }
   .link:hover:not(:disabled) {
@@ -695,24 +724,28 @@
     cursor: default;
   }
   .heart {
-    width: 28px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
     border-radius: 50%;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     background: transparent;
     border: none;
-    color: var(--fg-2);
+    color: var(--fg-3);
     cursor: pointer;
     padding: 0;
     flex-shrink: 0;
+    margin-left: var(--space-2);
+    pointer-events: auto;
+    position: relative;
+    z-index: 2;
     transition: background var(--dur-fast) var(--ease-out),
       color var(--dur-fast) var(--ease-out),
       transform var(--dur-base) var(--ease-spring);
   }
   .heart:hover:not(:disabled) {
-    background: var(--bg-3);
+    background: rgba(255, 95, 126, 0.1);
     color: #ff5f7e;
   }
   .heart:active:not(:disabled) {
@@ -722,7 +755,7 @@
     color: #ff5f7e;
   }
   .heart:disabled {
-    opacity: 0.4;
+    opacity: 0.3;
     cursor: default;
   }
 
@@ -730,46 +763,54 @@
   .right {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-3);
     justify-content: flex-end;
+    min-width: 0;
   }
   .right .remaining {
-    margin-right: 4px;
+    margin-right: var(--space-1);
   }
   .badge {
     font-size: 10px;
+    font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    padding: 4px 10px;
+    padding: 3px 9px;
     border-radius: 999px;
-    background: var(--bg-2);
-    border: 1px solid var(--border);
-    color: var(--fg-1);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    color: var(--fg-2);
     white-space: nowrap;
+    min-width: 0;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: color var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out);
   }
-  .badge.quality {
-    color: var(--accent);
-    border-color: var(--accent-soft);
-    background: linear-gradient(135deg, var(--accent-soft), var(--bg-2));
+  .badge.quality:hover {
+    color: var(--fg-0);
+    background: rgba(255, 255, 255, 0.08);
   }
   .volume {
     display: flex;
     align-items: center;
-    gap: 6px;
-    width: 170px;
+    gap: var(--space-2);
+    width: 130px;
+    min-width: 100px;
     color: var(--fg-2);
     transition: color var(--dur-fast) var(--ease-out);
   }
   .volume:hover {
-    color: var(--fg-0);
+    color: var(--fg-1);
+  }
+  .volume :global(svg) {
+    flex-shrink: 0;
+    opacity: 0.7;
   }
   .volume input[type="range"] {
     height: 14px;
-  }
-  .vol-db {
-    font-size: 10px;
-    color: var(--fg-2);
-    min-width: 52px;
-    text-align: right;
+    flex: 1 1 auto;
+    min-width: 60px;
   }
 </style>

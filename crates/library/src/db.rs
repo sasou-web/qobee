@@ -348,6 +348,49 @@ impl Database {
         Ok(track)
     }
 
+    /// Resolve a track by its absolute file system path. The lookup
+    /// matches on the `path` column verbatim, so callers must
+    /// canonicalise (or at least normalise) the path before calling.
+    pub fn find_track_id_by_path(&self, path: &str) -> LibraryResult<Option<i64>> {
+        let id = self
+            .conn
+            .query_row(
+                "SELECT id FROM tracks WHERE path = ?1",
+                params![path],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(LibraryError::Db(other)),
+            })?;
+        Ok(id)
+    }
+
+    /// Every track whose `path` starts with `folder`. The match is
+    /// done with `LIKE folder || '%'` and is case-sensitive on
+    /// platforms with case-sensitive filesystems; on Windows the
+    /// caller can pre-lowercase both sides if needed.
+    pub fn tracks_in_folder(&self, folder: &str) -> LibraryResult<Vec<Track>> {
+        let pattern = format!("{}%", folder);
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, path, title, artist, album, album_artist,
+                   track_number, disc_number, year, genre,
+                   duration_seconds, sample_rate, bit_depth, channels,
+                   cover_key, replaygain_track_db, replaygain_album_db,
+                   replaygain_track_peak, replaygain_album_peak
+            FROM tracks
+            WHERE path LIKE ?1 ESCAPE '\'
+            ORDER BY album, disc_number, track_number, title
+            "#,
+        )?;
+        let rows = stmt
+            .query_map(params![pattern], track_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Resolve the album that contains `track_id`, with all its tracks
     /// in playback order. Used by `play_track` to queue the surrounding
     /// album when the user clicks a single song.

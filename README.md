@@ -367,6 +367,25 @@ The MSI / NSIS installers land under `src-tauri/target/release/bundle/`.
   available later from Settings → Library.
 - **Drag-and-drop** a folder anywhere on the window to add it as a
   library root and trigger a scan.
+- **Resizable, collapsible sidebar** like Apple Music / Arc: drag
+  the right edge to resize, drag below 140 px to collapse to icon-
+  only mode. Width and collapsed state are persisted in
+  localStorage.
+- **System tray icon** (Windows) with right-click menu for show /
+  focus, play / pause, prev / next, library, settings, quit. Left
+  click brings the window forward.
+- **Windows desktop integration** (opt-in per item in Settings →
+  Windows Integration): autostart at login, start minimized,
+  minimize-to-tray on close, audio file context menu (`Play in
+  Qobee`, `Add to Qobee queue`, `Play next`, `Import to library`),
+  folder context menu (`Play folder`, `Add folder to queue`, `Scan
+  folder`, `Import folder`), `qobee://` protocol handler. Every
+  registry write goes to HKCU only; Qobee never claims the system
+  default and never modifies machine-wide associations.
+- **Single-instance + deep-link forwarding**: launching `qobee.exe
+  --play foo.flac` while the app is already running sends the
+  command to the existing window instead of spawning a duplicate.
+  Same path for `qobee://` deep links.
 - Library scan extracts FLAC / MP3 / WAV / M4A / AAC / ALAC / OGG /
   Vorbis / Opus tags and embedded covers via `lofty`.
 - Multi-root library: add as many folders as you want, scan each or
@@ -464,13 +483,81 @@ list is below; bounds and defaults are kept in sync with
 | `audio.balance`                    | f32              | `0.0`                | `[-1.0, 1.0]`                                   | Stereo balance (-1 = full left, +1 = full right).                 |
 | `audio.trim_db_per_channel`        | array of f32     | `[]`                 | length ≤ 8, each ∈ `[-12.0, 0.0]`               | Per-channel trim in dB for asymmetric setups.                     |
 
+## Windows integration
+
+Qobee ships a real Windows desktop integration, opt-in per item from
+**Settings → Windows Integration** so the user keeps control over
+every shell hook. None of the hooks ever require admin privileges:
+every registry write goes to `HKCU` only, and Qobee never claims to
+be the system-wide default audio player.
+
+### Surface
+
+- **AppUserModelID** — `app.qobee.player`, set on the running
+  process via `SetCurrentProcessExplicitAppUserModelID`. Windows
+  uses it to group the taskbar icon, notifications, and (static)
+  Jump List under a single identity that survives updates.
+- **Single instance + argument forwarding** — built on
+  `tauri-plugin-single-instance`. A second `qobee.exe` invocation
+  forwards its `argv` to the running window and exits; there is
+  never a duplicate process or window.
+- **Tray icon** — left click brings the main window forward; right
+  click opens a menu with `Show / focus`, `Play / Pause`,
+  `Previous`, `Next`, `Open library`, `Settings`, `Quit`.
+  Toggleable from Settings.
+- **Close-to-tray** — when enabled, the window's close button
+  hides the window instead of quitting; playback keeps running in
+  the background.
+- **Autostart** — registers (or removes) a value under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Qobee`,
+  optionally with `--minimized`.
+- **`qobee://` protocol handler** — registered as a soft handler
+  under `HKCU\Software\Classes\qobee`. Examples:
+  `qobee://play?path=C%3A%2Fmusic%2Fa.flac`,
+  `qobee://enqueue?path=...`, `qobee://play-next?path=...`,
+  `qobee://play-folder?path=...`, `qobee://import-folder?path=...`,
+  `qobee://library`, `qobee://settings`.
+- **Audio file context menu** — installs a soft `OpenWithProgids`
+  hint on the 10 supported extensions
+  (`.mp3 .flac .wav .ogg .m4a .aac .opus .alac .aiff .wv`) and
+  attaches verbs `Open in Qobee`, `Play in Qobee`,
+  `Add to Qobee queue`, `Play next in Qobee`,
+  `Import to Qobee library`. Never replaces the default audio app.
+- **Folder context menu** — adds `Play folder`, `Add folder to
+  queue`, `Scan folder`, `Import folder` on
+  `Directory\shell`, `Directory\Background\shell` (right-click empty
+  space inside an open folder), and `Drive\shell` (right-click a
+  drive letter).
+- **Command-line arguments** — `--play <paths>`, `--enqueue
+  <paths>`, `--play-next <paths>`, `--play-folder <path>`,
+  `--enqueue-folder <path>`, `--scan-folder <path>`,
+  `--import-folder <path>`, `--open-library`, `--open-settings`,
+  `--minimized`. Bare paths are treated as `--play <path>`.
+
+### Registry footprint (HKCU only)
+
+| Key                                                                 | Purpose                                          |
+| ------------------------------------------------------------------- | ------------------------------------------------ |
+| `Software\Microsoft\Windows\CurrentVersion\Run\Qobee`               | Autostart entry.                                 |
+| `Software\Classes\qobee\…`                                          | `qobee://` protocol handler.                     |
+| `Software\Classes\Qobee.Music.AudioFile\…`                          | ProgID with the audio file verbs.                |
+| `Software\Classes\.<ext>\OpenWithProgids\Qobee.Music.AudioFile`     | Soft "Open with" hint per audio extension.       |
+| `Software\Classes\Directory\shell\QobeeFolder.<verb>`               | Folder verbs (right-click a folder).             |
+| `Software\Classes\Directory\Background\shell\QobeeFolder.<verb>`    | Folder verbs (empty space inside a folder).      |
+| `Software\Classes\Drive\shell\QobeeFolder.<verb>`                   | Folder verbs (right-click a drive).              |
+| `Software\Qobee\WindowsIntegration`                                 | Cleanup anchor written by the installer.         |
+
+The NSIS installer (`src-tauri/installer/qobee.nsh`) registers the
+protocol + AUMID at install time and reverses every key listed above
+on uninstall. Toggling shell hooks at runtime from the Settings
+panel performs the equivalent registry writes through the
+`set_windows_integration` Tauri command.
+
 ## What is intentionally not in yet
 
 - **Crossfade between tracks.** The engine supports gapless
   transitions in place; crossfade would need a second active stream
   in parallel. Wired-in seam exists, no UI yet.
-- **Tray icon.** Closing the window today exits Qobee. A tray icon
-  would let the player keep running in the background.
 - **Global hotkeys.** Media keys / Bluetooth / lock-screen controls
   work; OS-wide hotkeys (Play/Pause from any focused app) do not.
 - **Scrobbling (Last.fm / ListenBrainz).** Recently-played is
@@ -482,7 +569,9 @@ list is below; bounds and defaults are kept in sync with
 ## Roadmap
 
 - Crossfade.
-- Tray icon and global hotkeys.
+- Global hotkeys (system-wide Play/Pause from any focused app).
+- Dynamic taskbar Jump List (the static one already follows the
+  AppUserModelID).
 - Smart playlists (filter / sort presets).
 - Scrobbling (Last.fm / ListenBrainz).
 - Visualizer.

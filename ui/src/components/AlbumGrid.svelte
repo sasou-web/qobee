@@ -87,50 +87,52 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-4);
-    margin: 4px 0 var(--space-6);
+    margin: 0 0 var(--space-6);
   }
   .title {
-    font-size: 24px;
+    font-size: 28px;
     font-weight: 700;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.02em;
     margin: 0;
+    color: var(--fg-0);
   }
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: var(--space-6);
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: var(--space-5) var(--space-4);
     justify-items: start;
   }
   .card {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-    padding: 0;
+    padding: var(--space-2);
     background: transparent;
     border: none;
     text-align: left;
     cursor: pointer;
-    /* Card stays exactly the size of the cover; meta block uses the
-       same width so long titles get an ellipsis (and marquee on
-       hover) instead of overflowing into neighbours. */
-    width: 180px;
-    transition: transform var(--dur-base) var(--ease-out);
+    width: calc(180px + var(--space-2) * 2);
+    border-radius: var(--radius-md);
+    transition: background var(--dur-base) var(--ease-out);
   }
   .card:hover {
-    background: transparent;
+    background: rgba(255, 255, 255, 0.04);
   }
   .thumb {
     position: relative;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
     overflow: hidden;
-    /* Same fix as Home.svelte: the wrapper must match the cover's
-       intrinsic size so the overlay button stays anchored on it. */
     width: fit-content;
+    box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.5);
+    transition: box-shadow var(--dur-base) var(--ease-out);
+  }
+  .card:hover .thumb {
+    box-shadow: 0 14px 32px -10px rgba(0, 0, 0, 0.7);
   }
   .play-overlay {
     position: absolute;
-    right: 12px;
-    bottom: 12px;
+    right: 10px;
+    bottom: 10px;
     width: 44px;
     height: 44px;
     border-radius: 50%;
@@ -143,7 +145,8 @@
     transform: translateY(8px) scale(0.8);
     transition: opacity var(--dur-base) var(--ease-out),
       transform var(--dur-base) var(--ease-spring);
-    box-shadow: 0 10px 24px -6px rgba(0, 0, 0, 0.55);
+    box-shadow: 0 8px 20px -4px rgba(0, 0, 0, 0.55),
+      0 0 20px var(--accent-glow);
     pointer-events: none;
   }
   .card:hover .play-overlay {
@@ -158,17 +161,18 @@
   /* :global because Marquee receives the class via prop. */
   .meta :global(.t) {
     font-weight: 600;
+    font-size: 13px;
     color: var(--fg-0);
-    margin-top: var(--space-3);
+    margin-top: 0;
     transition: color var(--dur-fast) var(--ease-out);
   }
   .card:hover :global(.t) {
     color: var(--accent);
   }
   .meta :global(.a) {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--fg-2);
-    margin-top: var(--space-1);
+    margin-top: 2px;
   }
   .empty {
     padding: 60px 0;

@@ -1,27 +1,57 @@
 <script lang="ts">
   // Page Settings → Audio (R12).
   //
-  // Single panel grouping every `audio.*` knob persisted by
-  // `AudioSettingsStore`. Each section is two-way bound through the
-  // `audioSettings` runes store: the controls read from the cached
-  // snapshot and write through `updateAudio(key, value)` which
-  // calls `setAudioSetting` and patches the local state on success.
+  // Two-tier UI on top of the same `AudioSettingsStore` backend:
   //
-  // The Convolver, Bit-Perfect Health, and Null-Test sub-panels keep
-  // owning their own state (file pickers, async runs, debounced
-  // events) so we just embed them here.
+  //   • Mode "Standard" (par défaut) : seulement les contrôles
+  //     directement utiles à un utilisateur lambda — santé
+  //     bit-perfect, limiteur on/off, crossfeed casque, convolveur,
+  //     balance, et un bouton "Réinitialiser".
+  //
+  //   • Mode "Avancé" (déroulé sur demande, persisté en
+  //     localStorage) : expose les knobs experts laissés par la
+  //     spec (headroom RG, profil de dither, plafond et look-ahead
+  //     du limiteur, courbe et plancher de volume, qualité du
+  //     rééchantillonneur, crossfeed personnalisé, gain
+  //     compensatoire du convolveur, trim L/R, null-test).
+  //
+  // Aucun changement côté Rust : tous les défauts déjà persistés
+  // restent valides et continuent d'alimenter le moteur. Cacher
+  // un contrôle ne le réinitialise pas.
 
   import { onMount } from "svelte";
-  import { audioSettings, loadAudioSettings } from "../../lib/audioSettings.svelte";
+  import {
+    audioSettings,
+    loadAudioSettings,
+  } from "../../lib/audioSettings.svelte";
+  import { resetAudioSettings } from "../../lib/api";
   import BitPerfectHealthPanel from "./BitPerfectHealthPanel.svelte";
   import ConvolverIrPicker from "./ConvolverIrPicker.svelte";
   import NullTestDiagnostic from "./NullTestDiagnostic.svelte";
 
+  const ADVANCED_KEY = "qobee.audio.showAdvanced";
+
   let lastError = $state<string | null>(null);
+  let resetting = $state(false);
+  let showAdvanced = $state(false);
 
   onMount(() => {
     void loadAudioSettings();
+    try {
+      showAdvanced = localStorage.getItem(ADVANCED_KEY) === "1";
+    } catch {
+      /* localStorage indisponible : on reste sur Standard. */
+    }
   });
+
+  function toggleAdvanced() {
+    showAdvanced = !showAdvanced;
+    try {
+      localStorage.setItem(ADVANCED_KEY, showAdvanced ? "1" : "0");
+    } catch {
+      /* idem : best-effort */
+    }
+  }
 
   /** Push a setting and surface engine errors at the top of the panel. */
   async function commit(key: string, value: unknown) {
@@ -40,44 +70,66 @@
     };
   }
 
-  // ----- ReplayGain --------------------------------------------------------
+  // --- Limiter on/off shortcut (Standard) ---------------------------------
+  //
+  // The store accepts three modes (off / soft_clip / lookahead_limiter).
+  // For the Standard view we expose a single toggle: ON maps to
+  // lookahead_limiter (the recommended default), OFF maps to "off".
+  // Users who want soft_clip flip into Advanced.
+  let limiterOn = $derived(audioSettings.peak_limiter_mode !== "off");
+
+  async function onToggleLimiter(e: Event) {
+    const next = (e.target as HTMLInputElement).checked
+      ? "lookahead_limiter"
+      : "off";
+    await commit("audio.peak_limiter_mode", next);
+  }
+
+  async function onResetAll() {
+    if (
+      !window.confirm(
+        "Restaurer tous les paramètres audio aux valeurs par défaut ?",
+      )
+    ) {
+      return;
+    }
+    resetting = true;
+    try {
+      await resetAudioSettings();
+      await loadAudioSettings(true);
+      lastError = null;
+    } catch (e) {
+      lastError = String(e);
+    } finally {
+      resetting = false;
+    }
+  }
+
+  // ----- Sliders (Advanced) -----------------------------------------------
 
   const rgHeadroomCommit = debounced((v) =>
-    commit("audio.rg_safety_headroom_db", v)
+    commit("audio.rg_safety_headroom_db", v),
   );
-
-  // ----- Limiter -----------------------------------------------------------
-
   const ceilingCommit = debounced((v) =>
-    commit("audio.peak_limiter_ceiling_dbfs", v)
+    commit("audio.peak_limiter_ceiling_dbfs", v),
   );
   const lookaheadCommit = debounced((v) =>
-    commit("audio.peak_limiter_lookahead_ms", v)
+    commit("audio.peak_limiter_lookahead_ms", v),
   );
-
-  // ----- Volume ------------------------------------------------------------
-
   const volumeFloorCommit = debounced((v) =>
-    commit("audio.volume_floor_db", v)
+    commit("audio.volume_floor_db", v),
   );
-
-  // ----- Crossfeed ---------------------------------------------------------
-
   const crossfeedDelayCommit = debounced((v) =>
-    commit("audio.crossfeed_delay_us", v)
+    commit("audio.crossfeed_delay_us", v),
   );
   const crossfeedCutoffCommit = debounced((v) =>
-    commit("audio.crossfeed_lp_cutoff_hz", v)
+    commit("audio.crossfeed_lp_cutoff_hz", v),
   );
-
-  // ----- Balance / Trim ----------------------------------------------------
-
   const balanceCommit = debounced((v) => commit("audio.balance", v));
 
   // The engine stores per-channel trim as a flat array. The L/R
-  // sliders in this panel address index 0 and 1; we keep any
-  // remaining channels untouched so multi-channel presets configured
-  // elsewhere survive a stereo edit.
+  // sliders address index 0 and 1; remaining channels (multicanal
+  // presets) survive a stereo edit.
   function setTrimChannel(index: 0 | 1, value: number) {
     const current = audioSettings.trim_db_per_channel.slice();
     while (current.length <= index) current.push(0);
@@ -117,192 +169,37 @@
     <div class="error">{lastError}</div>
   {/if}
 
-  <!-- ReplayGain ---------------------------------------------------------- -->
+  <!-- =============================================================== -->
+  <!-- Standard — l'essentiel                                          -->
+  <!-- =============================================================== -->
+
+  <!-- Bit-Perfect Health -------------------------------------------------- -->
   <section>
-    <h3>ReplayGain</h3>
+    <h3>Santé bit-perfect</h3>
+    <BitPerfectHealthPanel />
+    <p class="hint">
+      Le badge passe au vert quand la sortie atteint le bit-perfect
+      strict (Exclusive, sans DSP, SR du périphérique = SR source).
+    </p>
+  </section>
+
+  <!-- Limiteur ------------------------------------------------------------ -->
+  <section>
+    <h3>Limiteur de pics</h3>
     <div class="row">
       <label class="toggle">
         <input
           type="checkbox"
-          checked={audioSettings.rg_peak_protection}
-          onchange={(e) =>
-            commit(
-              "audio.rg_peak_protection",
-              (e.target as HTMLInputElement).checked
-            )}
+          checked={limiterOn}
+          onchange={onToggleLimiter}
         />
-        <span>Protection des pics (true-peak aware)</span>
+        <span>Activé (recommandé)</span>
       </label>
     </div>
-    <label class="slider">
-      <span class="slider-label">
-        Marge de sécurité
-        <em>{rgHeadroomLocal.toFixed(1)} dB</em>
-      </span>
-      <input
-        type="range"
-        min="0"
-        max="3"
-        step="0.1"
-        bind:value={rgHeadroomLocal}
-        oninput={() => rgHeadroomCommit(rgHeadroomLocal)}
-      />
-    </label>
     <p class="hint">
-      Quand un titre est très chaud, ReplayGain peut demander un boost qui
-      ferait dépasser 0 dBFS. La protection retire automatiquement assez de
-      gain pour rester sous le plafond du limiteur, et la marge ajoute un
-      coussin pour absorber les pics inter-échantillon reconstruits.
-    </p>
-  </section>
-
-  <!-- Dither -------------------------------------------------------------- -->
-  <section>
-    <h3>Dither</h3>
-    <div class="row">
-      <label for="dither-profile">Profil</label>
-      <select
-        id="dither-profile"
-        value={audioSettings.dither_profile}
-        onchange={(e) =>
-          commit(
-            "audio.dither_profile",
-            (e.target as HTMLSelectElement).value
-          )}
-      >
-        <option value="tpdf">TPDF (bruit blanc)</option>
-        <option value="shaped_hp">Passe-haut</option>
-        <option value="shaped_f_weighted">F-weighted (recommandé)</option>
-      </select>
-    </div>
-    <p class="hint">
-      Actif uniquement pour les sorties ≤ 16 bits. Le profil shaped
-      F-weighted déplace le bruit de quantification hors de la bande
-      de sensibilité auditive maximale (2–5 kHz), ce qui améliore le
-      SNR perçu sans augmenter l'énergie totale du bruit.
-    </p>
-  </section>
-
-  <!-- Limiter ------------------------------------------------------------- -->
-  <section>
-    <h3>Limiteur</h3>
-    <div class="row">
-      <label for="limiter-mode">Mode</label>
-      <select
-        id="limiter-mode"
-        value={audioSettings.peak_limiter_mode}
-        onchange={(e) =>
-          commit(
-            "audio.peak_limiter_mode",
-            (e.target as HTMLSelectElement).value
-          )}
-      >
-        <option value="off">Désactivé</option>
-        <option value="soft_clip">Soft-clip (legacy)</option>
-        <option value="lookahead_limiter">Look-ahead (recommandé)</option>
-      </select>
-    </div>
-    <label class="slider">
-      <span class="slider-label">
-        Plafond
-        <em>{ceilingLocal.toFixed(1)} dBFS</em>
-      </span>
-      <input
-        type="range"
-        min="-3"
-        max="0"
-        step="0.1"
-        bind:value={ceilingLocal}
-        oninput={() => ceilingCommit(ceilingLocal)}
-      />
-    </label>
-    <label class="slider">
-      <span class="slider-label">
-        Look-ahead
-        <em>{lookaheadLocal.toFixed(1)} ms</em>
-      </span>
-      <input
-        type="range"
-        min="2"
-        max="10"
-        step="0.1"
-        bind:value={lookaheadLocal}
-        oninput={() => lookaheadCommit(lookaheadLocal)}
-      />
-    </label>
-    <p class="hint">
-      Le limiteur look-ahead garantit qu'aucun échantillon ne dépasse
-      le plafond, même quand l'EQ pousse fort. Plus le look-ahead est
-      long, plus l'attaque peut être douce mais plus la latence du
-      curseur augmente. Désactiver le limiteur est obligatoire pour
-      atteindre le badge bit-perfect en mode Exclusive.
-    </p>
-  </section>
-
-  <!-- Volume -------------------------------------------------------------- -->
-  <section>
-    <h3>Volume</h3>
-    <div class="row">
-      <label for="volume-curve">Courbe</label>
-      <select
-        id="volume-curve"
-        value={audioSettings.volume_curve}
-        onchange={(e) =>
-          commit(
-            "audio.volume_curve",
-            (e.target as HTMLSelectElement).value
-          )}
-      >
-        <option value="logarithmic">Logarithmique (recommandée)</option>
-        <option value="quadratic">Quadratique (legacy)</option>
-      </select>
-    </div>
-    <label class="slider">
-      <span class="slider-label">
-        Plancher
-        <em>{volumeFloorLocal.toFixed(0)} dB</em>
-      </span>
-      <input
-        type="range"
-        min="-80"
-        max="-30"
-        step="1"
-        bind:value={volumeFloorLocal}
-        oninput={() => volumeFloorCommit(volumeFloorLocal)}
-      />
-    </label>
-    <p class="hint">
-      La courbe logarithmique répartit la résolution audiophile sur
-      toute la course du curseur (un pas équivaut à un même ΔdB),
-      avec une butée basse au plancher. Position 0 mute exactement,
-      position 1 produit l'unité parfaite.
-    </p>
-  </section>
-
-  <!-- Resampler ----------------------------------------------------------- -->
-  <section>
-    <h3>Rééchantillonneur</h3>
-    <div class="row">
-      <label for="resampler-quality">Qualité</label>
-      <select
-        id="resampler-quality"
-        value={audioSettings.resampler_quality}
-        onchange={(e) =>
-          commit(
-            "audio.resampler_quality",
-            (e.target as HTMLSelectElement).value
-          )}
-      >
-        <option value="standard">Standard (CPU léger)</option>
-        <option value="best">Best (recommandé)</option>
-      </select>
-    </div>
-    <p class="hint">
-      « Best » utilise un sinc long (256 taps, oversampling 256) avec
-      un SNR ≥ 140 dB dans la bande audible. « Standard » descend à
-      ≤ 128 taps pour soulager les CPU portables tout en restant
-      au-dessus de 120 dB de SNR. Le préréglage s'applique à la piste
-      suivante.
+      Empêche les pics de dépasser le 0 dBFS et protège vos enceintes.
+      À désactiver uniquement pour viser le bit-perfect strict en mode
+      Exclusive.
     </p>
   </section>
 
@@ -317,87 +214,35 @@
           onchange={(e) =>
             commit(
               "audio.crossfeed_enabled",
-              (e.target as HTMLInputElement).checked
+              (e.target as HTMLInputElement).checked,
             )}
         />
         <span>Activé</span>
       </label>
     </div>
-    <div class="row">
-      <label for="crossfeed-preset">Préréglage</label>
-      <select
-        id="crossfeed-preset"
-        value={audioSettings.crossfeed_preset}
-        onchange={(e) =>
-          commit(
-            "audio.crossfeed_preset",
-            (e.target as HTMLSelectElement).value
-          )}
-        disabled={!audioSettings.crossfeed_enabled}
-      >
-        <option value="bauer">Bauer (modéré)</option>
-        <option value="bauer_strong">Bauer fort</option>
-        <option value="custom">Personnalisé</option>
-      </select>
-    </div>
-    {#if audioSettings.crossfeed_preset === "custom"}
-      <label class="slider">
-        <span class="slider-label">
-          Délai inter-canal
-          <em>{Math.round(crossfeedDelayLocal)} µs</em>
-        </span>
-        <input
-          type="range"
-          min="200"
-          max="400"
-          step="5"
-          bind:value={crossfeedDelayLocal}
-          oninput={() => crossfeedDelayCommit(crossfeedDelayLocal)}
-          disabled={!audioSettings.crossfeed_enabled}
-        />
-      </label>
-      <label class="slider">
-        <span class="slider-label">
-          Coupure passe-bas
-          <em>{Math.round(crossfeedCutoffLocal)} Hz</em>
-        </span>
-        <input
-          type="range"
-          min="500"
-          max="1500"
-          step="10"
-          bind:value={crossfeedCutoffLocal}
-          oninput={() => crossfeedCutoffCommit(crossfeedCutoffLocal)}
-          disabled={!audioSettings.crossfeed_enabled}
-        />
-      </label>
-    {/if}
     <p class="hint">
-      Mélange une fraction filtrée et retardée du canal opposé pour
-      simuler une écoute en haut-parleurs. Particulièrement utile sur
-      les enregistrements anciens à panoramique extrême. Bypass
-      automatique pour les flux mono ou multicanaux.
+      Adoucit l'image stéréo extrême pour une écoute au casque plus
+      naturelle, en simulant le couplage des deux oreilles avec les
+      enceintes. Bypass automatique pour le mono ou le multicanal.
     </p>
   </section>
 
-  <!-- Convolver ----------------------------------------------------------- -->
+  <!-- Convolveur ---------------------------------------------------------- -->
   <section>
     <h3>Convolveur (réponse impulsionnelle)</h3>
     <ConvolverIrPicker />
     <p class="hint">
-      Charge un fichier WAV mono ou stéréo (jusqu'à 100 000 taps). L'IR
-      est rééchantillonnée au taux de l'appareil de sortie et un gain
-      compensatoire évite l'écrêtage causé par la convolution. La
-      latence reste sous 20 ms grâce à la convolution FFT partitionnée.
+      Charge un fichier WAV mono ou stéréo pour appliquer une
+      correction de pièce ou un profil de casque. Optionnel.
     </p>
   </section>
 
-  <!-- Balance / Trim ------------------------------------------------------ -->
+  <!-- Balance ------------------------------------------------------------- -->
   <section>
-    <h3>Balance / Trim</h3>
+    <h3>Balance</h3>
     <label class="slider">
       <span class="slider-label">
-        Balance
+        Balance gauche / droite
         <em>
           {balanceLocal === 0
             ? "centré"
@@ -415,66 +260,314 @@
         oninput={() => balanceCommit(balanceLocal)}
       />
     </label>
-    <label class="slider">
-      <span class="slider-label">
-        Trim canal gauche
-        <em>{leftTrimLocal.toFixed(1)} dB</em>
-      </span>
-      <input
-        type="range"
-        min="-12"
-        max="0"
-        step="0.5"
-        bind:value={leftTrimLocal}
-        oninput={() => leftTrimCommit(leftTrimLocal)}
-      />
-    </label>
-    <label class="slider">
-      <span class="slider-label">
-        Trim canal droit
-        <em>{rightTrimLocal.toFixed(1)} dB</em>
-      </span>
-      <input
-        type="range"
-        min="-12"
-        max="0"
-        step="0.5"
-        bind:value={rightTrimLocal}
-        oninput={() => rightTrimCommit(rightTrimLocal)}
-      />
-    </label>
-    <p class="hint">
-      Compense une asymétrie auditive ou un casque légèrement
-      déséquilibré. La balance déplace l'image stéréo sans changer
-      le niveau global ; le trim atténue chaque canal indépendamment.
-      Aucun effet quand tous les paramètres sont à zéro.
-    </p>
   </section>
 
-  <!-- Bit-Perfect Health -------------------------------------------------- -->
-  <section>
-    <h3>Santé bit-perfect</h3>
-    <BitPerfectHealthPanel />
-    <p class="hint">
-      Le badge passe au vert uniquement si la sortie est en Exclusive,
-      tous les étages DSP sont à l'unité (limiteur off, EQ flat, RG sans
-      atténuation, volume = 1.0, balance = 0, IR déchargée), et le SR
-      du périphérique correspond au SR source.
-    </p>
+  <!-- Reset + Advanced toggle --------------------------------------------- -->
+  <section class="actions">
+    <button
+      type="button"
+      class="ghost"
+      onclick={onResetAll}
+      disabled={resetting}
+    >
+      {resetting ? "Réinitialisation…" : "Réinitialiser tous les réglages audio"}
+    </button>
+    <button type="button" class="link" onclick={toggleAdvanced}>
+      {showAdvanced ? "Masquer" : "Afficher"} les réglages avancés
+      <span class="caret" class:open={showAdvanced}>▾</span>
+    </button>
   </section>
 
-  <!-- Null-Test ----------------------------------------------------------- -->
-  <section>
-    <h3>Diagnostic null-test</h3>
-    <NullTestDiagnostic />
-    <p class="hint">
-      Vérifie le bit-perfect de bout en bout en comparant la sortie
-      capturée au signal source par corrélation croisée. En Shared,
-      la capture passe par WASAPI loopback ; en Exclusive, le
-      moteur pré-rend la chaîne DSP dans un fichier 24 bits avant la
-      comparaison.
-    </p>
-  </section>
+  <!-- =============================================================== -->
+  <!-- Avancé — pour audiophiles                                       -->
+  <!-- =============================================================== -->
+
+  {#if showAdvanced}
+    <!-- ReplayGain ------------------------------------------------------ -->
+    <section>
+      <h3>ReplayGain — protection des pics</h3>
+      <div class="row">
+        <label class="toggle">
+          <input
+            type="checkbox"
+            checked={audioSettings.rg_peak_protection}
+            onchange={(e) =>
+              commit(
+                "audio.rg_peak_protection",
+                (e.target as HTMLInputElement).checked,
+              )}
+          />
+          <span>Activée (true-peak aware)</span>
+        </label>
+      </div>
+      <label class="slider">
+        <span class="slider-label">
+          Marge de sécurité
+          <em>{rgHeadroomLocal.toFixed(1)} dB</em>
+        </span>
+        <input
+          type="range"
+          min="0"
+          max="3"
+          step="0.1"
+          bind:value={rgHeadroomLocal}
+          oninput={() => rgHeadroomCommit(rgHeadroomLocal)}
+        />
+      </label>
+      <p class="hint">
+        Quand ReplayGain demande un boost qui ferait dépasser 0 dBFS,
+        la protection retire automatiquement assez de gain pour rester
+        sous le plafond du limiteur. La marge ajoute un coussin pour
+        absorber les pics inter-échantillon reconstruits.
+      </p>
+    </section>
+
+    <!-- Dither --------------------------------------------------------- -->
+    <section>
+      <h3>Dither</h3>
+      <div class="row">
+        <label for="dither-profile">Profil</label>
+        <select
+          id="dither-profile"
+          value={audioSettings.dither_profile}
+          onchange={(e) =>
+            commit(
+              "audio.dither_profile",
+              (e.target as HTMLSelectElement).value,
+            )}
+        >
+          <option value="tpdf">TPDF (bruit blanc)</option>
+          <option value="shaped_hp">Passe-haut</option>
+          <option value="shaped_f_weighted">F-weighted (recommandé)</option>
+        </select>
+      </div>
+      <p class="hint">
+        Actif uniquement pour les sorties ≤ 16 bits. Le profil
+        F-weighted déplace le bruit de quantification hors de la bande
+        de sensibilité auditive maximale (2–5 kHz).
+      </p>
+    </section>
+
+    <!-- Limiter (advanced) -------------------------------------------- -->
+    <section>
+      <h3>Limiteur — réglages fins</h3>
+      <div class="row">
+        <label for="limiter-mode">Mode</label>
+        <select
+          id="limiter-mode"
+          value={audioSettings.peak_limiter_mode}
+          onchange={(e) =>
+            commit(
+              "audio.peak_limiter_mode",
+              (e.target as HTMLSelectElement).value,
+            )}
+        >
+          <option value="off">Désactivé</option>
+          <option value="soft_clip">Soft-clip (legacy)</option>
+          <option value="lookahead_limiter">Look-ahead (recommandé)</option>
+        </select>
+      </div>
+      <label class="slider">
+        <span class="slider-label">
+          Plafond
+          <em>{ceilingLocal.toFixed(1)} dBFS</em>
+        </span>
+        <input
+          type="range"
+          min="-3"
+          max="0"
+          step="0.1"
+          bind:value={ceilingLocal}
+          oninput={() => ceilingCommit(ceilingLocal)}
+        />
+      </label>
+      <label class="slider">
+        <span class="slider-label">
+          Look-ahead
+          <em>{lookaheadLocal.toFixed(1)} ms</em>
+        </span>
+        <input
+          type="range"
+          min="2"
+          max="10"
+          step="0.1"
+          bind:value={lookaheadLocal}
+          oninput={() => lookaheadCommit(lookaheadLocal)}
+        />
+      </label>
+      <p class="hint">
+        Le look-ahead garantit qu'aucun échantillon ne dépasse le
+        plafond, même quand l'EQ pousse fort. Un look-ahead plus long
+        adoucit l'attaque mais ajoute de la latence au curseur.
+      </p>
+    </section>
+
+    <!-- Volume -------------------------------------------------------- -->
+    <section>
+      <h3>Volume</h3>
+      <div class="row">
+        <label for="volume-curve">Courbe</label>
+        <select
+          id="volume-curve"
+          value={audioSettings.volume_curve}
+          onchange={(e) =>
+            commit(
+              "audio.volume_curve",
+              (e.target as HTMLSelectElement).value,
+            )}
+        >
+          <option value="logarithmic">Logarithmique (recommandée)</option>
+          <option value="quadratic">Quadratique (legacy)</option>
+        </select>
+      </div>
+      <label class="slider">
+        <span class="slider-label">
+          Plancher
+          <em>{volumeFloorLocal.toFixed(0)} dB</em>
+        </span>
+        <input
+          type="range"
+          min="-80"
+          max="-30"
+          step="1"
+          bind:value={volumeFloorLocal}
+          oninput={() => volumeFloorCommit(volumeFloorLocal)}
+        />
+      </label>
+      <p class="hint">
+        La courbe logarithmique répartit la résolution sur toute la
+        course du curseur (un pas équivaut à un même ΔdB). Position 0
+        mute exactement, position 1 produit l'unité parfaite.
+      </p>
+    </section>
+
+    <!-- Resampler ----------------------------------------------------- -->
+    <section>
+      <h3>Rééchantillonneur</h3>
+      <div class="row">
+        <label for="resampler-quality">Qualité</label>
+        <select
+          id="resampler-quality"
+          value={audioSettings.resampler_quality}
+          onchange={(e) =>
+            commit(
+              "audio.resampler_quality",
+              (e.target as HTMLSelectElement).value,
+            )}
+        >
+          <option value="standard">Standard (CPU léger)</option>
+          <option value="best">Best (recommandé)</option>
+        </select>
+      </div>
+      <p class="hint">
+        « Best » utilise un sinc long (256 taps, SNR ≥ 140 dB).
+        « Standard » descend à ≤ 128 taps pour soulager les CPU
+        portables tout en restant au-dessus de 120 dB de SNR.
+      </p>
+    </section>
+
+    <!-- Crossfeed (advanced) ------------------------------------------ -->
+    <section>
+      <h3>Crossfeed — réglages fins</h3>
+      <div class="row">
+        <label for="crossfeed-preset">Préréglage</label>
+        <select
+          id="crossfeed-preset"
+          value={audioSettings.crossfeed_preset}
+          onchange={(e) =>
+            commit(
+              "audio.crossfeed_preset",
+              (e.target as HTMLSelectElement).value,
+            )}
+          disabled={!audioSettings.crossfeed_enabled}
+        >
+          <option value="bauer">Bauer (modéré)</option>
+          <option value="bauer_strong">Bauer fort</option>
+          <option value="custom">Personnalisé</option>
+        </select>
+      </div>
+      {#if audioSettings.crossfeed_preset === "custom"}
+        <label class="slider">
+          <span class="slider-label">
+            Délai inter-canal
+            <em>{Math.round(crossfeedDelayLocal)} µs</em>
+          </span>
+          <input
+            type="range"
+            min="200"
+            max="400"
+            step="5"
+            bind:value={crossfeedDelayLocal}
+            oninput={() => crossfeedDelayCommit(crossfeedDelayLocal)}
+            disabled={!audioSettings.crossfeed_enabled}
+          />
+        </label>
+        <label class="slider">
+          <span class="slider-label">
+            Coupure passe-bas
+            <em>{Math.round(crossfeedCutoffLocal)} Hz</em>
+          </span>
+          <input
+            type="range"
+            min="500"
+            max="1500"
+            step="10"
+            bind:value={crossfeedCutoffLocal}
+            oninput={() => crossfeedCutoffCommit(crossfeedCutoffLocal)}
+            disabled={!audioSettings.crossfeed_enabled}
+          />
+        </label>
+      {/if}
+    </section>
+
+    <!-- Trim L/R ------------------------------------------------------ -->
+    <section>
+      <h3>Trim par canal</h3>
+      <label class="slider">
+        <span class="slider-label">
+          Canal gauche
+          <em>{leftTrimLocal.toFixed(1)} dB</em>
+        </span>
+        <input
+          type="range"
+          min="-12"
+          max="0"
+          step="0.5"
+          bind:value={leftTrimLocal}
+          oninput={() => leftTrimCommit(leftTrimLocal)}
+        />
+      </label>
+      <label class="slider">
+        <span class="slider-label">
+          Canal droit
+          <em>{rightTrimLocal.toFixed(1)} dB</em>
+        </span>
+        <input
+          type="range"
+          min="-12"
+          max="0"
+          step="0.5"
+          bind:value={rightTrimLocal}
+          oninput={() => rightTrimCommit(rightTrimLocal)}
+        />
+      </label>
+      <p class="hint">
+        Compense un casque ou une asymétrie auditive en atténuant
+        chaque canal indépendamment. Aucun effet quand les deux trims
+        sont à zéro.
+      </p>
+    </section>
+
+    <!-- Null-Test ----------------------------------------------------- -->
+    <section>
+      <h3>Diagnostic null-test</h3>
+      <NullTestDiagnostic />
+      <p class="hint">
+        Vérifie le bit-perfect de bout en bout en comparant la sortie
+        capturée au signal source par corrélation croisée.
+      </p>
+    </section>
+  {/if}
 </div>
 
 <style>
@@ -491,6 +584,16 @@
     background: var(--bg-2);
     border: 1px solid var(--border);
     border-radius: var(--radius-m);
+  }
+  section.actions {
+    background: transparent;
+    border: none;
+    padding: 0;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
   }
   h3 {
     margin: 0;
@@ -573,5 +676,43 @@
     background: rgba(248, 113, 113, 0.08);
     border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: var(--radius-s);
+  }
+  button.ghost {
+    background: var(--bg-3);
+    color: var(--fg-0);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-s);
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  button.ghost:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  button.ghost:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  button.link {
+    background: transparent;
+    border: none;
+    color: var(--accent);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 4px 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  button.link:hover {
+    text-decoration: underline;
+  }
+  .caret {
+    display: inline-block;
+    transition: transform 0.15s ease;
+  }
+  .caret.open {
+    transform: rotate(180deg);
   }
 </style>

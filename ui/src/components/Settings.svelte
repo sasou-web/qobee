@@ -31,6 +31,7 @@
   import { discordPresence, type DiscordStatus } from "../lib/discordPresence";
   import { toasts } from "../lib/toasts.svelte";
   import SettingsAudio from "./audio/SettingsAudio.svelte";
+  import SettingsWindowsIntegration from "./SettingsWindowsIntegration.svelte";
 
   let roots = $state<LibraryRoot[]>([]);
   let devices = $state<OutputDevice[]>([]);
@@ -331,8 +332,12 @@
   <h1>Settings</h1>
 
   <!-- Library -->
-  <div class="card">
-    <h2>Library</h2>
+  <details class="card">
+    <summary>
+      <h2>Library</h2>
+      <span class="caret">▾</span>
+    </summary>
+    <div class="card-body">
     <p class="hint">
       Folders Qobee indexes. Tracks are read-only — nothing is modified on disk.
     </p>
@@ -370,11 +375,16 @@
         <div><span>Cover cache</span><strong>{formatBytes(stats.covers_size_bytes)}</strong></div>
       </div>
     {/if}
-  </div>
+    </div>
+  </details>
 
   <!-- Playback -->
-  <div class="card">
-    <h2>Playback</h2>
+  <details class="card">
+    <summary>
+      <h2>Playback</h2>
+      <span class="caret">▾</span>
+    </summary>
+    <div class="card-body">
 
     <div class="row">
       <label for="device">Output device</label>
@@ -450,17 +460,38 @@
         Could not switch: {outputModeError}
       </p>
     {/if}
-  </div>
+    </div>
+  </details>
 
   <!-- Audio (R5 — Bit-Perfect Health & friends) -->
-  <div class="card">
-    <h2>Audio</h2>
+  <details class="card">
+    <summary>
+      <h2>Audio</h2>
+      <span class="caret">▾</span>
+    </summary>
+    <div class="card-body">
     <SettingsAudio />
-  </div>
+    </div>
+  </details>
+
+  <!-- Windows Integration -->
+  <details class="card">
+    <summary>
+      <h2>Windows Integration</h2>
+      <span class="caret">▾</span>
+    </summary>
+    <div class="card-body">
+      <SettingsWindowsIntegration />
+    </div>
+  </details>
 
   <!-- Appearance -->
-  <div class="card">
-    <h2>Appearance</h2>
+  <details class="card">
+    <summary>
+      <h2>Appearance</h2>
+      <span class="caret">▾</span>
+    </summary>
+    <div class="card-body">
 
     <div class="row">
       <label for="theme">Theme</label>
@@ -496,12 +527,17 @@
       </label>
       <span></span>
     </div>
-  </div>
+    </div>
+  </details>
 
   <!-- Equalizer -->
-  <div class="card">
-    <div class="eq-head">
+  <details class="card">
+    <summary>
       <h2>Equalizer</h2>
+      <span class="caret">▾</span>
+    </summary>
+    <div class="card-body">
+    <div class="eq-head">
       <label class="eq-toggle">
         <input
           type="checkbox"
@@ -541,11 +577,16 @@
       Peaking biquad filters at ISO octave centers. Q=1.0. Range ±12 dB. Bypass
       mode kicks in automatically when every band is at 0 dB.
     </p>
-  </div>
+    </div>
+  </details>
 
   <!-- Integrations -->
-  <div class="card">
-    <h2>Integrations</h2>
+  <details class="card">
+    <summary>
+      <h2>Integrations</h2>
+      <span class="caret">▾</span>
+    </summary>
+    <div class="card-body">
     <p class="hint">
       Show what you're listening to elsewhere. Each integration falls back
       silently when its target is unavailable.
@@ -650,11 +691,16 @@
       default.</strong> When off, the default Qobee art is used and
       no image bytes leave your machine.
     </p>
-  </div>
+    </div>
+  </details>
 
   <!-- Advanced -->
-  <div class="card">
-    <h2>Advanced</h2>
+  <details class="card">
+    <summary>
+      <h2>Advanced</h2>
+      <span class="caret">▾</span>
+    </summary>
+    <div class="card-body">
     {#if stats}
       <div class="paths">
         <div><span>Data folder</span><code title={stats.data_dir}>{stats.data_dir}</code></div>
@@ -668,7 +714,8 @@
       <button onclick={handleResetSettings}>Reset preferences</button>
       <button class="danger" onclick={handleResetLibrary}>Wipe all library data…</button>
     </div>
-  </div>
+    </div>
+  </details>
 </section>
 
 <style>
@@ -688,13 +735,50 @@
     font-size: 14px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    margin: 0 0 10px;
-    color: var(--fg-2);
+    margin: 0;
+    color: var(--fg-1);
   }
+  /* Each card is a <details> with the title + caret in <summary>.
+     Closed by default — clicking the summary toggles the body open
+     so the page never feels overwhelming on first visit. */
   .card {
     background: var(--bg-1);
     border: 1px solid var(--border);
     border-radius: var(--radius-m);
+    overflow: hidden;
+  }
+  .card > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    list-style: none;
+    cursor: pointer;
+    padding: 14px 18px;
+    user-select: none;
+    transition: background var(--dur-fast) var(--ease-out);
+  }
+  .card > summary::-webkit-details-marker {
+    display: none;
+  }
+  .card > summary:hover {
+    background: var(--bg-2);
+  }
+  .card[open] > summary {
+    border-bottom: 1px solid var(--border);
+  }
+  .card[open] > summary h2 {
+    color: var(--fg-0);
+  }
+  .card .caret {
+    color: var(--fg-2);
+    font-size: 12px;
+    transition: transform 0.2s var(--ease-out);
+  }
+  .card[open] > summary .caret {
+    transform: rotate(180deg);
+    color: var(--accent);
+  }
+  .card-body {
     padding: 16px 18px;
   }
   .hint {
@@ -898,11 +982,8 @@
   .eq-head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     margin-bottom: 12px;
-  }
-  .eq-head h2 {
-    margin: 0;
   }
   .eq-toggle {
     display: flex;
