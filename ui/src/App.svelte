@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { fly } from "svelte/transition";
+  import { listen } from "@tauri-apps/api/event";
   import { app } from "./lib/stores.svelte";
   import { settings } from "./lib/settings.svelte";
   import { accent } from "./lib/accent.svelte";
@@ -8,6 +9,7 @@
   import { nowPlayingFullscreen } from "./lib/nowPlayingFullscreen.svelte";
   import { installKeyboardShortcuts } from "./lib/keyboardShortcuts";
   import { installFolderDrop } from "./lib/dropToScan";
+  import { queuePopover } from "./lib/queuePopover.svelte";
   import {
     setMediaMetadata,
     setMediaPlaybackState,
@@ -91,33 +93,29 @@
     // CLI args / `qobee://` deep links so the user lands on the
     // requested view when the OS asks for it.
     let cleanupDeepLink: (() => void) | null = null;
-    void import("@tauri-apps/api/event").then(({ listen }) =>
-      listen<string>("deep-link:navigate", (e) => {
-        switch (e.payload) {
-          case "home":
-            app.setView("home");
-            break;
-          case "library":
-          case "albums":
-            app.setView("albums");
-            break;
-          case "settings":
-            app.setView("settings");
-            break;
-          case "queue":
-            // The queue lives in a popover, not a route, so we
-            // open it on demand.
-            void import("./lib/queuePopover.svelte").then(({ queuePopover }) => {
-              queuePopover.toggle();
-            });
-            break;
-          default:
-            break;
-        }
-      }).then((un) => {
-        cleanupDeepLink = un;
-      }),
-    );
+    void listen<string>("deep-link:navigate", (e) => {
+      switch (e.payload) {
+        case "home":
+          app.setView("home");
+          break;
+        case "library":
+        case "albums":
+          app.setView("albums");
+          break;
+        case "settings":
+          app.setView("settings");
+          break;
+        case "queue":
+          // The queue lives in a popover, not a route, so we
+          // open it on demand.
+          queuePopover.toggle();
+          break;
+        default:
+          break;
+      }
+    }).then((un) => {
+      cleanupDeepLink = un;
+    });
 
     void (async () => {
       await settings.load();

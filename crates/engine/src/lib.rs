@@ -26,6 +26,7 @@
 //! when *every* element of the chain is at unity (volume, EQ, RG) and
 //! no resampling or upmix happened.
 
+pub mod audio_settings;
 pub mod backend_cpal_shared;
 pub mod backend_symphonia;
 #[cfg(target_os = "windows")]
@@ -36,7 +37,6 @@ pub mod dsp;
 pub mod eq;
 pub mod error;
 pub mod types;
-pub mod audio_settings;
 pub mod volume;
 
 pub use audio_settings::*;
@@ -89,7 +89,7 @@ pub trait AudioEngine: Send + Sync {
     fn set_audio_settings(&self, settings: AudioSettings);
 
     /// Push a new per-load context (RG dB/peak from the loaded track
-    /// + the current volume slider) into the `Pre_Gain_Stage`. The
+    /// and the current volume slider) into the `Pre_Gain_Stage`. The
     /// decoder thread picks it up on the next chunk boundary.
     ///
     /// Called by the orchestration layer (`Player::start_track`)

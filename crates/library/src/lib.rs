@@ -100,7 +100,7 @@ impl Library {
         &self,
         root: &Path,
         options: ScanOptions,
-        mut progress: F,
+        progress: F,
     ) -> LibraryResult<ScanReport>
     where
         F: FnMut(ScanProgress),
@@ -109,7 +109,7 @@ impl Library {
             root,
             &options,
             self.inner.cover_cache_dir.as_path(),
-            |p| progress(p),
+            progress,
             |track, cover_blob| {
                 let mut db = self.inner.db.lock();
                 db.upsert_track(track, cover_blob)

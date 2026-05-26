@@ -44,6 +44,7 @@ const WARMUP_FRAMES: usize = 4_096;
 /// All work is performed on the resampler's first (mono) channel —
 /// the SNR figure for a windowed-sinc with cubic interpolation is
 /// independent of the channel count.
+#[allow(clippy::needless_range_loop)]
 pub(super) fn measure_resampler_snr_db(
     quality: ResamplerQuality,
     src_sr: u32,
@@ -56,9 +57,8 @@ pub(super) fn measure_resampler_snr_db(
     let n_channels = 1;
     let params = sinc_params_for(quality);
     let ratio = dst_sr as f64 / src_sr as f64;
-    let mut resampler =
-        SincFixedIn::<f32>::new(ratio, 1.1, params, chunk_size_in, n_channels)
-            .expect("failed to build SincFixedIn for SNR measurement");
+    let mut resampler = SincFixedIn::<f32>::new(ratio, 1.1, params, chunk_size_in, n_channels)
+        .expect("failed to build SincFixedIn for SNR measurement");
 
     // -------- 2. Generate enough source frames to produce
     //            (FFT_LEN + WARMUP_FRAMES) output frames after
@@ -66,8 +66,7 @@ pub(super) fn measure_resampler_snr_db(
     let target_out = FFT_LEN + WARMUP_FRAMES;
     // Source frames needed ≈ target_out / ratio, rounded up + a
     // generous safety margin so the inner loop never runs short.
-    let src_frames_needed =
-        ((target_out as f64) / ratio).ceil() as usize + 4 * chunk_size_in;
+    let src_frames_needed = ((target_out as f64) / ratio).ceil() as usize + 4 * chunk_size_in;
     let amp = 0.5_f32; // -6 dBFS
     let mut source_signal = Vec::<f32>::with_capacity(src_frames_needed);
     for n in 0..src_frames_needed {
@@ -110,8 +109,7 @@ pub(super) fn measure_resampler_snr_db(
     let r2c = planner.plan_fft_forward(FFT_LEN);
     let mut input = window.to_vec();
     let mut spectrum = r2c.make_output_vec();
-    r2c.process(&mut input, &mut spectrum)
-        .expect("FFT failed");
+    r2c.process(&mut input, &mut spectrum).expect("FFT failed");
 
     // Bin width and band indices.
     let bin_hz = (dst_sr as f32) / (FFT_LEN as f32);
@@ -163,8 +161,7 @@ pub(super) fn measure_resampler_snr_db(
 #[test]
 #[cfg_attr(not(feature = "slow-tests"), ignore)]
 fn property_15_standard_resampler_snr_at_least_120_db() {
-    let snr =
-        measure_resampler_snr_db(ResamplerQuality::Standard, 44_100, 48_000, 1_000.0);
+    let snr = measure_resampler_snr_db(ResamplerQuality::Standard, 44_100, 48_000, 1_000.0);
     assert!(
         snr >= 120.0,
         "Standard preset SNR {snr} dB below the 120 dB R8.3 threshold"
@@ -182,8 +179,7 @@ fn property_15_standard_resampler_snr_at_least_120_db() {
 #[test]
 #[cfg_attr(not(feature = "slow-tests"), ignore)]
 fn property_16_best_resampler_snr_at_least_140_db() {
-    let snr =
-        measure_resampler_snr_db(ResamplerQuality::Best, 44_100, 48_000, 1_000.0);
+    let snr = measure_resampler_snr_db(ResamplerQuality::Best, 44_100, 48_000, 1_000.0);
     assert!(
         snr >= 140.0,
         "Best preset SNR {snr} dB below the 140 dB R8.4 threshold"

@@ -100,9 +100,10 @@ pub fn open_pre_render(
     if let Some(parent) = output_wav.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut guard = sink.inner.lock().map_err(|_| {
-        EngineError::Internal("pre-render sink mutex poisoned".to_string())
-    })?;
+    let mut guard = sink
+        .inner
+        .lock()
+        .map_err(|_| EngineError::Internal("pre-render sink mutex poisoned".to_string()))?;
     if guard.is_some() {
         return Err(EngineError::InvalidState(
             "pre-render session already active",
@@ -132,9 +133,10 @@ pub fn finalise_pre_render(sink: &PreRenderSink) -> EngineResult<()> {
         return Ok(());
     };
     inner.writer.flush()?;
-    let mut file = inner.writer.into_inner().map_err(|e| {
-        EngineError::Internal(format!("BufWriter::into_inner: {}", e.error()))
-    })?;
+    let mut file = inner
+        .writer
+        .into_inner()
+        .map_err(|e| EngineError::Internal(format!("BufWriter::into_inner: {}", e.error())))?;
     // Patch RIFF and data sizes.
     let data_bytes = inner.data_bytes;
     let riff_size = 36u32.saturating_add(data_bytes);
@@ -153,8 +155,7 @@ fn write_wav_header_24bit(
     data_bytes: u32,
 ) -> EngineResult<()> {
     let bits_per_sample: u16 = 24;
-    let byte_rate: u32 =
-        sample_rate * u32::from(channels) * u32::from(bits_per_sample / 8);
+    let byte_rate: u32 = sample_rate * u32::from(channels) * u32::from(bits_per_sample / 8);
     let block_align: u16 = channels * (bits_per_sample / 8);
     let riff_size: u32 = 36u32.saturating_add(data_bytes);
 

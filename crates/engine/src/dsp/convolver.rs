@@ -15,7 +15,8 @@
 //!
 //! ## IR snapshot (R9.2 / R9.4 / R9.5)
 //!
-//! The IR is held in [`IrData`] outside the hot path. `set_ir` is
+//! The IR is held in an internal `IrData` snapshot outside the hot
+//! path. `set_ir` is
 //! called from a worker thread (typically `Player::load_convolver_ir`
 //! in `crates/core`) once the WAV has been decoded, validated,
 //! resampled to the device rate, and gain-compensated. Mono IRs are
@@ -121,8 +122,7 @@ impl ConvolverStage {
         // restriction so a longer IR can replace a shorter one.
         let mut conv_l = FFTConvolver::<f32>::default();
         let mut conv_r = FFTConvolver::<f32>::default();
-        if conv_l.init(BLOCK_SIZE, &ir_left).is_err()
-            || conv_r.init(BLOCK_SIZE, &ir_right).is_err()
+        if conv_l.init(BLOCK_SIZE, &ir_left).is_err() || conv_r.init(BLOCK_SIZE, &ir_right).is_err()
         {
             // Build failed: drop the IR and stay in bypass. The
             // loader is expected to validate inputs upstream so this
@@ -196,10 +196,7 @@ impl DspStage for ConvolverStage {
         let mut out_l = vec![0.0_f32; frames];
         let mut out_r = vec![0.0_f32; frames];
 
-        if self
-            .convolver_l
-            .process(&in_l, &mut out_l)
-            .is_err()
+        if self.convolver_l.process(&in_l, &mut out_l).is_err()
             || self.convolver_r.process(&in_r, &mut out_r).is_err()
         {
             // Process failed (shouldn't happen with a valid IR);

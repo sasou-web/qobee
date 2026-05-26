@@ -826,10 +826,8 @@ impl Database {
     }
 
     pub fn delete_playlist(&mut self, playlist_id: i64) -> LibraryResult<()> {
-        self.conn.execute(
-            "DELETE FROM playlists WHERE id = ?1",
-            params![playlist_id],
-        )?;
+        self.conn
+            .execute("DELETE FROM playlists WHERE id = ?1", params![playlist_id])?;
         Ok(())
     }
 
@@ -991,7 +989,9 @@ impl Database {
     pub fn list_settings(&self) -> LibraryResult<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare("SELECT key, value FROM settings")?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -1025,9 +1025,9 @@ impl Database {
     }
 
     pub fn list_library_roots(&self) -> LibraryResult<Vec<LibraryRoot>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, path, added_at FROM library_roots ORDER BY added_at DESC",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path, added_at FROM library_roots ORDER BY added_at DESC")?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(LibraryRoot {
@@ -1100,12 +1100,12 @@ impl Database {
             [],
             |r| r.get(0),
         )?;
-        let playlist_count: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM playlists", [], |r| r.get(0))?;
-        let history_count: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM play_history", [], |r| r.get(0))?;
+        let playlist_count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM playlists", [], |r| r.get(0))?;
+        let history_count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM play_history", [], |r| r.get(0))?;
         Ok((
             track_count,
             album_count,
@@ -1262,10 +1262,26 @@ fn track_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         bit_depth: row.get::<_, Option<i64>>(12)?.map(|v| v as u8),
         channels: row.get::<_, Option<i64>>(13)?.map(|v| v as u16),
         cover_key: row.get(14)?,
-        replaygain_track_db: row.get::<_, Option<f64>>(15).ok().flatten().map(|v| v as f32),
-        replaygain_album_db: row.get::<_, Option<f64>>(16).ok().flatten().map(|v| v as f32),
-        replaygain_track_peak: row.get::<_, Option<f64>>(17).ok().flatten().map(|v| v as f32),
-        replaygain_album_peak: row.get::<_, Option<f64>>(18).ok().flatten().map(|v| v as f32),
+        replaygain_track_db: row
+            .get::<_, Option<f64>>(15)
+            .ok()
+            .flatten()
+            .map(|v| v as f32),
+        replaygain_album_db: row
+            .get::<_, Option<f64>>(16)
+            .ok()
+            .flatten()
+            .map(|v| v as f32),
+        replaygain_track_peak: row
+            .get::<_, Option<f64>>(17)
+            .ok()
+            .flatten()
+            .map(|v| v as f32),
+        replaygain_album_peak: row
+            .get::<_, Option<f64>>(18)
+            .ok()
+            .flatten()
+            .map(|v| v as f32),
     })
 }
 
@@ -1334,16 +1350,23 @@ mod tests {
     #[test]
     fn track_peak_round_trip_with_values() {
         let mut db = Database::open(Path::new(":memory:")).expect("open in-memory db");
-        let track = make_track("/synthetic/path/with-peaks.flac", Some(0.987654), Some(1.0234));
+        let track = make_track(
+            "/synthetic/path/with-peaks.flac",
+            Some(0.987654),
+            Some(1.0234),
+        );
         let id = db.upsert_track(&track, None).expect("upsert");
-        let got = db
-            .get_track(id)
-            .expect("get_track")
-            .expect("track exists");
+        let got = db.get_track(id).expect("get_track").expect("track exists");
         let tp = got.replaygain_track_peak.expect("track peak set");
         let ap = got.replaygain_album_peak.expect("album peak set");
-        assert!((tp - 0.987654_f32).abs() < 1e-5, "track peak round-trip: got {tp}");
-        assert!((ap - 1.0234_f32).abs() < 1e-5, "album peak round-trip: got {ap}");
+        assert!(
+            (tp - 0.987654_f32).abs() < 1e-5,
+            "track peak round-trip: got {tp}"
+        );
+        assert!(
+            (ap - 1.0234_f32).abs() < 1e-5,
+            "album peak round-trip: got {ap}"
+        );
     }
 
     /// `None` peaks (the common case for non-RG-tagged files) must
@@ -1354,11 +1377,16 @@ mod tests {
         let mut db = Database::open(Path::new(":memory:")).expect("open in-memory db");
         let track = make_track("/synthetic/path/no-peaks.flac", None, None);
         let id = db.upsert_track(&track, None).expect("upsert");
-        let got = db
-            .get_track(id)
-            .expect("get_track")
-            .expect("track exists");
-        assert!(got.replaygain_track_peak.is_none(), "expected None, got {:?}", got.replaygain_track_peak);
-        assert!(got.replaygain_album_peak.is_none(), "expected None, got {:?}", got.replaygain_album_peak);
+        let got = db.get_track(id).expect("get_track").expect("track exists");
+        assert!(
+            got.replaygain_track_peak.is_none(),
+            "expected None, got {:?}",
+            got.replaygain_track_peak
+        );
+        assert!(
+            got.replaygain_album_peak.is_none(),
+            "expected None, got {:?}",
+            got.replaygain_album_peak
+        );
     }
 }

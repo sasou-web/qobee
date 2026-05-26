@@ -1,7 +1,7 @@
 //! Null-test diagnostic primitives (Phase F of audio-quality-improvements).
 //!
-//! Public surface (re-exported via `pub mod diagnostic;` from
-//! [`crate::lib`]):
+//! Public surface (re-exported via `pub mod diagnostic;` from the
+//! crate root):
 //!
 //!   * [`generate_test_wav`] — deterministic 5 s stereo 44.1 kHz / 16-bit
 //!     PCM WAV writer seeded by an `xorshift32` PRNG. Two calls with the
@@ -11,7 +11,7 @@
 //!   * [`loopback::capture_loopback`] — Windows-only WASAPI loopback
 //!     capture (R11.3 / R11.8). Stubbed to
 //!     [`EngineError::BackendUnavailable`] elsewhere.
-//!   * [`pre_render::start_pre_render`] — Exclusive-mode alternative
+//!   * [`pre_render::open_pre_render`] — Exclusive-mode alternative
 //!     where the decoder thread writes the post-DSP stream to a WAV
 //!     file instead of the device (R11.3, Exclusive branch).
 
@@ -122,7 +122,11 @@ fn write_test_wav(path: &Path, spec: TestWavSpec) -> EngineResult<()> {
     // Payload: deterministic xorshift32. The seed is sanitised against
     // the PRNG's fixed point at zero so a `seed = 0` does not produce
     // an all-zero stream.
-    let mut state = if spec.seed == 0 { 0xDEADBEEF } else { spec.seed };
+    let mut state = if spec.seed == 0 {
+        0xDEADBEEF
+    } else {
+        spec.seed
+    };
     for _ in 0..n_samples {
         for _ in 0..spec.channels {
             let r = xorshift32(&mut state);

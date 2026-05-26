@@ -1,4 +1,4 @@
-﻿//! WASAPI Exclusive output backend (Windows-only).
+//! WASAPI Exclusive output backend (Windows-only).
 //!
 //! Bypasses the OS mixer entirely: when this backend is active no other
 //! application can play to the same device. The DAC receives exactly
@@ -47,18 +47,14 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::Mutex;
 use rtrb::{Consumer, RingBuffer};
 
-use wasapi::{
-    initialize_mta, Direction, DeviceEnumerator, SampleType, StreamMode, WaveFormat,
-};
+use wasapi::{initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
 
 use crate::backend_cpal_shared::{
     build_bit_perfect_health, run_decoder_thread, Shared, RING_CAPACITY_SAMPLES,
 };
 use crate::backend_symphonia::SymphoniaDecoder;
 use crate::error::{EngineError, EngineResult};
-use crate::types::{
-    EffectiveOutputMode, EngineEvent, OutputMode, PlaybackStatus, PlayerState,
-};
+use crate::types::{EffectiveOutputMode, EngineEvent, OutputMode, PlaybackStatus, PlayerState};
 use crate::AudioEngine;
 use crate::AudioSettings;
 use crate::PreGainContext;
@@ -71,7 +67,10 @@ enum Command {
     Load(PathBuf),
     /// DSD load: opens a DSF/DFF file, negotiates 24-in-32 at the
     /// DoP carrier rate, and starts the DSD render thread (R7.3).
-    LoadDsd { path: PathBuf, rate: crate::DsdRate },
+    LoadDsd {
+        path: PathBuf,
+        rate: crate::DsdRate,
+    },
     Play,
     Pause,
     Resume,
@@ -655,16 +654,9 @@ fn snapshot_state(ctx: &WorkerCtx) -> PlayerState {
 
     let unity_volume = (ctx.shared.audible_gain() - 1.0).abs() < 1e-4;
     let unity_pregain = (ctx.shared.pre_gain() - 1.0).abs() < 1e-4;
-    let eq_bypass = ctx
-        .shared
-        .eq_gains_db
-        .lock()
-        .iter()
-        .all(|g| g.abs() < 0.05);
-    let is_bit_perfect = ctx.is_native_rate.load(Ordering::Relaxed)
-        && unity_volume
-        && unity_pregain
-        && eq_bypass;
+    let eq_bypass = ctx.shared.eq_gains_db.lock().iter().all(|g| g.abs() < 0.05);
+    let is_bit_perfect =
+        ctx.is_native_rate.load(Ordering::Relaxed) && unity_volume && unity_pregain && eq_bypass;
 
     let mut state = PlayerState {
         status,
@@ -907,11 +899,8 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveTrack> {
         .get_iaudioclient()
         .map_err(|e| EngineError::Output(format!("get_iaudioclient: {e:?}")))?;
 
-    let (nego, native_rate) = negotiate_with_fallback(
-        &audio_client,
-        format.sample_rate,
-        format.channels,
-    )?;
+    let (nego, native_rate) =
+        negotiate_with_fallback(&audio_client, format.sample_rate, format.channels)?;
 
     ctx.shared
         .sample_rate
@@ -962,9 +951,7 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveTrack> {
     // Initialize. If WASAPI returns AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED
     // we recreate the client at the next-highest aligned size, as the
     // wasapi-rs example does.
-    if let Err(e) =
-        audio_client.initialize_client(&nego.wave_format, &Direction::Render, &mode)
-    {
+    if let Err(e) = audio_client.initialize_client(&nego.wave_format, &Direction::Render, &mode) {
         if let wasapi::WasapiError::Windows(werr) = &e {
             use windows::Win32::Media::Audio::AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED;
             if werr.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED {
@@ -1092,12 +1079,12 @@ fn render_one_period(track: &mut ActiveTrack, ctx: &WorkerCtx) -> EngineResult<(
     let frames_to_converge: f32 = (track.nego.sample_rate as f32 * 0.010).max(1.0);
     let gain_step_per_frame: f32 = 1.0 / frames_to_converge;
 
-    let dither_amp: f32 =
-        if track.nego.sample_type == SampleType::Int && track.nego.valid_bits < 24 {
-            1.0 / ((1u32 << (track.nego.valid_bits.saturating_sub(1))) as f32)
-        } else {
-            0.0
-        };
+    let dither_amp: f32 = if track.nego.sample_type == SampleType::Int && track.nego.valid_bits < 24
+    {
+        1.0 / ((1u32 << (track.nego.valid_bits.saturating_sub(1))) as f32)
+    } else {
+        0.0
+    };
 
     if paused {
         // Send silence; the device keeps streaming, resume is instant.
@@ -1244,6 +1231,7 @@ fn write_sample(slot: &mut [u8], v: f32, nego: &NegotiatedFormat) {
 /// 24-in-32 integer format at `rate.dop_carrier_rate()`, spawn the
 /// DSD decoder thread, and return an `ActiveDsd` ready for the
 /// render loop.
+#[allow(clippy::needless_range_loop)]
 fn start_dsd_playback(
     ctx: &WorkerCtx,
     path: &Path,
@@ -1302,7 +1290,8 @@ fn start_dsd_playback(
     let dur_ms = ((stream.frames() as f64 * 8.0 / rate.hz() as f64) * 1000.0) as u32;
     ctx.shared.duration_ms.store(dur_ms, Ordering::Relaxed);
     ctx.shared.position_ms.store(0, Ordering::Relaxed);
-    ctx.shared.set_device_format(nego.sample_rate, nego.channels);
+    ctx.shared
+        .set_device_format(nego.sample_rate, nego.channels);
     ctx.shared.reset_bit_perfect_debounce();
     ctx.is_native_rate.store(false, Ordering::Release);
 
@@ -1316,7 +1305,9 @@ fn start_dsd_playback(
 
     let mode = StreamMode::EventsExclusive { period_hns };
     if let Err(e) = audio_client.initialize_client(&nego.wave_format, &Direction::Render, &mode) {
-        return Err(EngineError::Output(format!("initialize_client (DSD): {e:?}")));
+        return Err(EngineError::Output(format!(
+            "initialize_client (DSD): {e:?}"
+        )));
     }
 
     let h_event = audio_client
@@ -1404,7 +1395,14 @@ fn negotiate_dsd_format(
     sr: u32,
     channels: u16,
 ) -> EngineResult<NegotiatedFormat> {
-    let wf = WaveFormat::new(32, 24, &SampleType::Int, sr as usize, channels as usize, None);
+    let wf = WaveFormat::new(
+        32,
+        24,
+        &SampleType::Int,
+        sr as usize,
+        channels as usize,
+        None,
+    );
     if let Ok(resolved) = audio_client.is_supported_exclusive_with_quirks(&wf) {
         return Ok(NegotiatedFormat {
             wave_format: resolved,

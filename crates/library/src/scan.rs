@@ -33,7 +33,7 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 ];
 
 /// Knobs that affect how a scan runs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ScanOptions {
     /// Maximum recursion depth (None = unbounded).
     pub max_depth: Option<usize>,
@@ -43,16 +43,6 @@ pub struct ScanOptions {
     /// (The DB is queried per-file by the caller; we just expose the flag
     /// here for symmetry — the MVP always re-indexes.)
     pub skip_unchanged: bool,
-}
-
-impl Default for ScanOptions {
-    fn default() -> Self {
-        ScanOptions {
-            max_depth: None,
-            follow_symlinks: false,
-            skip_unchanged: false,
-        }
-    }
 }
 
 /// Result returned at the end of a scan.
@@ -105,7 +95,10 @@ where
             .and_then(|e| e.to_str())
             .map(|s| s.to_ascii_lowercase());
 
-        let is_audio = ext.as_deref().map(|e| AUDIO_EXTENSIONS.contains(&e)).unwrap_or(false);
+        let is_audio = ext
+            .as_deref()
+            .map(|e| AUDIO_EXTENSIONS.contains(&e))
+            .unwrap_or(false);
         if !is_audio {
             continue;
         }
@@ -113,22 +106,16 @@ where
         report.files_visited += 1;
 
         match index_one(&path, cover_cache_dir) {
-            Ok((track, cover_blob)) => {
-                match on_track(&track, cover_blob.as_deref()) {
-                    Ok(_) => report.files_indexed += 1,
-                    Err(e) => report.errors.push(format!(
-                        "db error for {}: {}",
-                        path.display(),
-                        e
-                    )),
-                }
-            }
+            Ok((track, cover_blob)) => match on_track(&track, cover_blob.as_deref()) {
+                Ok(_) => report.files_indexed += 1,
+                Err(e) => report
+                    .errors
+                    .push(format!("db error for {}: {}", path.display(), e)),
+            },
             Err(e) => {
-                report.errors.push(format!(
-                    "metadata error for {}: {}",
-                    path.display(),
-                    e
-                ));
+                report
+                    .errors
+                    .push(format!("metadata error for {}: {}", path.display(), e));
             }
         }
 
@@ -229,7 +216,10 @@ fn index_one(path: &Path, cover_cache_dir: &Path) -> LibraryResult<(Track, Optio
         .unwrap_or(0.0);
     let mut sample_rate = properties.as_ref().and_then(|p| p.sample_rate());
     let mut bit_depth = properties.as_ref().and_then(|p| p.bit_depth());
-    let mut channels = properties.as_ref().and_then(|p| p.channels()).map(|c| c as u16);
+    let mut channels = properties
+        .as_ref()
+        .and_then(|p| p.channels())
+        .map(|c| c as u16);
 
     // R7.1 — DSD overrides. The DB recognises DSD tracks by the
     // pair `(sample_rate, bit_depth=1)`; a DSD64 file therefore
@@ -317,7 +307,7 @@ fn index_one(path: &Path, cover_cache_dir: &Path) -> LibraryResult<(Track, Optio
         genre,
         duration_seconds,
         sample_rate,
-        bit_depth: bit_depth.map(|b| b as u8),
+        bit_depth,
         channels,
         cover_key,
         replaygain_track_db,

@@ -1,4 +1,4 @@
-﻿//! Property-test generators shared across the engine integration
+//! Property-test generators shared across the engine integration
 //! tests.
 //!
 //! Keep generators *small and intelligent*: each one constrains the
@@ -20,13 +20,12 @@
 //! Property N`.
 
 #![allow(dead_code)] // Phase A scaffolding â€” not every generator has a
-                    // consumer yet; later phases will use them all.
+                     // consumer yet; later phases will use them all.
 
 use proptest::collection::vec;
 use proptest::prelude::*;
 use qobee_engine::{
-    AudioSettings, CrossfeedPreset, DitherProfile, PeakLimiterMode, ResamplerQuality,
-    VolumeCurve,
+    AudioSettings, CrossfeedPreset, DitherProfile, PeakLimiterMode, ResamplerQuality, VolumeCurve,
 };
 
 /// Maximum buffer length explored by [`any_finite_buffer`]. Keeps the
@@ -56,8 +55,8 @@ pub fn any_audio_settings() -> impl Strategy<Value = AudioSettings> {
     // and merge. The bounds mirror the table in design.md (the same
     // ones enforced by `AudioSettings::clamp_in_place`).
     let part_a = (
-        any::<bool>(),                                      // rg_peak_protection
-        0.0f32..=3.0f32,                                    // rg_safety_headroom_db
+        any::<bool>(),   // rg_peak_protection
+        0.0f32..=3.0f32, // rg_safety_headroom_db
         prop_oneof![
             Just(DitherProfile::Tpdf),
             Just(DitherProfile::ShapedHp),
@@ -68,31 +67,28 @@ pub fn any_audio_settings() -> impl Strategy<Value = AudioSettings> {
             Just(PeakLimiterMode::SoftClip),
             Just(PeakLimiterMode::LookaheadLimiter),
         ],
-        -3.0f32..=0.0f32,                                   // peak_limiter_ceiling_dbfs
-        2.0f32..=10.0f32,                                   // peak_limiter_lookahead_ms
-        20.0f32..=500.0f32,                                 // peak_limiter_release_ms
-        prop_oneof![
-            Just(VolumeCurve::Quadratic),
-            Just(VolumeCurve::Logarithmic),
-        ],
-        -80.0f32..=-30.0f32,                                // volume_floor_db
+        -3.0f32..=0.0f32,   // peak_limiter_ceiling_dbfs
+        2.0f32..=10.0f32,   // peak_limiter_lookahead_ms
+        20.0f32..=500.0f32, // peak_limiter_release_ms
+        prop_oneof![Just(VolumeCurve::Quadratic), Just(VolumeCurve::Logarithmic),],
+        -80.0f32..=-30.0f32, // volume_floor_db
     );
     let part_b = (
-        any::<bool>(),                                      // crossfeed_enabled
+        any::<bool>(), // crossfeed_enabled
         prop_oneof![
             Just(CrossfeedPreset::Bauer),
             Just(CrossfeedPreset::BauerStrong),
             Just(CrossfeedPreset::Custom),
         ],
-        200.0f32..=400.0f32,                                // crossfeed_delay_us
-        500.0f32..=1500.0f32,                               // crossfeed_lp_cutoff_hz
+        200.0f32..=400.0f32,  // crossfeed_delay_us
+        500.0f32..=1500.0f32, // crossfeed_lp_cutoff_hz
         prop_oneof![
             Just(ResamplerQuality::Standard),
             Just(ResamplerQuality::Best),
         ],
-        any::<bool>(),                                      // convolver_enabled
-        -24.0f32..=0.0f32,                                  // convolver_gain_db
-        -1.0f32..=1.0f32,                                   // balance
+        any::<bool>(),     // convolver_enabled
+        -24.0f32..=0.0f32, // convolver_gain_db
+        -1.0f32..=1.0f32,  // balance
         vec(-12.0f32..=0.0f32, 0..=AudioSettings::MAX_CHANNELS),
     );
 
@@ -198,10 +194,7 @@ pub fn any_ir(max_taps: usize) -> impl Strategy<Value = (Vec<f32>, Vec<f32>)> {
     let sample = any::<f32>()
         .prop_filter("finite", |x| x.is_finite())
         .prop_map(|x| x.clamp(-1.0, 1.0));
-    (
-        vec(sample.clone(), 1..=max_taps),
-        vec(sample, 1..=max_taps),
-    )
+    (vec(sample.clone(), 1..=max_taps), vec(sample, 1..=max_taps))
 }
 
 // -----------------------------------------------------------------------------
@@ -254,18 +247,16 @@ pub fn any_dsd_stream() -> impl Strategy<Value = DsdStream> {
     let frames = 1024usize..=65_536usize;
     let lsb_first = any::<bool>();
 
-    (rate, channels, frames, lsb_first).prop_flat_map(
-        |(rate, channels, frames, lsb_first)| {
-            let bytes = vec(any::<u8>(), frames..=frames);
-            let per_channel = vec(bytes, channels as usize..=channels as usize);
-            per_channel.prop_map(move |bytes_per_channel| DsdStream {
-                rate,
-                channels,
-                bytes_per_channel,
-                lsb_first,
-            })
-        },
-    )
+    (rate, channels, frames, lsb_first).prop_flat_map(|(rate, channels, frames, lsb_first)| {
+        let bytes = vec(any::<u8>(), frames..=frames);
+        let per_channel = vec(bytes, channels as usize..=channels as usize);
+        per_channel.prop_map(move |bytes_per_channel| DsdStream {
+            rate,
+            channels,
+            bytes_per_channel,
+            lsb_first,
+        })
+    })
 }
 
 /// Strategy producing a fully randomised set of inputs for the

@@ -174,11 +174,7 @@ pub fn dispatch_app_command(
 
 /// Internal entry point used by `lib.rs` when single-instance
 /// forwards args from a secondary launch.
-pub fn dispatch(
-    app: &AppHandle,
-    state: &AppState,
-    command: AppCommand,
-) -> anyhow::Result<()> {
+pub fn dispatch(app: &AppHandle, state: &AppState, command: AppCommand) -> anyhow::Result<()> {
     use tauri::Emitter;
     match command {
         AppCommand::Play { paths } => play_paths(state, &paths, PlayMode::Replace)?,
@@ -193,21 +189,13 @@ pub fn dispatch(
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             state
                 .library()
-                .scan_folder(
-                    &path,
-                    qobee_library::ScanOptions::default(),
-                    |_| {},
-                )
+                .scan_folder(&path, qobee_library::ScanOptions::default(), |_| {})
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         }
         AppCommand::ScanFolder { path } => {
             state
                 .library()
-                .scan_folder(
-                    &path,
-                    qobee_library::ScanOptions::default(),
-                    |_| {},
-                )
+                .scan_folder(&path, qobee_library::ScanOptions::default(), |_| {})
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         }
         AppCommand::Navigate { view } => {
@@ -257,11 +245,7 @@ fn play_paths(state: &AppState, paths: &[PathBuf], mode: PlayMode) -> anyhow::Re
                         |_| {},
                     );
                 }
-                state
-                    .library()
-                    .find_track_id_by_path(&key)
-                    .ok()
-                    .flatten()
+                state.library().find_track_id_by_path(&key).ok().flatten()
             }
         };
         if let Some(id) = id {

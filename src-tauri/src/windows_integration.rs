@@ -13,19 +13,13 @@
 //! * [`set_autostart`] — toggles the `Run` key entry that launches
 //!   the app at login, optionally with `--minimized`.
 //! * [`is_autostart_enabled`] — reads the same key.
-//! * [`register_context_menu`] / [`unregister_context_menu`] —
-//!   user-level (HKCU) registry entries for the audio file and
-//!   folder right-click menus. We never touch HKLM and never claim
-//!   to be the default music app.
-//! * [`register_protocol_handler`] / [`unregister_protocol_handler`]
-//!   — installs the `qobee://` protocol so deep-links work with
-//!   single-instance forwarding.
-//! * [`apply_jump_list`] — pushes the static jump list (Open
-//!   library, Settings, etc.) onto the taskbar icon. Dynamic items
-//!   (Play / Pause / Next) are intentionally left out — they would
-//!   require the COM ICustomDestinationList API which is heavy and
-//!   ill-fitting for a Tauri app; the tray menu and OS media keys
-//!   already cover that need.
+//! * [`register_integration`] / [`unregister_integration`] —
+//!   user-level (HKCU) registry entries that group the protocol
+//!   handler, audio file context menu and folder context menu under
+//!   one opt-in surface. We never touch HKLM and never claim to be
+//!   the default music app. Each section is opt-in via the function
+//!   parameters; the unregister call is idempotent and safe to
+//!   invoke even if nothing was registered.
 //! * [`AppCommand`] — the typed command surface our deep-link parser
 //!   produces. The Tauri side dispatches these onto the existing
 //!   command pipeline (player + library), so single-instance
@@ -219,9 +213,8 @@ pub fn parse_deep_link(url: &str) -> Option<AppCommand> {
         .map(|q| {
             q.split('&')
                 .filter_map(|kv| {
-                    let mut it = kv.splitn(2, '=');
-                    let k = it.next()?;
-                    let v = it.next()?;
+                    let (k, v) = kv.split_once('=')?;
+
                     if k.eq_ignore_ascii_case("path") {
                         Some(PathBuf::from(percent_decode(v)))
                     } else {
@@ -233,9 +226,13 @@ pub fn parse_deep_link(url: &str) -> Option<AppCommand> {
         .unwrap_or_default();
     let single = paths.first().cloned();
     match host {
-        "play" => paths.is_empty().then(|| ()).map(|_| ()).is_some()
-            .then_some(None)
-            .unwrap_or(Some(AppCommand::Play { paths })),
+        "play" => {
+            if paths.is_empty() {
+                None
+            } else {
+                Some(AppCommand::Play { paths })
+            }
+        }
         "enqueue" => Some(AppCommand::Enqueue { paths }),
         "play-next" => Some(AppCommand::PlayNext { paths }),
         "play-folder" => single.map(|p| AppCommand::PlayFolder { path: p }),
@@ -368,8 +365,7 @@ mod imp {
 
     pub fn set_autostart(enabled: bool, exe: &Path, start_minimized: bool) -> anyhow::Result<()> {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let (run, _) =
-            hkcu.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run")?;
+        let (run, _) = hkcu.create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run")?;
         if enabled {
             let mut value = format!("\"{}\"", exe.display());
             if start_minimized {
@@ -470,10 +466,14 @@ mod imp {
             ("qobee.play", "Play in Qobee", "--play \"%1\""),
             ("qobee.enqueue", "Add to Qobee queue", "--enqueue \"%1\""),
             ("qobee.playnext", "Play next in Qobee", "--play-next \"%1\""),
-            ("qobee.import", "Import to Qobee library", "--scan-folder \"%1\""),
+            (
+                "qobee.import",
+                "Import to Qobee library",
+                "--scan-folder \"%1\"",
+            ),
         ] {
             let (verb, _) = shell.create_subkey(verb_key)?;
-            verb.set_value("", &*label)?;
+            verb.set_value("", label)?;
             verb.set_value("Icon", &format!("\"{}\",0", exe.display()))?;
             let (cmd, _) = verb.create_subkey("command")?;
             cmd.set_value("", &format!("\"{}\" {}", exe.display(), args))?;
@@ -509,22 +509,38 @@ mod imp {
 
         let actions = &[
             ("PlayFolder", "Play folder in Qobee", "--play-folder \"%V\""),
-            ("EnqueueFolder", "Add folder to Qobee queue", "--enqueue-folder \"%V\""),
-            ("ScanFolder", "Scan folder with Qobee", "--scan-folder \"%V\""),
-            ("ImportFolder", "Import folder to Qobee library", "--import-folder \"%V\""),
+            (
+                "EnqueueFolder",
+                "Add folder to Qobee queue",
+                "--enqueue-folder \"%V\"",
+            ),
+            (
+                "ScanFolder",
+                "Scan folder with Qobee",
+                "--scan-folder \"%V\"",
+            ),
+            (
+                "ImportFolder",
+                "Import folder to Qobee library",
+                "--import-folder \"%V\"",
+            ),
         ];
         // We register against `Directory\shell` (right-click on a
         // folder), `Directory\Background\shell` (right-click empty
         // space inside an open folder), and `Drive\shell` (right-
         // click a drive letter — useful for music drives).
-        for parent in &[r"Directory\shell", r"Directory\Background\shell", r"Drive\shell"] {
+        for parent in &[
+            r"Directory\shell",
+            r"Directory\Background\shell",
+            r"Drive\shell",
+        ] {
             for (suffix, label, args) in actions {
                 let key = format!(
                     r"Software\Classes\{parent}\{prefix}.{suffix}",
                     prefix = FOLDER_VERB_KEY_PREFIX
                 );
                 let (verb, _) = hkcu.create_subkey(&key)?;
-                verb.set_value("", &*label)?;
+                verb.set_value("", label)?;
                 verb.set_value("Icon", &format!("\"{}\",0", exe.display()))?;
                 let (cmd, _) = verb.create_subkey("command")?;
                 cmd.set_value("", &format!("\"{}\" {}", exe.display(), args))?;
@@ -535,7 +551,11 @@ mod imp {
 
     fn unregister_folder_context_menu() -> anyhow::Result<()> {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        for parent in &[r"Directory\shell", r"Directory\Background\shell", r"Drive\shell"] {
+        for parent in &[
+            r"Directory\shell",
+            r"Directory\Background\shell",
+            r"Drive\shell",
+        ] {
             for suffix in &["PlayFolder", "EnqueueFolder", "ScanFolder", "ImportFolder"] {
                 let key = format!(
                     r"Software\Classes\{parent}\{prefix}.{suffix}",
@@ -691,7 +711,10 @@ mod tests {
 
     #[test]
     fn wants_start_minimized_detects_flag() {
-        assert!(wants_start_minimized(&["qobee".into(), "--minimized".into()]));
+        assert!(wants_start_minimized(&[
+            "qobee".into(),
+            "--minimized".into()
+        ]));
         assert!(!wants_start_minimized(&["qobee".into()]));
     }
 

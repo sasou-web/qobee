@@ -22,8 +22,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use qobee_engine::{
-    AudioSettings, CrossfeedPreset, DitherProfile, PeakLimiterMode, ResamplerQuality,
-    VolumeCurve,
+    AudioSettings, CrossfeedPreset, DitherProfile, PeakLimiterMode, ResamplerQuality, VolumeCurve,
 };
 use qobee_library::Library;
 use serde_json::{json, Value};
@@ -55,10 +54,7 @@ pub enum AudioSettingsError {
     #[error("unknown audio setting key: {0}")]
     UnknownKey(String),
     #[error("type mismatch for `{key}`: expected {expected}")]
-    TypeMismatch {
-        key: String,
-        expected: &'static str,
-    },
+    TypeMismatch { key: String, expected: &'static str },
     #[error("value for `{key}` out of range: {reason}")]
     OutOfRange { key: String, reason: String },
     #[error("database error: {0}")]
@@ -137,16 +133,12 @@ impl AudioSettingsStore {
         // sitting on `s`. `dirty` tracks whether any key needs to be
         // rewritten so we can persist the corrected payload back.
         for key in ALL_KEYS {
-            let raw = self
-                .library
-                .get_setting(key)
-                .ok()
-                .flatten();
+            let raw = self.library.get_setting(key).ok().flatten();
             match raw {
                 None => {
                     // Missing: persist the default.
-                    let default_value = read_field(&s, key)
-                        .expect("ALL_KEYS only contains known keys");
+                    let default_value =
+                        read_field(&s, key).expect("ALL_KEYS only contains known keys");
                     let _ = self.write_raw(key, &default_value);
                 }
                 Some(text) => match serde_json::from_str::<Value>(&text) {
@@ -154,15 +146,15 @@ impl AudioSettingsStore {
                         if apply_field(&mut s, key, &value).is_err() {
                             // Wrong type or unparseable variant: revert
                             // to the default and rewrite.
-                            let default_value = read_field(&s, key)
-                                .expect("ALL_KEYS only contains known keys");
+                            let default_value =
+                                read_field(&s, key).expect("ALL_KEYS only contains known keys");
                             let _ = self.write_raw(key, &default_value);
                         }
                     }
                     Err(_) => {
                         // Garbage in the column: rewrite the default.
-                        let default_value = read_field(&s, key)
-                            .expect("ALL_KEYS only contains known keys");
+                        let default_value =
+                            read_field(&s, key).expect("ALL_KEYS only contains known keys");
                         let _ = self.write_raw(key, &default_value);
                     }
                 },
@@ -217,8 +209,7 @@ impl AudioSettingsStore {
 
         // Persist first. If SQLite rejects the row we leave the
         // in-memory snapshot intact.
-        let canonical = read_field(&next, key)
-            .expect("apply_field updated a known key");
+        let canonical = read_field(&next, key).expect("apply_field updated a known key");
         self.write_raw(key, &canonical)
             .map_err(|e| AudioSettingsError::DbError(e.to_string()))?;
 
@@ -233,8 +224,7 @@ impl AudioSettingsStore {
     pub fn write_defaults(&self) -> Result<(), AudioSettingsError> {
         let defaults = AudioSettings::default();
         for key in ALL_KEYS {
-            let v = read_field(&defaults, key)
-                .expect("ALL_KEYS only contains known keys");
+            let v = read_field(&defaults, key).expect("ALL_KEYS only contains known keys");
             self.write_raw(key, &v)
                 .map_err(|e| AudioSettingsError::DbError(e.to_string()))?;
         }
@@ -286,11 +276,7 @@ fn read_field(s: &AudioSettings, key: &str) -> Option<Value> {
 /// Validate the JSON value's *type* and apply it to the matching
 /// field. Range checks live in [`validate_field`] so `load_or_init`
 /// can re-clamp without rejecting persisted-but-stale values.
-fn apply_field(
-    s: &mut AudioSettings,
-    key: &str,
-    value: &Value,
-) -> Result<(), AudioSettingsError> {
+fn apply_field(s: &mut AudioSettings, key: &str, value: &Value) -> Result<(), AudioSettingsError> {
     let mismatch = |expected: &'static str| AudioSettingsError::TypeMismatch {
         key: key.to_string(),
         expected,
@@ -312,16 +298,13 @@ fn apply_field(
                 .map_err(|_| mismatch("\"off\" | \"soft_clip\" | \"lookahead_limiter\""))?;
         }
         "audio.peak_limiter_ceiling_dbfs" => {
-            s.peak_limiter_ceiling_dbfs =
-                parse_finite_f32(value).ok_or_else(|| mismatch("f32"))?;
+            s.peak_limiter_ceiling_dbfs = parse_finite_f32(value).ok_or_else(|| mismatch("f32"))?;
         }
         "audio.peak_limiter_lookahead_ms" => {
-            s.peak_limiter_lookahead_ms =
-                parse_finite_f32(value).ok_or_else(|| mismatch("f32"))?;
+            s.peak_limiter_lookahead_ms = parse_finite_f32(value).ok_or_else(|| mismatch("f32"))?;
         }
         "audio.peak_limiter_release_ms" => {
-            s.peak_limiter_release_ms =
-                parse_finite_f32(value).ok_or_else(|| mismatch("f32"))?;
+            s.peak_limiter_release_ms = parse_finite_f32(value).ok_or_else(|| mismatch("f32"))?;
         }
         "audio.volume_curve" => {
             s.volume_curve = serde_json::from_value::<VolumeCurve>(value.clone())
@@ -365,9 +348,7 @@ fn apply_field(
             s.balance = parse_finite_f32(value).ok_or_else(|| mismatch("f32"))?;
         }
         "audio.trim_db_per_channel" => {
-            let arr = value
-                .as_array()
-                .ok_or_else(|| mismatch("array of f32"))?;
+            let arr = value.as_array().ok_or_else(|| mismatch("array of f32"))?;
             let mut out = Vec::with_capacity(arr.len());
             for v in arr {
                 out.push(parse_finite_f32(v).ok_or_else(|| mismatch("array of f32"))?);
@@ -442,11 +423,12 @@ fn validate_field(s: &AudioSettings, key: &str) -> Result<(), AudioSettingsError
                 });
             }
             for (i, t) in s.trim_db_per_channel.iter().enumerate() {
-                range(*t, -12.0, 0.0, "[-12.0, 0.0]")
-                    .map_err(|reason| AudioSettingsError::OutOfRange {
+                range(*t, -12.0, 0.0, "[-12.0, 0.0]").map_err(|reason| {
+                    AudioSettingsError::OutOfRange {
                         key: key.to_string(),
                         reason: format!("index {}: {}", i, reason),
-                    })?;
+                    }
+                })?;
             }
         }
         _ => return Err(AudioSettingsError::UnknownKey(key.to_string())),
@@ -621,10 +603,7 @@ mod tests {
             .set("audio.rg_safety_headroom_db", json!(2.0))
             .expect("set");
 
-        assert_eq!(
-            store.get("audio.rg_safety_headroom_db"),
-            Some(json!(2.0))
-        );
+        assert_eq!(store.get("audio.rg_safety_headroom_db"), Some(json!(2.0)));
 
         let pushed = mock.last().expect("apply called at least once");
         assert_eq!(pushed.rg_safety_headroom_db, 2.0);

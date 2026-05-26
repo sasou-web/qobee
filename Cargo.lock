@@ -3200,7 +3200,7 @@ checksum = "e0c5ccf5294c6ccd63a74f1565028353830a9c2f5eb0c682c355c471726a6e3f"
 
 [[package]]
 name = "qobee-app"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3232,7 +3232,7 @@ dependencies = [
 
 [[package]]
 name = "qobee-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -3251,7 +3251,7 @@ dependencies = [
 
 [[package]]
 name = "qobee-engine"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3275,7 +3275,7 @@ dependencies = [
 
 [[package]]
 name = "qobee-library"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "blake3",

@@ -320,17 +320,18 @@ mod tests {
 
     #[test]
     fn clamp_in_place_brings_out_of_range_values_back() {
-        let mut s = AudioSettings::default();
-
-        s.rg_safety_headroom_db = 99.0;
-        s.peak_limiter_ceiling_dbfs = 5.0;
-        s.peak_limiter_lookahead_ms = 0.5;
-        s.peak_limiter_release_ms = 9_999.0;
-        s.volume_floor_db = -200.0;
-        s.crossfeed_delay_us = 10.0;
-        s.crossfeed_lp_cutoff_hz = 50_000.0;
-        s.convolver_gain_db = 12.0;
-        s.balance = -7.5;
+        let mut s = AudioSettings {
+            rg_safety_headroom_db: 99.0,
+            peak_limiter_ceiling_dbfs: 5.0,
+            peak_limiter_lookahead_ms: 0.5,
+            peak_limiter_release_ms: 9_999.0,
+            volume_floor_db: -200.0,
+            crossfeed_delay_us: 10.0,
+            crossfeed_lp_cutoff_hz: 50_000.0,
+            convolver_gain_db: 12.0,
+            balance: -7.5,
+            ..AudioSettings::default()
+        };
 
         s.clamp_in_place();
 
@@ -345,11 +346,13 @@ mod tests {
         assert_eq!(s.balance, -1.0);
 
         // Clamp also handles the lower side.
-        let mut t = AudioSettings::default();
-        t.rg_safety_headroom_db = -10.0;
-        t.peak_limiter_ceiling_dbfs = -10.0;
-        t.balance = 7.5;
-        t.convolver_gain_db = -100.0;
+        let mut t = AudioSettings {
+            rg_safety_headroom_db: -10.0,
+            peak_limiter_ceiling_dbfs: -10.0,
+            balance: 7.5,
+            convolver_gain_db: -100.0,
+            ..AudioSettings::default()
+        };
         t.clamp_in_place();
         assert_eq!(t.rg_safety_headroom_db, 0.0);
         assert_eq!(t.peak_limiter_ceiling_dbfs, -3.0);
@@ -359,12 +362,14 @@ mod tests {
 
     #[test]
     fn clamp_in_place_truncates_trim_to_eight_channels() {
-        let mut s = AudioSettings::default();
-        // 12 entries, mix of in-range and out-of-range values.
-        s.trim_db_per_channel = vec![
-            0.0, -3.0, -6.0, -9.0, -12.0, -15.0, 5.0, -1.0, // 8 valid + first OOB
-            -100.0, 0.5, -7.0, -2.5, // these must be truncated
-        ];
+        let mut s = AudioSettings {
+            // 12 entries, mix of in-range and out-of-range values.
+            trim_db_per_channel: vec![
+                0.0, -3.0, -6.0, -9.0, -12.0, -15.0, 5.0, -1.0, // 8 valid + first OOB
+                -100.0, 0.5, -7.0, -2.5, // these must be truncated
+            ],
+            ..AudioSettings::default()
+        };
 
         s.clamp_in_place();
 

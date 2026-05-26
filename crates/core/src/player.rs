@@ -36,12 +36,12 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::Mutex;
 use thiserror::Error;
 
+#[cfg(target_os = "windows")]
+use qobee_engine::backend_wasapi_exclusive::WasapiExclusiveEngine;
 use qobee_engine::{
     backend_cpal_shared::{list_output_devices, CpalSharedEngine},
     AudioEngine, EngineError, EngineEvent, OutputDevice, OutputMode, PlayerState, PreGainContext,
 };
-#[cfg(target_os = "windows")]
-use qobee_engine::backend_wasapi_exclusive::WasapiExclusiveEngine;
 use qobee_library::{Library, LibraryError};
 
 use crate::queue::{Queue, QueueSnapshot, RepeatMode, TrackId};
@@ -179,8 +179,7 @@ impl PlayerInner {
         let dsd_rate = track.dsd_rate();
         if dsd_rate.is_some() && self.current_output_mode_inner() != OutputMode::Exclusive {
             let _ = self.event_tx.send(PlayerEvent::Error {
-                message: "La lecture DSD requiert le mode Exclusive (Settings → Audio)"
-                    .to_string(),
+                message: "La lecture DSD requiert le mode Exclusive (Settings → Audio)".to_string(),
             });
             return Ok(());
         }
@@ -204,12 +203,8 @@ impl PlayerInner {
         };
         let rg_db = match mode {
             ReplayGainMode::Off => None,
-            ReplayGainMode::Track => track
-                .replaygain_track_db
-                .or(track.replaygain_album_db),
-            ReplayGainMode::Album => track
-                .replaygain_album_db
-                .or(track.replaygain_track_db),
+            ReplayGainMode::Track => track.replaygain_track_db.or(track.replaygain_album_db),
+            ReplayGainMode::Album => track.replaygain_album_db.or(track.replaygain_track_db),
         };
         let pre_gain_linear = match rg_db {
             Some(db) => 10f32.powf(db.clamp(-24.0, 12.0) / 20.0),
@@ -224,12 +219,8 @@ impl PlayerInner {
         // until task 18 wires `PcmChain` into `run_decoder_thread`.
         let rg_peak = match mode {
             ReplayGainMode::Off => None,
-            ReplayGainMode::Track => track
-                .replaygain_track_peak
-                .or(track.replaygain_album_peak),
-            ReplayGainMode::Album => track
-                .replaygain_album_peak
-                .or(track.replaygain_track_peak),
+            ReplayGainMode::Track => track.replaygain_track_peak.or(track.replaygain_album_peak),
+            ReplayGainMode::Album => track.replaygain_album_peak.or(track.replaygain_track_peak),
         };
         let slider = self.engine().state().volume;
         self.engine().set_pre_gain_context(PreGainContext {
@@ -254,7 +245,8 @@ impl PlayerInner {
         // last 3 seconds of a song). Drop it so it doesn't get
         // gapless-swapped after the explicit Load below.
         let _ = self.engine().clear_pending_next();
-        self.engine().set_current_track_id(Some(track_id.to_string()));
+        self.engine()
+            .set_current_track_id(Some(track_id.to_string()));
         // R7.3 — DSD tracks take a dedicated load path that opens
         // the device in 24-in-32 at the DoP carrier rate and
         // bypasses every PCM stage. Falls back to a regular load
@@ -312,7 +304,7 @@ impl PlayerInner {
         let next_id = self.queue.peek_next();
         let already = *self.prefetched_track.lock();
         match (next_id, already) {
-            (Some(id), Some(prev)) if prev == id => return,
+            (Some(id), Some(prev)) if prev == id => (),
             (Some(id), _) => {
                 if let Ok(path) = self.resolve_path(id) {
                     if let Err(e) = self.engine().prepare_next(&path, Some(id.to_string())) {
@@ -389,11 +381,7 @@ impl PlayerHandle {
 
     pub fn state(&self) -> PlayerState {
         let mut state = self.inner.engine().state();
-        state.current_track_id = self
-            .inner
-            .current_track_id
-            .lock()
-            .map(|id| id.to_string());
+        state.current_track_id = self.inner.current_track_id.lock().map(|id| id.to_string());
         state
     }
 
@@ -635,7 +623,7 @@ impl PlayerHandle {
             // Inform the active engine of the mode for any
             // backend-internal book-keeping.
             self.inner.engine().set_output_mode(mode)?;
-            return Ok(());
+            Ok(())
         }
 
         // Non-Windows: only Shared is meaningful. We accept the call
@@ -863,12 +851,12 @@ impl PlayerHandle {
             if let Ok(Some(track)) = self.inner.library.get_track(track_id) {
                 let rg_db = match mode {
                     ReplayGainMode::Off => None,
-                    ReplayGainMode::Track => track
-                        .replaygain_track_db
-                        .or(track.replaygain_album_db),
-                    ReplayGainMode::Album => track
-                        .replaygain_album_db
-                        .or(track.replaygain_track_db),
+                    ReplayGainMode::Track => {
+                        track.replaygain_track_db.or(track.replaygain_album_db)
+                    }
+                    ReplayGainMode::Album => {
+                        track.replaygain_album_db.or(track.replaygain_track_db)
+                    }
                 };
                 let pre_gain = match rg_db {
                     Some(db) => 10f32.powf(db.clamp(-24.0, 12.0) / 20.0),
@@ -881,12 +869,12 @@ impl PlayerHandle {
                 // even on a mid-track mode change.
                 let rg_peak = match mode {
                     ReplayGainMode::Off => None,
-                    ReplayGainMode::Track => track
-                        .replaygain_track_peak
-                        .or(track.replaygain_album_peak),
-                    ReplayGainMode::Album => track
-                        .replaygain_album_peak
-                        .or(track.replaygain_track_peak),
+                    ReplayGainMode::Track => {
+                        track.replaygain_track_peak.or(track.replaygain_album_peak)
+                    }
+                    ReplayGainMode::Album => {
+                        track.replaygain_album_peak.or(track.replaygain_track_peak)
+                    }
                 };
                 let slider = self.inner.engine().state().volume;
                 self.inner.engine().set_pre_gain_context(PreGainContext {
@@ -950,9 +938,7 @@ impl PlayerHandle {
         // 2. Validate: non-empty, all finite. The post-resample
         //    length is checked after step 3.
         if planar.is_empty() || planar.iter().any(|c| c.is_empty()) {
-            return Err(EngineError::ConvolverIrInvalid(
-                "IR has zero length".into(),
-            ));
+            return Err(EngineError::ConvolverIrInvalid("IR has zero length".into()));
         }
         for (i, ch) in planar.iter().enumerate() {
             if ch.iter().any(|s| !s.is_finite()) {
@@ -975,12 +961,7 @@ impl PlayerHandle {
         //    `SincFixedIn` consumes a fixed input chunk per call, so
         //    we feed the IR in one chunk plus a trailing
         //    `process_partial` flush to drain the look-ahead tail.
-        let device_sr = self
-            .inner
-            .engine()
-            .state()
-            .sample_rate
-            .unwrap_or(48_000);
+        let device_sr = self.inner.engine().state().sample_rate.unwrap_or(48_000);
         if device_sr != in_sr {
             use rubato::{Resampler, SincFixedIn};
             let params = qobee_engine::backend_cpal_shared::sinc_params_for(
@@ -1177,8 +1158,7 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                 {
                     let active = inner.active_backend.load(Ordering::Acquire);
                     let looks_like_exclusive_fail = active == 1
-                        && (message.contains("Exclusive")
-                            || message.contains("WASAPI"));
+                        && (message.contains("Exclusive") || message.contains("WASAPI"));
                     if looks_like_exclusive_fail {
                         tracing::warn!(
                             target: "qobee::core",
@@ -1195,10 +1175,7 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                         // doesn't try Exclusive again and fail in the
                         // same way. The user can re-enable it from
                         // Settings if they fix their device config.
-                        if let Err(e) = inner
-                            .library
-                            .set_setting("audio.output_mode", "shared")
-                        {
+                        if let Err(e) = inner.library.set_setting("audio.output_mode", "shared") {
                             tracing::warn!(
                                 target: "qobee::core",
                                 error = %e,
@@ -1298,9 +1275,7 @@ impl crate::audio_settings::AudioSettingsApply for Player {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qobee_engine::{
-        BitPerfectHealth, BitPerfectStatus, EffectiveOutputMode,
-    };
+    use qobee_engine::{BitPerfectHealth, BitPerfectStatus, EffectiveOutputMode};
     use qobee_library::Library;
 
     fn fresh_library() -> Library {
@@ -1309,10 +1284,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        base.push(format!(
-            "qobee-player-test-{nanos}-{}",
-            std::process::id()
-        ));
+        base.push(format!("qobee-player-test-{nanos}-{}", std::process::id()));
         std::fs::create_dir_all(&base).expect("create temp dir");
         let db = base.join("library.db");
         let cover = base.join("covers");

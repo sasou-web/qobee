@@ -49,7 +49,7 @@ impl DopPacker {
         self.channels
     }
 
-    /// Convert one [`DsdGroup16`] into `channels` `i32` samples.
+    /// Convert one [`super::DsdGroup16`] into `channels` `i32` samples.
     ///
     /// Each per-channel u16 holds 16 DSD bits with the most
     /// significant bit being the *oldest* in time on the DoP
@@ -66,7 +66,11 @@ impl DopPacker {
             // arithmetic-shift right 8.
             let pcm32 = ((pcm24 as i32) << 8) >> 8;
             out.push(pcm32);
-            self.marker_state = if self.marker_state == 0x05 { 0xFA } else { 0x05 };
+            self.marker_state = if self.marker_state == 0x05 {
+                0xFA
+            } else {
+                0x05
+            };
         }
         out
     }

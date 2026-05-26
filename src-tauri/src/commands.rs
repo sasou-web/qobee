@@ -6,22 +6,20 @@
 //! **Cover art rule:** these commands only ever return *paths* or
 //! *URLs*. Image bytes never cross the IPC boundary. The frontend loads
 //! covers via the `qobee-cover://` custom protocol registered in
-//! [`crate::lib`].
+//! the crate root.
 
 use std::path::PathBuf;
 
 use serde::Serialize;
 use tauri::{Emitter, State};
 
-use qobee_engine::{
-    BitPerfectHealth, EffectiveOutputMode, OutputDevice, OutputMode, PlayerState,
-};
+use qobee_core::queue::RepeatMode;
+use qobee_core::{audio_settings::ALL_KEYS, AudioSettingsError, ReplayGainMode};
+use qobee_engine::{BitPerfectHealth, EffectiveOutputMode, OutputDevice, OutputMode, PlayerState};
 use qobee_library::{
     Album, AlbumDetail, Artist, ArtistDetail, Genre, LibraryRoot, LibraryStats, Playlist,
     PlaylistDetail, ScanOptions, SearchResults, Track,
 };
-use qobee_core::queue::RepeatMode;
-use qobee_core::{audio_settings::ALL_KEYS, AudioSettingsError, ReplayGainMode};
 
 use crate::lyrics::Lyrics;
 use crate::state::AppState;
@@ -227,7 +225,10 @@ pub fn list_albums_by_genre(
     genre: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<Album>, String> {
-    state.library().list_albums_by_genre(&genre).map_err(map_err)
+    state
+        .library()
+        .list_albums_by_genre(&genre)
+        .map_err(map_err)
 }
 
 // ---------------------------------------------------------------------------
@@ -285,16 +286,16 @@ pub fn get_playlist(
 }
 
 #[tauri::command]
-pub fn create_playlist(
-    name: String,
-    state: State<'_, AppState>,
-) -> Result<Playlist, String> {
+pub fn create_playlist(name: String, state: State<'_, AppState>) -> Result<Playlist, String> {
     state.library().create_playlist(&name).map_err(map_err)
 }
 
 #[tauri::command]
 pub fn delete_playlist(playlist_id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    state.library().delete_playlist(playlist_id).map_err(map_err)
+    state
+        .library()
+        .delete_playlist(playlist_id)
+        .map_err(map_err)
 }
 
 #[tauri::command]
@@ -351,7 +352,10 @@ pub fn play_tracks(
     start: Option<usize>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.player().play_tracks(track_ids, start).map_err(map_err)
+    state
+        .player()
+        .play_tracks(track_ids, start)
+        .map_err(map_err)
 }
 
 /// Insert `track_ids` immediately after the currently playing track.
@@ -372,7 +376,9 @@ pub fn add_to_queue(track_ids: Vec<i64>, state: State<'_, AppState>) -> Result<(
 #[tauri::command]
 pub fn track_ids_for_album(album_id: i64, state: State<'_, AppState>) -> Result<Vec<i64>, String> {
     let detail = state.library().get_album(album_id).map_err(map_err)?;
-    Ok(detail.map(|d| d.tracks.iter().map(|t| t.id).collect()).unwrap_or_default())
+    Ok(detail
+        .map(|d| d.tracks.iter().map(|t| t.id).collect())
+        .unwrap_or_default())
 }
 
 /// Look up the album id that owns `track_id`. Used by the player bar
@@ -391,10 +397,7 @@ pub fn album_id_for_track(
 
 /// Every track id from the named artist's catalog, in album order.
 #[tauri::command]
-pub fn track_ids_by_artist(
-    name: String,
-    state: State<'_, AppState>,
-) -> Result<Vec<i64>, String> {
+pub fn track_ids_by_artist(name: String, state: State<'_, AppState>) -> Result<Vec<i64>, String> {
     state.library().track_ids_by_artist(&name).map_err(map_err)
 }
 
@@ -495,11 +498,7 @@ pub fn get_setting(key: String, state: State<'_, AppState>) -> Result<Option<Str
 }
 
 #[tauri::command]
-pub fn set_setting(
-    key: String,
-    value: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn set_setting(key: String, value: String, state: State<'_, AppState>) -> Result<(), String> {
     state.library().set_setting(&key, &value).map_err(map_err)
 }
 
@@ -624,12 +623,12 @@ pub fn get_device_mix_format(
     let device_id = device_id.or_else(|| state.player().selected_output_device());
     #[cfg(target_os = "windows")]
     {
-        use wasapi::{initialize_mta, Direction, DeviceEnumerator};
+        use wasapi::{initialize_mta, DeviceEnumerator, Direction};
         // COM init is idempotent here (the app may already have
         // initialised on this thread); failures are non-fatal.
         let _ = initialize_mta().ok();
-        let enumerator = DeviceEnumerator::new()
-            .map_err(|e| format!("device enumerator: {e:?}"))?;
+        let enumerator =
+            DeviceEnumerator::new().map_err(|e| format!("device enumerator: {e:?}"))?;
         let device = if let Some(want) = device_id.as_deref() {
             let mut found = None;
             if let Ok(coll) = enumerator.get_device_collection(&Direction::Render) {
@@ -669,11 +668,11 @@ pub fn get_device_mix_format(
         } else {
             None
         };
-        return Ok(DeviceMixFormat {
+        Ok(DeviceMixFormat {
             sample_rate: fmt.get_samplespersec(),
             channels: fmt.get_nchannels(),
             bit_depth,
-        });
+        })
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -684,14 +683,11 @@ pub fn get_device_mix_format(
             .map_err(|e| format!("list devices: {e}"))?;
         let pick = match device_id.as_deref() {
             Some(want) => devices.into_iter().find(|d| d.id == want),
-            None => devices
-                .into_iter()
-                .find(|d| d.is_default)
-                .or_else(|| {
-                    qobee_engine::backend_cpal_shared::list_output_devices()
-                        .ok()
-                        .and_then(|mut v| v.pop())
-                }),
+            None => devices.into_iter().find(|d| d.is_default).or_else(|| {
+                qobee_engine::backend_cpal_shared::list_output_devices()
+                    .ok()
+                    .and_then(|mut v| v.pop())
+            }),
         }
         .ok_or_else(|| "no default output device".to_string())?;
         Ok(DeviceMixFormat {
@@ -771,20 +767,16 @@ pub fn unload_convolver_ir(state: State<'_, AppState>) -> Result<(), String> {
 /// enabled flag, persisted IR path, active IR length, and reported
 /// latency in milliseconds.
 #[tauri::command]
-pub fn get_convolver_status(
-    state: State<'_, AppState>,
-) -> Result<ConvolverStatus, String> {
+pub fn get_convolver_status(state: State<'_, AppState>) -> Result<ConvolverStatus, String> {
     let store = state.audio_settings();
     let enabled = store
         .get("audio.convolver_enabled")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let ir_path = store
-        .get("audio.convolver_ir_path")
-        .and_then(|v| match v {
-            serde_json::Value::String(s) if !s.is_empty() => Some(s),
-            _ => None,
-        });
+    let ir_path = store.get("audio.convolver_ir_path").and_then(|v| match v {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s),
+        _ => None,
+    });
     // Engine reports the active IR length in taps (zero when none
     // loaded). The setter pre-validates the IR so a non-zero length
     // implies a valid IR is in flight.
@@ -812,7 +804,7 @@ pub fn get_convolver_status(
 /// Run the null-test diagnostic end-to-end. Blocking command: the
 /// orchestrator runs the capture + alignment on the current
 /// thread (Tauri spawns one worker per command). Returns a complete
-/// [`NullTestReport`] in every case (errors surface as
+/// [`qobee_core::NullTestReport`] in every case (errors surface as
 /// `Inconclusive` with the message in `error`).
 #[tauri::command]
 pub async fn run_null_test(
@@ -850,7 +842,10 @@ pub fn add_library_root(path: String, state: State<'_, AppState>) -> Result<Libr
 
 #[tauri::command]
 pub fn remove_library_root(root_id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    state.library().remove_library_root(root_id).map_err(map_err)
+    state
+        .library()
+        .remove_library_root(root_id)
+        .map_err(map_err)
 }
 
 /// Scan every saved library root in sequence. Emits `library:scan-progress`
@@ -988,23 +983,19 @@ pub async fn toggle_mini_player(app: tauri::AppHandle, show: bool) -> Result<(),
                 // Create on demand. Same Vite entry; main.ts checks
                 // the window label and renders the MiniPlayer
                 // component for `mini`.
-                WebviewWindowBuilder::new(
-                    &app,
-                    "mini",
-                    WebviewUrl::App("index.html".into()),
-                )
-                .title("Qobee Mini")
-                .inner_size(440.0, 170.0)
-                .min_inner_size(380.0, 150.0)
-                .max_inner_size(700.0, 240.0)
-                .resizable(true)
-                .decorations(false)
-                .shadow(true)
-                .always_on_top(true)
-                .skip_taskbar(false)
-                .visible(false)
-                .build()
-                .map_err(|e| format!("create mini window: {e}"))?
+                WebviewWindowBuilder::new(&app, "mini", WebviewUrl::App("index.html".into()))
+                    .title("Qobee Mini")
+                    .inner_size(440.0, 170.0)
+                    .min_inner_size(380.0, 150.0)
+                    .max_inner_size(700.0, 240.0)
+                    .resizable(true)
+                    .decorations(false)
+                    .shadow(true)
+                    .always_on_top(true)
+                    .skip_taskbar(false)
+                    .visible(false)
+                    .build()
+                    .map_err(|e| format!("create mini window: {e}"))?
             }
         };
 
@@ -1041,10 +1032,7 @@ pub fn get_replaygain_mode(state: State<'_, AppState>) -> Result<ReplayGainMode,
 }
 
 #[tauri::command]
-pub fn set_replaygain_mode(
-    mode: ReplayGainMode,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn set_replaygain_mode(mode: ReplayGainMode, state: State<'_, AppState>) -> Result<(), String> {
     state.player().set_replaygain_mode(mode);
     // Persist so the choice survives restarts (key chosen to align
     // with other settings: "audio.replaygain_mode" -> "off"|"track"|"album").
@@ -1134,13 +1122,10 @@ pub fn discord_init(state: State<'_, AppState>) -> Result<(), String> {
 
 /// Replace the Discord application id used for the IPC handshake.
 /// Required: Rich Presence only shows up if Qobee is registered as a
-/// Discord application (https://discord.com/developers/applications)
+/// Discord application (<https://discord.com/developers/applications>)
 /// and the resulting "Application ID" is set here.
 #[tauri::command]
-pub fn discord_set_client_id(
-    client_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn discord_set_client_id(client_id: String, state: State<'_, AppState>) -> Result<(), String> {
     state.discord().set_client_id(client_id);
     Ok(())
 }
@@ -1149,9 +1134,7 @@ pub fn discord_set_client_id(
 /// to show "Connected" / "Connecting…" / "No client ID set" without
 /// poking Discord directly.
 #[tauri::command]
-pub fn discord_status(
-    state: State<'_, AppState>,
-) -> Result<crate::discord::DiscordStatus, String> {
+pub fn discord_status(state: State<'_, AppState>) -> Result<crate::discord::DiscordStatus, String> {
     Ok(state.discord().status())
 }
 

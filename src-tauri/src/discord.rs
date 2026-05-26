@@ -44,6 +44,7 @@ use serde::{Deserialize, Serialize};
 /// presence. Users can still override it via:
 /// - the `QOBEE_DISCORD_CLIENT_ID` environment variable, or
 /// - the `integrations.discord_client_id` setting (Settings UI),
+///
 /// which take precedence over this default.
 const DEFAULT_CLIENT_ID: &str = "1507871800871354478";
 
@@ -153,7 +154,7 @@ struct Inner {
 }
 
 impl DiscordPresence {
-    /// Spawn the worker thread (lazy: it sits idle until [`init`]).
+    /// Spawn the worker thread (lazy: it sits idle until [`Self::init`]).
     pub fn new() -> Self {
         let (tx, rx) = bounded::<Cmd>(64);
         let status = Arc::new(Mutex::new(DiscordStatus::Disabled));
@@ -175,9 +176,9 @@ impl DiscordPresence {
     }
 
     /// Attach the cover host. Called once at startup with a fresh
-    /// [`Library`] handle. The host uploads local covers and pushes
-    /// `Cmd::CoverResolved` back into the worker so Discord ends up
-    /// displaying the actual album art.
+    /// [`qobee_library::Library`] handle. The host uploads local covers
+    /// and pushes `Cmd::CoverResolved` back into the worker so Discord
+    /// ends up displaying the actual album art.
     pub fn attach_cover_host(&self, library: qobee_library::Library) {
         let tx = self.inner.tx.clone();
         let host = crate::cover_host::CoverHost::new(library, move |uploaded| {
@@ -327,6 +328,7 @@ fn worker_main(rx: Receiver<Cmd>, status: Arc<Mutex<DiscordStatus>>) {
     let mut backoff = RECONNECT_MIN;
     let mut last_publish: Option<Instant> = None;
     let mut active = false; // becomes true after the first Init
+
     // Last state that was actually published. Used to skip redundant
     // IPC writes (e.g. position-only updates on a track Discord
     // already shows the right way).
@@ -435,7 +437,9 @@ fn worker_main(rx: Receiver<Cmd>, status: Arc<Mutex<DiscordStatus>>) {
             set_status(DiscordStatus::Connecting);
             if let Some(at) = next_reconnect_at {
                 if Instant::now() >= at {
-                    let mut c = client.take().unwrap_or_else(|| DiscordIpcClient::new(&client_id));
+                    let mut c = client
+                        .take()
+                        .unwrap_or_else(|| DiscordIpcClient::new(&client_id));
                     match c.connect() {
                         Ok(()) => {
                             tracing::info!(

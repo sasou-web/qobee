@@ -52,12 +52,7 @@ fn stage_with_ir(ir_l: Vec<f32>, ir_r: Vec<f32>) -> ConvolverStage {
 /// `(ir_l, ir_r)` and return the interleaved stereo output. Length
 /// of the input matches `frames`; both channels carry independent
 /// signals.
-fn process_stereo(
-    ir_l: &[f32],
-    ir_r: &[f32],
-    in_l: &[f32],
-    in_r: &[f32],
-) -> Vec<f32> {
+fn process_stereo(ir_l: &[f32], ir_r: &[f32], in_l: &[f32], in_r: &[f32]) -> Vec<f32> {
     let frames = in_l.len();
     assert_eq!(frames, in_r.len());
     let mut s = stage_with_ir(ir_l.to_vec(), ir_r.to_vec());
@@ -108,8 +103,8 @@ fn property_17_convolver_per_channel_processing_no_cross_coupling() {
             // at least `2 × BLOCK_SIZE` total frames.
             if frames < 2 * CONVOLVER_BLOCK {
                 let pad = 2 * CONVOLVER_BLOCK - frames;
-                in_l.extend(std::iter::repeat(0.0).take(pad));
-                in_r.extend(std::iter::repeat(0.0).take(pad));
+                in_l.extend(std::iter::repeat_n(0.0, pad));
+                in_r.extend(std::iter::repeat_n(0.0, pad));
             }
             let frames = in_l.len();
             let zero = vec![0.0_f32; frames];

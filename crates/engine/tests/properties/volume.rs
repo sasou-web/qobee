@@ -25,10 +25,7 @@ use qobee_engine::volume::{format_db_for_display, slider_to_db, slider_to_linear
 
 /// Strategy that picks one of the two volume curves uniformly.
 fn any_curve() -> impl Strategy<Value = VolumeCurve> {
-    prop_oneof![
-        Just(VolumeCurve::Logarithmic),
-        Just(VolumeCurve::Quadratic),
-    ]
+    prop_oneof![Just(VolumeCurve::Logarithmic), Just(VolumeCurve::Quadratic),]
 }
 
 /// Round to one decimal place using the same rule as
@@ -120,7 +117,7 @@ fn property_8_volume_curve_monotone_with_exact_bounds() {
             // nominal range.
             let g = slider_to_linear(slider, curve, floor_db);
             prop_assert!(
-                g.is_finite() && g >= 0.0 && g <= 1.0 + 1e-6,
+                g.is_finite() && (0.0..=1.0 + 1e-6).contains(&g),
                 "g={g} out of [0, 1] for v={slider} on {:?}",
                 curve
             );

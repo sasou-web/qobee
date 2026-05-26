@@ -1,4 +1,4 @@
-﻿//! Shared engine types: PCM buffer enum, output mode, player state, events.
+//! Shared engine types: PCM buffer enum, output mode, player state, events.
 
 use serde::{Deserialize, Serialize};
 
@@ -7,8 +7,10 @@ use serde::{Deserialize, Serialize};
 /// backend in the future).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum OutputMode {
     /// Pick whatever is available (currently always Shared).
+    #[default]
     Auto,
     /// OS-mixer path (CPAL / WASAPI Shared on Windows). Supports
     /// concurrent playback with other applications.
@@ -18,12 +20,6 @@ pub enum OutputMode {
     /// Other applications cannot play to the same device while
     /// Qobee is active.
     Exclusive,
-}
-
-impl Default for OutputMode {
-    fn default() -> Self {
-        OutputMode::Auto
-    }
 }
 
 /// Effective output mode reported back to the UI.
@@ -55,19 +51,15 @@ pub struct OutputDevice {
 /// High-level playback status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum PlaybackStatus {
+    #[default]
     Idle,
     Loading,
     Playing,
     Paused,
     Stopped,
     Errored,
-}
-
-impl Default for PlaybackStatus {
-    fn default() -> Self {
-        PlaybackStatus::Idle
-    }
 }
 
 /// Format descriptor for the currently playing track.
@@ -276,8 +268,15 @@ impl BitPerfectHealth {
         // block and only renders device fields. The struct still
         // carries device_sample_rate so the UI can show the device
         // SR even with no playback in progress.
-        let track_active = matches!(state.status, PlaybackStatus::Playing | PlaybackStatus::Loading);
-        let source_sample_rate = if track_active { state.sample_rate } else { None };
+        let track_active = matches!(
+            state.status,
+            PlaybackStatus::Playing | PlaybackStatus::Loading
+        );
+        let source_sample_rate = if track_active {
+            state.sample_rate
+        } else {
+            None
+        };
         let source_bit_depth = if track_active { state.bit_depth } else { None };
 
         // ----- Per-stage flags (Property 9) -----
@@ -307,10 +306,7 @@ impl BitPerfectHealth {
             crate::audio_settings::PeakLimiterMode::Off
         );
         let balance_off = settings.balance.abs() < 1e-9
-            && settings
-                .trim_db_per_channel
-                .iter()
-                .all(|t| t.abs() < 1e-6);
+            && settings.trim_db_per_channel.iter().all(|t| t.abs() < 1e-6);
         let upmix_active = src_ch != 0 && device_ch != 0 && src_ch != device_ch;
 
         // ----- Tri-state aggregation -----
@@ -407,8 +403,12 @@ impl BitPerfectHealth {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEvent {
-    StateChanged { state: PlayerState },
-    Position { position_seconds: f64 },
+    StateChanged {
+        state: PlayerState,
+    },
+    Position {
+        position_seconds: f64,
+    },
     EndOfTrack,
     /// Emitted when the decoder thread swaps a prepared next track in
     /// place mid-stream (gapless transition). The audio callback never
@@ -419,12 +419,16 @@ pub enum EngineEvent {
     /// chain's flags changes (R5). The decoder thread debounces these
     /// to at most one event per 200 ms so the IPC stream stays light
     /// even during slider drags.
-    BitPerfectChanged { health: BitPerfectHealth },
+    BitPerfectChanged {
+        health: BitPerfectHealth,
+    },
     /// Convolver IR load failed. Carried up from the worker thread
     /// that decoded the WAV (R9.8). The previously-loaded IR (if
     /// any) stays in place; the UI is expected to show the message
     /// and let the user pick another file.
-    IrLoadError { message: String },
+    IrLoadError {
+        message: String,
+    },
     /// WASAPI Exclusive refused the DoP carrier format negotiation
     /// (R7.5). Emitted once per failed DSD load attempt; paired
     /// with an `Error` event carrying the user-facing French
@@ -436,9 +440,10 @@ pub enum EngineEvent {
     /// the DSD pipeline (which bypasses every PCM stage). The UI
     /// surfaces this as an informational toast.
     DsdReadOnlyDsp,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
-
 
 // -----------------------------------------------------------------------------
 // Tests
@@ -475,13 +480,14 @@ mod bit_perfect_tests {
     /// All PCM stages reported as bypassed by the caller (limiter
     /// bypass is encoded in `settings.peak_limiter_mode = Off`).
     fn clean_settings() -> AudioSettings {
-        let mut s = AudioSettings::default();
-        s.peak_limiter_mode = PeakLimiterMode::Off;
-        s.crossfeed_enabled = false;
-        s.convolver_enabled = false;
-        s.balance = 0.0;
-        s.trim_db_per_channel.clear();
-        s
+        AudioSettings {
+            peak_limiter_mode: PeakLimiterMode::Off,
+            crossfeed_enabled: false,
+            convolver_enabled: false,
+            balance: 0.0,
+            trim_db_per_channel: Vec::new(),
+            ..AudioSettings::default()
+        }
     }
 
     #[test]
@@ -521,16 +527,7 @@ mod bit_perfect_tests {
         let state = clean_state(EffectiveOutputMode::Shared);
         let settings = clean_settings();
 
-        let h = BitPerfectHealth::compute(
-            &state,
-            &settings,
-            Some(44_100),
-            2,
-            2,
-            true,
-            true,
-            true,
-        );
+        let h = BitPerfectHealth::compute(&state, &settings, Some(44_100), 2, 2, true, true, true);
 
         assert_eq!(h.status, BitPerfectStatus::Amber);
         assert!(h.is_native_rate);
@@ -592,16 +589,7 @@ mod bit_perfect_tests {
         let mut settings = clean_settings();
         settings.peak_limiter_mode = PeakLimiterMode::LookaheadLimiter;
 
-        let h = BitPerfectHealth::compute(
-            &state,
-            &settings,
-            Some(44_100),
-            2,
-            2,
-            true,
-            true,
-            true,
-        );
+        let h = BitPerfectHealth::compute(&state, &settings, Some(44_100), 2, 2, true, true, true);
 
         assert_eq!(h.status, BitPerfectStatus::Red);
         assert!(!h.limiter_off);
@@ -626,11 +614,10 @@ mod bit_perfect_tests {
 
         assert_eq!(h.status, BitPerfectStatus::Red);
         assert!(h.upmix_active);
-        assert!(
-            h.messages
-                .iter()
-                .any(|m| m.contains("Upmix actif") && m.contains('2') && m.contains('6'))
-        );
+        assert!(h
+            .messages
+            .iter()
+            .any(|m| m.contains("Upmix actif") && m.contains('2') && m.contains('6')));
     }
 
     #[test]
@@ -639,16 +626,7 @@ mod bit_perfect_tests {
         state.volume = 0.5;
         let settings = clean_settings();
 
-        let h = BitPerfectHealth::compute(
-            &state,
-            &settings,
-            Some(44_100),
-            2,
-            2,
-            true,
-            true,
-            true,
-        );
+        let h = BitPerfectHealth::compute(&state, &settings, Some(44_100), 2, 2, true, true, true);
 
         assert_eq!(h.status, BitPerfectStatus::Red);
         assert!(!h.unity_volume);
@@ -660,16 +638,7 @@ mod bit_perfect_tests {
         let mut settings = clean_settings();
         settings.balance = -0.25;
 
-        let h = BitPerfectHealth::compute(
-            &state,
-            &settings,
-            Some(44_100),
-            2,
-            2,
-            true,
-            true,
-            true,
-        );
+        let h = BitPerfectHealth::compute(&state, &settings, Some(44_100), 2, 2, true, true, true);
 
         assert_eq!(h.status, BitPerfectStatus::Red);
         assert!(!h.balance_off);
@@ -682,16 +651,7 @@ mod bit_perfect_tests {
         state.status = PlaybackStatus::Stopped;
         let settings = clean_settings();
 
-        let h = BitPerfectHealth::compute(
-            &state,
-            &settings,
-            Some(48_000),
-            2,
-            2,
-            true,
-            true,
-            true,
-        );
+        let h = BitPerfectHealth::compute(&state, &settings, Some(48_000), 2, 2, true, true, true);
 
         // Source SR/depth dropped (R5.7).
         assert!(h.source_sample_rate.is_none());
@@ -734,16 +694,7 @@ mod bit_perfect_tests {
         let state = clean_state(EffectiveOutputMode::Exclusive);
         let settings = clean_settings();
 
-        let h = BitPerfectHealth::compute(
-            &state,
-            &settings,
-            Some(44_100),
-            2,
-            2,
-            true,
-            true,
-            true,
-        );
+        let h = BitPerfectHealth::compute(&state, &settings, Some(44_100), 2, 2, true, true, true);
 
         let json = serde_json::to_string(&h).unwrap();
         let parsed: BitPerfectHealth = serde_json::from_str(&json).unwrap();

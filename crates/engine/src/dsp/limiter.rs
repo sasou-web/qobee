@@ -386,8 +386,7 @@ impl DspStage for PeakLimiter {
         self.release_coef = time_constant_coef(release_samples);
 
         if geometry_changed {
-            self.buffer
-                .resize(channels.max(1) as usize, new_lookahead);
+            self.buffer.resize(channels.max(1) as usize, new_lookahead);
         }
 
         // Mode swap or geometry change resets the dynamic state so a
@@ -481,11 +480,7 @@ mod tests {
         let mut b = ChannelBuffer::new(2, 4);
         // Frames 1..4: tail reads zeros (buffer has not yet been
         // filled with N-1 valid samples).
-        for &(l, r) in &[
-            (1.0_f32, -1.0_f32),
-            (2.0, -2.0),
-            (3.0, -3.0),
-        ] {
+        for &(l, r) in &[(1.0_f32, -1.0_f32), (2.0, -2.0), (3.0, -3.0)] {
             b.push(0, l);
             b.push(1, r);
             assert_eq!(b.tail(0), 0.0);
@@ -529,10 +524,7 @@ mod tests {
         let mut buf: Vec<f32> = original.iter().take(len).copied().collect();
         let expected = buf.clone();
         limiter.process_inplace(&mut buf);
-        assert_eq!(
-            buf, expected,
-            "Off mode must be sample-for-sample identity"
-        );
+        assert_eq!(buf, expected, "Off mode must be sample-for-sample identity");
     }
 
     #[test]
@@ -589,10 +581,7 @@ mod tests {
             buf[target_idx]
         );
         for (i, &y) in buf.iter().enumerate() {
-            assert!(
-                y.abs() <= ceiling + 1e-5,
-                "ceiling violation at {i}: {y}"
-            );
+            assert!(y.abs() <= ceiling + 1e-5, "ceiling violation at {i}: {y}");
         }
     }
 

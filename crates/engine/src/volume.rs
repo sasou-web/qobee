@@ -217,7 +217,7 @@ mod tests {
         // db = 20 * log10(v²)
         // v=0.5 ⇒ 20*log10(0.25) ≈ -12.04 dB
         // v=0.1 ⇒ 20*log10(0.01) = -40 dB exact.
-        assert!((slider_to_db(0.5, curve, FLOOR) - (-12.0411997)).abs() < 1e-3);
+        assert!((slider_to_db(0.5, curve, FLOOR) - (-12.041_2)).abs() < 1e-3);
         assert!((slider_to_db(0.1, curve, FLOOR) - (-40.0)).abs() < 1e-4);
     }
 
@@ -378,7 +378,7 @@ mod tests {
             let db0 = slider_to_db(v0, curve, FLOOR);
             let v1 = step_db(v0, 2.0, curve, FLOOR);
             let db1 = slider_to_db(v1, curve, FLOOR);
-            let expected = (db0 + 2.0).min(0.0).max(FLOOR);
+            let expected = (db0 + 2.0).clamp(FLOOR, 0.0);
             assert!(
                 (db1 - expected).abs() < 1e-3,
                 "{curve:?}: db0={db0}, db1={db1}, expected={expected}"

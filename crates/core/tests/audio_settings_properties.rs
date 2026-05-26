@@ -24,8 +24,7 @@ use parking_lot::Mutex;
 use proptest::prelude::*;
 use qobee_core::{AudioSettingsApply, AudioSettingsError, AudioSettingsStore};
 use qobee_engine::{
-    AudioSettings, CrossfeedPreset, DitherProfile, PeakLimiterMode, ResamplerQuality,
-    VolumeCurve,
+    AudioSettings, CrossfeedPreset, DitherProfile, PeakLimiterMode, ResamplerQuality, VolumeCurve,
 };
 use qobee_library::Library;
 use serde_json::{json, Value};
@@ -67,7 +66,9 @@ struct MockApply {
 
 impl MockApply {
     fn new() -> Arc<Self> {
-        Arc::new(Self { last: Mutex::new(None) })
+        Arc::new(Self {
+            last: Mutex::new(None),
+        })
     }
     fn last(&self) -> Option<AudioSettings> {
         self.last.lock().clone()
@@ -115,7 +116,12 @@ fn fresh_fixture() -> Fixture {
     let mock = MockApply::new();
     let engine: Arc<dyn AudioSettingsApply> = mock.clone();
     let store = AudioSettingsStore::new(library.clone(), engine);
-    Fixture { store, mock, library, _base: base }
+    Fixture {
+        store,
+        mock,
+        library,
+        _base: base,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -129,40 +135,26 @@ fn any_valid_kv() -> impl Strategy<Value = (&'static str, Value)> {
     prop_oneof![
         any::<bool>().prop_map(|b| ("audio.rg_peak_protection", json!(b))),
         (0.0f32..=3.0f32).prop_map(|v| ("audio.rg_safety_headroom_db", json!(v))),
-        any_dither_profile().prop_map(|d| (
-            "audio.dither_profile",
-            serde_json::to_value(d).unwrap()
-        )),
-        any_peak_limiter_mode().prop_map(|d| (
-            "audio.peak_limiter_mode",
-            serde_json::to_value(d).unwrap()
-        )),
+        any_dither_profile()
+            .prop_map(|d| ("audio.dither_profile", serde_json::to_value(d).unwrap())),
+        any_peak_limiter_mode()
+            .prop_map(|d| ("audio.peak_limiter_mode", serde_json::to_value(d).unwrap())),
         (-3.0f32..=0.0f32).prop_map(|v| ("audio.peak_limiter_ceiling_dbfs", json!(v))),
         (2.0f32..=10.0f32).prop_map(|v| ("audio.peak_limiter_lookahead_ms", json!(v))),
         (20.0f32..=500.0f32).prop_map(|v| ("audio.peak_limiter_release_ms", json!(v))),
-        any_volume_curve().prop_map(|d| (
-            "audio.volume_curve",
-            serde_json::to_value(d).unwrap()
-        )),
+        any_volume_curve().prop_map(|d| ("audio.volume_curve", serde_json::to_value(d).unwrap())),
         (-80.0f32..=-30.0f32).prop_map(|v| ("audio.volume_floor_db", json!(v))),
         any::<bool>().prop_map(|b| ("audio.crossfeed_enabled", json!(b))),
-        any_crossfeed_preset().prop_map(|d| (
-            "audio.crossfeed_preset",
-            serde_json::to_value(d).unwrap()
-        )),
+        any_crossfeed_preset()
+            .prop_map(|d| ("audio.crossfeed_preset", serde_json::to_value(d).unwrap())),
         (200.0f32..=400.0f32).prop_map(|v| ("audio.crossfeed_delay_us", json!(v))),
         (500.0f32..=1500.0f32).prop_map(|v| ("audio.crossfeed_lp_cutoff_hz", json!(v))),
-        any_resampler_quality().prop_map(|d| (
-            "audio.resampler_quality",
-            serde_json::to_value(d).unwrap()
-        )),
+        any_resampler_quality()
+            .prop_map(|d| ("audio.resampler_quality", serde_json::to_value(d).unwrap())),
         any::<bool>().prop_map(|b| ("audio.convolver_enabled", json!(b))),
         prop_oneof![
             Just(("audio.convolver_ir_path", Value::Null)),
-            "[a-zA-Z0-9_/.-]{1,32}".prop_map(|p: String| (
-                "audio.convolver_ir_path",
-                json!(p)
-            )),
+            "[a-zA-Z0-9_/.-]{1,32}".prop_map(|p: String| ("audio.convolver_ir_path", json!(p))),
         ],
         (-24.0f32..=0.0f32).prop_map(|v| ("audio.convolver_gain_db", json!(v))),
         (-1.0f32..=1.0f32).prop_map(|v| ("audio.balance", json!(v))),
@@ -184,11 +176,10 @@ fn any_invalid_kv() -> impl Strategy<Value = (&'static str, Value)> {
         Just(("audio.peak_limiter_mode", json!(42))),
         Just(("audio.volume_curve", json!(true))),
         Just(("audio.crossfeed_preset", json!("nonexistent"))),
-        Just(("audio.resampler_quality", json!(3.14))),
+        Just(("audio.resampler_quality", json!(2.5_f32))),
         Just(("audio.convolver_ir_path", json!(42))),
         Just(("audio.trim_db_per_channel", json!("not an array"))),
         Just(("audio.unknown_key", json!(0))),
-
         // Out of range numerics — pick a value clearly outside the
         // declared bounds.
         prop_oneof![Just(99.0f32), Just(-1.0f32)]
@@ -207,11 +198,13 @@ fn any_invalid_kv() -> impl Strategy<Value = (&'static str, Value)> {
             .prop_map(|v| ("audio.crossfeed_lp_cutoff_hz", json!(v))),
         prop_oneof![Just(5.0f32), Just(-100.0f32)]
             .prop_map(|v| ("audio.convolver_gain_db", json!(v))),
-        prop_oneof![Just(5.0f32), Just(-5.0f32)]
-            .prop_map(|v| ("audio.balance", json!(v))),
+        prop_oneof![Just(5.0f32), Just(-5.0f32)].prop_map(|v| ("audio.balance", json!(v))),
         // Trim arrays that are too long, or contain an out-of-range entry.
         prop_oneof![
-            Just(("audio.trim_db_per_channel", json!([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))),
+            Just((
+                "audio.trim_db_per_channel",
+                json!([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            )),
             Just(("audio.trim_db_per_channel", json!([5.0]))),
             Just(("audio.trim_db_per_channel", json!([-50.0]))),
         ],
@@ -247,7 +240,10 @@ fn any_crossfeed_preset() -> impl Strategy<Value = CrossfeedPreset> {
 }
 
 fn any_resampler_quality() -> impl Strategy<Value = ResamplerQuality> {
-    prop_oneof![Just(ResamplerQuality::Standard), Just(ResamplerQuality::Best)]
+    prop_oneof![
+        Just(ResamplerQuality::Standard),
+        Just(ResamplerQuality::Best)
+    ]
 }
 
 /// JSON values approximate equality for f32-typed keys: we accept a
@@ -262,7 +258,10 @@ fn json_value_close_enough(a: &Value, b: &Value) -> bool {
         }
         (Value::Array(xs), Value::Array(ys)) => {
             xs.len() == ys.len()
-                && xs.iter().zip(ys.iter()).all(|(x, y)| json_value_close_enough(x, y))
+                && xs
+                    .iter()
+                    .zip(ys.iter())
+                    .all(|(x, y)| json_value_close_enough(x, y))
         }
         _ => a == b,
     }

@@ -6,6 +6,81 @@ follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-26
+
+A maintenance release that scrubs every lint, restores `cargo doc`
+to a clean state and tightens the CI gate. No behavioural changes
+to the audio path or the user interface — defaults, key list and
+runtime characteristics are identical to 0.4.0.
+
+### Fixed
+
+- **Clippy regression in the test suite**: `audio_settings_properties`
+  used the literal `3.14` to build an out-of-range `resampler_quality`
+  value, which clippy now rejects under `approx_constant`. Replaced
+  with `2.5_f32` so the test still exercises the rejection path
+  without tripping the lint.
+- **`cargo doc` warnings**: 16 broken intra-doc links and one bare
+  URL fixed across `qobee-engine` (`diagnostic/mod.rs`, `dsd/dop.rs`,
+  `dsp/convolver.rs`, `backend_cpal_shared.rs`) and `qobee-app`
+  (`commands.rs`, `discord.rs`, `windows_integration.rs`,
+  `cover_host.rs`). The Windows integration module-level doc was
+  rewritten to match the actual `register_integration` /
+  `unregister_integration` surface; references to functions that no
+  longer exist (`register_context_menu`, `apply_jump_list`, etc.)
+  were removed.
+- **Discord worker comment indentation** in `discord.rs` was off by
+  two columns and visually attached to the wrong variable; restored
+  the intended indentation so it documents `published` rather than
+  `active`.
+- **Vite chunking hints** at build time about
+  `@tauri-apps/api/event` and `lib/queuePopover.svelte` being both
+  statically and dynamically imported. Both imports in `App.svelte`
+  are now static so the deep-link `listen` and the queue popover
+  toggle resolve immediately at startup. Bundle size drops from
+  231.21 kB to 229.72 kB (gzip 70.20 → 69.52 kB) and there is no
+  more micro-pause when a `qobee://queue` deep link fires.
+
+### Changed
+
+- **Rust style cleanup**: ~50 clippy warnings cleared across the
+  workspace. Highlights:
+  - `field_reassign_with_default` rewritten as struct init with
+    `..Default::default()` (cleaner, less mutable state).
+  - `derivable_impls` collapsed to `#[derive(Default)]` where
+    appropriate.
+  - `manual_clamp` → `.clamp(FLOOR, 0.0)` in `volume.rs`.
+  - `manual_div_ceil` → `.div_ceil()` in `dsd/dsf.rs`.
+  - Various `needless_return`, `redundant_closure`,
+    `manual_split_once`, `repeat_n`, `manual_range_contains`
+    fixes auto-applied by `cargo clippy --fix`.
+  - Convoluted `paths.is_empty().then(|| ()).map(|_| ()).is_some()`
+    expression in the deep-link parser collapsed to a plain
+    `if/else`.
+  - Identity `bit_depth.map(|b| b)` removed in `library/scan.rs`.
+  - Targeted `#[allow(clippy::needless_range_loop)]` and
+    `#[allow(clippy::too_many_arguments)]` on hot audio paths
+    where parallel frame/channel indexing or the existing
+    argument list reads more clearly than the suggested
+    refactor.
+- **Whitespace pass**: `cargo fmt --all` applied to the entire
+  workspace. ~30 files reformatted in `crates/library` and
+  `src-tauri`, no semantic change.
+
+### CI
+
+- `.github/workflows/ci.yml` now runs `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-targets --no-deps -- -D warnings`
+  and `cargo test --workspace` in addition to the existing
+  `cargo check`. The `dtolnay/rust-toolchain@stable` step now
+  installs the `rustfmt` and `clippy` components explicitly.
+  Together these gates catch the regression that 0.4.0 shipped
+  with (the clippy error above was latent because the previous
+  CI only ran `cargo check`).
+
+[0.4.1]: https://github.com/qobee/qobee/releases/tag/v0.4.1
+[0.4.0]: https://github.com/qobee/qobee/releases/tag/v0.4.0
+
 ## [0.4.0] - 2026-05-26
 
 A polish-focused release: every shell surface gets a refresh and

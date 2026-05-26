@@ -62,7 +62,10 @@ mod tests {
         for &x in &[-10.0_f32, -2.0, -1.5, -1.0, 1.0, 1.5, 2.0, 10.0] {
             let y = soft_clip(x);
             assert!(y.is_finite(), "non-finite output for {x}: {y}");
-            assert!((-1.0..=1.0).contains(&y), "out-of-range output for {x}: {y}");
+            assert!(
+                (-1.0..=1.0).contains(&y),
+                "out-of-range output for {x}: {y}"
+            );
         }
     }
 

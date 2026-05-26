@@ -158,6 +158,7 @@ impl Equalizer {
     /// Process `samples` in place. Layout is interleaved
     /// `[L, R, L, R, ...]` for stereo. The number of channels was set
     /// at construction time and must match.
+    #[allow(clippy::needless_range_loop)]
     pub fn process_inplace(&mut self, samples: &mut [f32]) {
         if self.bypass {
             return;

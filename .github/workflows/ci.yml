@@ -19,6 +19,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -46,5 +48,14 @@ jobs:
         working-directory: ui
         run: npm run build
 
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: Cargo clippy
+        run: cargo clippy --workspace --all-targets --no-deps -- -D warnings
+
       - name: Cargo check
-        run: cargo check --workspace
+        run: cargo check --workspace --all-targets
+
+      - name: Cargo test
+        run: cargo test --workspace
