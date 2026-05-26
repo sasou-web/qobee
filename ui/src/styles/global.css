@@ -24,7 +24,9 @@
 
   --border: #2a2a30;
 
-  /* Spacing scale — 8px grid, with 4px and 12px stops for fine work. */
+  /* Spacing scale — 4px base unit. Use the named tokens everywhere
+     so the rhythm stays consistent. 4 / 8 / 12 / 16 / 24 / 32 are
+     the workhorses. */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -33,7 +35,7 @@
   --space-6: 24px;
   --space-7: 32px;
   --space-8: 40px;
-  --space-9: 44px;
+  --space-9: 48px;
 
   /* Radii — kept the legacy aliases below to avoid a sweep across files. */
   --radius-sm: 8px;
@@ -46,14 +48,14 @@
   --radius-l: 14px;
 
   /* Layout — single source of truth for shell dimensions. */
-  --titlebar-height: 48px;
-  --sidebar-width: 220px;
-  --content-padding-x: 32px;
-  --content-padding-top: 16px;
-  --content-padding-bottom: 120px;
-  --searchbar-height: 32px;
-  --player-height: 68px;
-  --window-controls-width: 144px;
+  --titlebar-height: 44px;
+  --sidebar-width: 240px;
+  --content-padding-x: 28px;
+  --content-padding-top: 20px;
+  --content-padding-bottom: 28px;
+  --searchbar-height: 30px;
+  --player-height: 76px;
+  --window-controls-width: 184px;
 
   --shadow-1: 0 2px 6px rgba(0, 0, 0, 0.35);
   --shadow-2: 0 6px 20px rgba(0, 0, 0, 0.45);
@@ -220,22 +222,30 @@ input[type="range"]:focus-visible::-moz-range-thumb {
 input[type="range"]:focus { outline: none; }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--bg-3);
-  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
   border: 2px solid transparent;
   background-clip: padding-box;
   transition: background var(--dur-base) var(--ease-out);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--fg-3);
+  background: rgba(255, 255, 255, 0.14);
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+/* Firefox — same idea, lighter thumb. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
 }
 
 /* Honor system preference. The app stays usable, just stops moving. */

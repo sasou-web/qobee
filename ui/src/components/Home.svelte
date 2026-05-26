@@ -104,18 +104,21 @@
   .home {
     display: flex;
     flex-direction: column;
-    gap: var(--space-8);
+    gap: var(--space-7);
   }
   h1 {
-    font-size: 24px;
+    font-size: 28px;
     font-weight: 700;
-    letter-spacing: -0.01em;
-    margin: 4px 0 var(--space-6);
+    letter-spacing: -0.02em;
+    margin: 0 0 var(--space-2);
+    color: var(--fg-0);
   }
   h2 {
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 600;
     margin: 0;
+    color: var(--fg-1);
+    letter-spacing: -0.005em;
   }
   .block-header {
     display: flex;
@@ -134,22 +137,21 @@
   .link {
     background: transparent;
     border: none;
-    color: var(--accent);
+    color: var(--fg-2);
     cursor: pointer;
     font-size: 12px;
-    transition: color var(--dur-fast) var(--ease-out),
-      transform var(--dur-fast) var(--ease-out);
+    font-weight: 500;
+    transition: color var(--dur-fast) var(--ease-out);
   }
   .link:hover {
-    color: var(--accent-2);
-    transform: translateX(2px);
+    color: var(--accent);
   }
 
   /* Albums grid (recently played albums). */
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: var(--space-6);
+    gap: var(--space-5) var(--space-4);
     justify-items: start;
   }
   .album-card {
@@ -158,30 +160,31 @@
     text-align: left;
     color: var(--fg-1);
     cursor: pointer;
-    padding: 0;
-    border-radius: var(--radius-lg);
-    /* Pin to cover width so long titles can ellipsis/marquee
-       inside the card instead of bleeding into neighbours. */
-    width: 160px;
-    transition: transform var(--dur-base) var(--ease-out);
+    padding: var(--space-2);
+    border-radius: var(--radius-md);
+    width: calc(160px + var(--space-2) * 2);
+    transition: background var(--dur-base) var(--ease-out);
   }
   .album-card:hover {
-    background: transparent;
+    background: rgba(255, 255, 255, 0.04);
   }
   .album-thumb {
     position: relative;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
     overflow: hidden;
-    /* Hug the cover image so the play overlay sits *on* the artwork
-       instead of floating in the empty grid cell to its right. */
     width: fit-content;
+    box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.5);
+    transition: box-shadow var(--dur-base) var(--ease-out);
+  }
+  .album-card:hover .album-thumb {
+    box-shadow: 0 12px 28px -10px rgba(0, 0, 0, 0.7);
   }
   .play-overlay {
     position: absolute;
-    right: 12px;
-    bottom: 12px;
-    width: 44px;
-    height: 44px;
+    right: 10px;
+    bottom: 10px;
+    width: 40px;
+    height: 40px;
     border-radius: 50%;
     background: var(--accent);
     color: #fff;
@@ -192,7 +195,8 @@
     transform: translateY(8px) scale(0.8);
     transition: opacity var(--dur-base) var(--ease-out),
       transform var(--dur-base) var(--ease-spring);
-    box-shadow: 0 10px 24px -6px rgba(0, 0, 0, 0.55);
+    box-shadow: 0 8px 20px -4px rgba(0, 0, 0, 0.55),
+      0 0 20px var(--accent-glow);
     pointer-events: none;
   }
   .album-card:hover .play-overlay {
@@ -201,7 +205,8 @@
   }
   .album-card :global(.t) {
     color: var(--fg-0);
-    font-weight: 500;
+    font-weight: 600;
+    font-size: 13px;
     margin-top: var(--space-3);
     transition: color var(--dur-fast) var(--ease-out);
   }
@@ -210,8 +215,8 @@
   }
   .album-card :global(.a) {
     color: var(--fg-2);
-    font-size: 12px;
-    margin-top: var(--space-1);
+    font-size: 11px;
+    margin-top: 2px;
   }
 
   /* Genre chips. */
