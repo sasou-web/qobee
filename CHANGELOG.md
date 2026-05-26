@@ -6,6 +6,26 @@ follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-26
+
+A polish-focused release: every shell surface gets a refresh and
+Qobee finally feels at home on the Windows desktop. The audio
+engine itself didn't move — defaults, key list and behaviour are
+identical to 0.3.0 — so this is a safe upgrade that brings UX and
+integration up to the quality of the audio chain.
+
+Highlights:
+
+- A cinematic fullscreen Now Playing that fills the viewport
+  without scrollbars.
+- A resizable, collapsible sidebar like Apple Music / Arc.
+- A two-tier Audio settings panel that hides the 12 expert knobs
+  behind an *Advanced* disclosure.
+- Real Windows desktop integration (system tray, single-instance,
+  audio file & folder context menus, `qobee://` protocol,
+  autostart) — every hook opt-in, every registry write scoped to
+  HKCU.
+
 ### Added
 
 - **Resizable, collapsible sidebar** with a drag handle on the
