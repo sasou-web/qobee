@@ -6,6 +6,114 @@ follows semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **Resizable, collapsible sidebar** with a drag handle on the
+  right edge. Below 140 px the layout snaps to a 64 px icon-only
+  rail; double-click the handle to toggle. Width and collapsed
+  state are persisted in `localStorage`.
+- **Cinematic fullscreen Now Playing**: blurred cover background +
+  dark veil, single vertical column with `clamp()`-based spacing
+  that adapts to viewport height, glass-pill primary controls, a
+  premium progress bar with discrete accent glow, and a lyrics
+  toggle that swaps the cover for a glass panel without leaving
+  the layout.
+- **Two-tier Audio settings**: the panel now leads with the
+  essentials (limiter on/off, crossfeed, convolver, balance,
+  bit-perfect badge) and hides the 12 expert knobs (RG headroom,
+  dither profile, limiter ceiling/look-ahead, volume curve/floor,
+  resampler quality, custom crossfeed, trim, null-test) behind a
+  collapsed *Advanced* section. The advanced toggle is persisted
+  per user.
+- **Settings page reorganised as collapsible cards** (Library,
+  Playback, Audio, Windows Integration, Appearance, Equalizer,
+  Integrations, Advanced). All closed by default so the page is no
+  longer overwhelming on first visit.
+- **Windows desktop integration** — every item opt-in from
+  `Settings → Windows Integration`, all writes scoped to `HKCU`:
+  - AppUserModelID `app.qobee.player` set on the running process.
+  - System tray icon with right-click menu (show/focus, play /
+    pause, prev / next, library, settings, quit) and left-click
+    focus.
+  - Close-to-tray + start-minimized toggles.
+  - Autostart entry under `Run\Qobee`.
+  - `qobee://` protocol handler with `play`, `enqueue`,
+    `play-next`, `play-folder`, `enqueue-folder`,
+    `import-folder`, `scan-folder`, `library`, `settings`,
+    `home`, `queue` actions.
+  - Audio file context menu: `Play in Qobee`, `Add to Qobee
+    queue`, `Play next`, `Import to library`. Soft handler via
+    `OpenWithProgids` on the 10 supported extensions; never
+    replaces the default audio app.
+  - Folder context menu: `Play folder`, `Add folder to queue`,
+    `Scan folder`, `Import folder` on `Directory`,
+    `Directory\Background`, `Drive`.
+- **Single-instance + argument forwarding** via
+  `tauri-plugin-single-instance`: a second `qobee.exe` invocation
+  (Explorer file double-click, jump list, deep link, CLI) sends
+  its argv to the running window and exits.
+- **CLI argument parser** (`--play`, `--enqueue`, `--play-next`,
+  `--play-folder`, `--enqueue-folder`, `--scan-folder`,
+  `--import-folder`, `--open-library`, `--open-settings`,
+  `--minimized`, plus bare paths). Same parser handles deep links.
+- **NSIS installer hook** (`src-tauri/installer/qobee.nsh`) that
+  registers the protocol + AUMID on install and cleans every
+  registry key on uninstall.
+- **Library helpers** `Library::find_track_id_by_path` and
+  `Library::tracks_in_folder` so the integration layer can resolve
+  paths sent by Explorer / deep links without leaking SQL into the
+  Tauri layer.
+- New Tauri commands `get_windows_integration_status`,
+  `set_windows_integration`, `dispatch_app_command`.
+
+### Changed
+
+- **Player bar refresh**: tighter `auto / minmax(220px, 1.4fr) /
+  auto` grid that stays usable when the sidebar is wide, badge
+  qualité in a neutral pill instead of accent-soft, volume slider
+  without a permanent percentage label (visible in the tooltip).
+  The badge truncates with ellipsis under heavy compression, and
+  the bar uses `min-width: 0; overflow: hidden` so nothing
+  overflows the right edge of the window.
+- **Title bar in two columns** (`1fr / auto`): the searchbar takes
+  the available space, the settings and window controls sit on
+  the right with consistent 46 px hitboxes; close button uses the
+  Windows-standard red `#c42b1c` hover.
+- **Sidebar polish**: 36 px rows (was 40), 13 px / 500 typography,
+  active state shifts from a heavy `accent-soft` fill to a 2 px
+  accent indicator with a soft glow, sidebar background shares
+  `--bg-0` with the rest of the shell so it no longer detaches
+  from the title bar.
+- **Card / album-grid polish**: 8 px internal padding with a
+  `rgba(255,255,255,0.04)` hover surface, drop shadow that grows
+  on hover, play overlay with `accent-glow`. Typography hierarchy
+  reset (28 px page titles, 14 px section headers, 13 px album
+  titles, 11 px metadata).
+- **Scrollbar** redrawn as a 8 px discreet pill
+  (`rgba(255,255,255,0.06)` → `0.14` on hover) on both webkit and
+  Firefox.
+- **`BitPerfectHealth` panel**: the alarming "Chaîne modifiée"
+  badge becomes "DSP actif" with a friendly one-line explanation;
+  the engine's bullet-point messages are hidden behind an
+  *"Afficher les détails techniques"* disclosure.
+- **Removed mini-player button** from the player bar (was a
+  source of clutter; the mini-player is still reachable through
+  the existing `toggle_mini_player` Tauri command).
+
+### Fixed
+
+- The fullscreen Now Playing view no longer scrolls or shows a
+  stray scrollbar — `100dvw / 100dvh` + `overflow: hidden`, with
+  every block sized via `clamp()` so the layout fits any viewport
+  down to ~600×600.
+- Tauri `beforeDevCommand` resolved `../ui` from the workspace
+  cargo root, which pointed to a non-existent `Apps/ui` folder
+  and broke `cargo tauri dev`. Path is now `ui` (relative to the
+  workspace cargo root).
+- Search bar focus state no longer flashes the accent ring or
+  resizes the icon — the rendering stays neutral while typing.
+
+
 ## [0.3.0] - 2026-05-26
 
 A fidelity-focused expansion of the audio chain: every stage from

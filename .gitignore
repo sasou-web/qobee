@@ -17,6 +17,7 @@ ui/.svelte-kit/
 # IDE / OS
 .vscode/
 .idea/
+.kiro/
 *.swp
 .DS_Store
 Thumbs.db
