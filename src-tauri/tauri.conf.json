@@ -3,8 +3,14 @@
   "version": "0.4.0",
   "identifier": "app.qobee.player",
   "build": {
-    "beforeDevCommand": "npm run dev --prefix ui",
-    "beforeBuildCommand": "npm run build --prefix ui",
+    "beforeDevCommand": {
+      "cmd": "npm run dev",
+      "cwd": "../ui"
+    },
+    "beforeBuildCommand": {
+      "cmd": "npm run build",
+      "cwd": "../ui"
+    },
     "devUrl": "http://localhost:1420",
     "frontendDist": "../ui/dist"
   },
