@@ -244,6 +244,26 @@ impl Library {
         db.get_playlist(playlist_id)
     }
 
+    /// Find a track id by its absolute path. Used by Windows
+    /// integration to resolve files passed on the command line or
+    /// through `qobee://play?path=...` links.
+    ///
+    /// Returns `Ok(None)` if the path is not in the library — the
+    /// caller is expected to scan the parent directory first if
+    /// they want a one-shot import.
+    pub fn find_track_id_by_path(&self, path: &str) -> LibraryResult<Option<i64>> {
+        let db = self.inner.db.lock();
+        db.find_track_id_by_path(path)
+    }
+
+    /// List every track whose path starts with `folder` (after path
+    /// normalisation). Used by the "Play folder in Qobee" /
+    /// "Add folder to queue" right-click verbs.
+    pub fn tracks_in_folder(&self, folder: &str) -> LibraryResult<Vec<Track>> {
+        let db = self.inner.db.lock();
+        db.tracks_in_folder(folder)
+    }
+
     // ---- Settings ----
 
     pub fn get_setting(&self, key: &str) -> LibraryResult<Option<String>> {

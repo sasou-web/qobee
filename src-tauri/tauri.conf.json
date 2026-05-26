@@ -3,8 +3,8 @@
   "version": "0.3.0",
   "identifier": "app.qobee.player",
   "build": {
-    "beforeDevCommand": "npm run dev --prefix ../ui",
-    "beforeBuildCommand": "npm run build --prefix ../ui",
+    "beforeDevCommand": "npm run dev --prefix ui",
+    "beforeBuildCommand": "npm run build --prefix ui",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../ui/dist"
   },
@@ -51,7 +51,8 @@
       "nsis": {
         "installMode": "currentUser",
         "displayLanguageSelector": false,
-        "languages": ["English"]
+        "languages": ["English"],
+        "installerHooks": "installer/qobee.nsh"
       }
     }
   }

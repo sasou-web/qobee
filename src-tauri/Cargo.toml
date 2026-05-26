@@ -16,9 +16,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { workspace = true }
 
 [dependencies]
-tauri = { workspace = true }
+tauri = { workspace = true, features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2.2"
 tauri-plugin-window-state = "2.4"
+tauri-plugin-single-instance = { version = "2.2", features = ["deep-link"] }
+tauri-plugin-deep-link = "2.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -43,3 +45,15 @@ lofty = { workspace = true }
 # `IAudioClient::GetMixFormat()` directly without spinning up a full
 # WASAPI exclusive session. Same pinned version as `qobee-engine`.
 wasapi = "0.23"
+# Used by the Windows integration module for AppUserModelID,
+# autostart registry, and the deep-link / context menu plumbing.
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_UI_WindowsAndMessaging",
+] }
+winreg = "0.55"

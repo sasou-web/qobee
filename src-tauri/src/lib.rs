@@ -6,22 +6,32 @@
 //!   files from disk to the webview (no base64 over IPC, ever);
 //! - the command surface in [`crate::commands`];
 //! - a background pump that re-publishes [`qobee_core::PlayerEvent`] as
-//!   Tauri events the frontend can listen to.
+//!   Tauri events the frontend can listen to;
+//! - on Windows, the desktop integration: AUMID, tray, single-
+//!   instance, deep-link / `qobee://` protocol, file/folder context
+//!   menu registration, autostart entry. See
+//!   [`crate::windows_integration`] and [`crate::tray`].
 
 pub mod commands;
+pub mod commands_integration;
 pub mod cover_host;
 pub mod discord;
 pub mod logging;
 pub mod lyrics;
 pub mod state;
+pub mod tray;
+pub mod windows_integration;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 
 use tauri::http::{Request, Response};
-use tauri::{Emitter, Manager, UriSchemeContext};
+use tauri::{Emitter, Manager, UriSchemeContext, WindowEvent};
 
 use crate::state::AppState;
+use crate::tray::TrayState;
+use crate::windows_integration::{parse_args, AppCommand};
 
 /// Run the Tauri application. Called from `main.rs`.
 pub fn run() {
@@ -31,6 +41,15 @@ pub fn run() {
     // event loop.
     let _log_guard = logging::init();
 
+    // Set the Windows AppUserModelID before any windows or
+    // notifications are created so the taskbar groups everything
+    // under a single icon.
+    if let Err(e) =
+        windows_integration::set_app_user_model_id(windows_integration::APP_USER_MODEL_ID)
+    {
+        tracing::warn!(target: "qobee::win", error = %e, "could not set AUMID");
+    }
+
     let app_state = match AppState::initialize() {
         Ok(s) => s,
         Err(e) => {
@@ -39,10 +58,31 @@ pub fn run() {
         }
     };
 
-    tauri::Builder::default()
+    let initial_args: Vec<String> = std::env::args().collect();
+    let start_minimized = windows_integration::wants_start_minimized(&initial_args);
+    let initial_commands = parse_args(&initial_args);
+    let tray_state: Arc<TrayState<tauri::Wry>> = Arc::new(TrayState::default());
+    let tray_state_for_setup = tray_state.clone();
+
+    let mut builder = tauri::Builder::default();
+
+    // Single-instance: when a second `qobee.exe …` invocation
+    // happens (Explorer file double-click, jump list, deep link,
+    // etc.) the args are forwarded here and the existing window is
+    // brought forward.
+    builder = builder.plugin(tauri_plugin_single_instance::init(
+        |app, argv: Vec<String>, _cwd| {
+            tracing::info!(target: "qobee::win", argv = ?argv, "secondary instance forwarded");
+            forward_args_to_main(app, argv);
+        },
+    ));
+
+    builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(app_state.clone())
+        .manage(tray_state.clone())
         .register_uri_scheme_protocol("qobee-cover", move |ctx, request| {
             cover_protocol(ctx, request)
         })
@@ -143,6 +183,9 @@ pub fn run() {
             commands::discord_update_track,
             commands::discord_set_paused,
             commands::discord_clear_presence,
+            commands_integration::get_windows_integration_status,
+            commands_integration::set_windows_integration,
+            commands_integration::dispatch_app_command,
         ])
         .setup(move |app| {
             // Spawn a thread that pumps player events into Tauri events.
@@ -168,10 +211,118 @@ pub fn run() {
                     }
                 })
                 .expect("failed to spawn event pump thread");
+
+            // Tray: created if the user enabled it. Default true so
+            // the affordance shows up at first run.
+            let show_tray = app
+                .state::<AppState>()
+                .library()
+                .get_setting("windows.show_tray_icon")
+                .ok()
+                .flatten()
+                .map(|v| v != "false")
+                .unwrap_or(true);
+            if let Err(e) = tray::ensure_tray(app.handle(), tray_state_for_setup.clone(), show_tray)
+            {
+                tracing::warn!(target: "qobee::tray", error = %e, "could not build tray");
+            }
+
+            // Listen for `qobee://` deep links (registered protocol
+            // forwarded by the OS when the app is already running).
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let app_handle = app.handle().clone();
+                let _ = app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        if let Some(cmd) = windows_integration::parse_deep_link(url.as_str()) {
+                            run_app_command(&app_handle, cmd);
+                        }
+                    }
+                });
+            }
+
+            // Apply the start-minimized flag — hide the main window
+            // on first show if `--minimized` was on the CLI or the
+            // user has the setting enabled.
+            let want_min = start_minimized
+                || app
+                    .state::<AppState>()
+                    .library()
+                    .get_setting("windows.start_minimized")
+                    .ok()
+                    .flatten()
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
+            if want_min {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
+
+            // Hook the main window close to "minimize to tray"
+            // when that setting is on.
+            if let Some(window) = app.get_webview_window("main") {
+                let app_handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        let min_to_tray = app_handle
+                            .state::<AppState>()
+                            .library()
+                            .get_setting("windows.minimize_to_tray_on_close")
+                            .ok()
+                            .flatten()
+                            .map(|v| v == "true")
+                            .unwrap_or(false);
+                        if min_to_tray {
+                            if let Some(w) = app_handle.get_webview_window("main") {
+                                let _ = w.hide();
+                            }
+                            api.prevent_close();
+                        }
+                    }
+                });
+            }
+
+            // Run any commands the user passed on the original
+            // command line (file double-click, jump list, etc.).
+            for cmd in initial_commands.clone() {
+                run_app_command(app.handle(), cmd);
+            }
+
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Qobee");
+        .build(tauri::generate_context!())
+        .expect("error while building Qobee")
+        .run(|_app, event| {
+            // Default exit behaviour is fine; we don't need to
+            // intercept anything here. The placeholder closure
+            // future-proofs us against extra hooks (e.g. tray
+            // tooltip refresh on track changes).
+            let _ = event;
+        });
+}
+
+/// Forward a secondary-instance argv to the main app: parse, focus
+/// the window, and run each [`AppCommand`].
+fn forward_args_to_main(app: &tauri::AppHandle, argv: Vec<String>) {
+    let cmds = parse_args(&argv);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    for cmd in cmds {
+        run_app_command(app, cmd);
+    }
+}
+
+/// Dispatch an [`AppCommand`] using the integration command pipeline.
+fn run_app_command(app: &tauri::AppHandle, cmd: AppCommand) {
+    let state = app.state::<AppState>();
+    if let Err(e) = commands_integration::dispatch(app, &state, cmd) {
+        tracing::warn!(target: "qobee::deeplink", error = %e, "AppCommand dispatch failed");
+    }
 }
 
 /// `qobee-cover://<cache_key>` -> file from the cover cache directory.

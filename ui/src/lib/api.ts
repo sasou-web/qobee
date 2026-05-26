@@ -828,3 +828,52 @@ export async function getArtistDetail(name: string): Promise<ArtistDetail | null
 export async function albumSizeBytes(albumId: number): Promise<number> {
   return invoke<number>("album_size_bytes", { albumId });
 }
+
+// ---------------------------------------------------------------------------
+// Windows integration (taskbar / tray / context menus / autostart)
+// ---------------------------------------------------------------------------
+
+/**
+ * Status reported by `commands_integration::get_windows_integration_status`.
+ *
+ * `platform_supported` is `false` on macOS / Linux: every toggle in
+ * the panel is then disabled and persisted as no-ops.
+ */
+export interface WindowsIntegrationStatus {
+  platform_supported: boolean;
+  autostart: boolean;
+  start_minimized: boolean;
+  minimize_to_tray_on_close: boolean;
+  show_tray_icon: boolean;
+  audio_file_context_menu: boolean;
+  folder_context_menu: boolean;
+  protocol_handler: boolean;
+  jump_list: boolean;
+  app_user_model_id: string;
+}
+
+/** Partial update fed to `set_windows_integration`. */
+export interface WindowsIntegrationToggle {
+  autostart?: boolean;
+  start_minimized?: boolean;
+  minimize_to_tray_on_close?: boolean;
+  show_tray_icon?: boolean;
+  audio_file_context_menu?: boolean;
+  folder_context_menu?: boolean;
+  protocol_handler?: boolean;
+  jump_list?: boolean;
+}
+
+export async function getWindowsIntegrationStatus(): Promise<WindowsIntegrationStatus> {
+  return await invoke<WindowsIntegrationStatus>(
+    "get_windows_integration_status",
+  );
+}
+
+export async function setWindowsIntegration(
+  update: WindowsIntegrationToggle,
+): Promise<WindowsIntegrationStatus> {
+  return await invoke<WindowsIntegrationStatus>("set_windows_integration", {
+    update,
+  });
+}
