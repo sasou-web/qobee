@@ -297,14 +297,17 @@ impl Shared {
     /// Direct setter used by the WASAPI backend (which can't reach
     /// the private field through the engine API on this side of the
     /// crate). The `micro` parameter is `(linear * 1_000_000) as u32`.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) fn set_pre_gain_micro(&self, micro: u32) {
         self.pre_gain_micro.store(micro, Ordering::Relaxed);
     }
 
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) fn set_volume_public(&self, v: f32) {
         self.set_volume(v);
     }
 
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) fn volume_public(&self) -> f32 {
         self.volume()
     }
@@ -493,6 +496,7 @@ impl Shared {
     /// Mark the engine as actively rendering DSD. Read by the
     /// orchestrator (`Player`) to gate volume / EQ / pre-gain
     /// commands while DSD is playing.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) fn set_dsd_active(&self, active: bool, label: Option<&str>) {
         self.is_dsd_active.store(active, Ordering::Release);
         *self.dsd_rate_label.lock() = label.map(|s| s.to_string());
