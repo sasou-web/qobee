@@ -379,6 +379,7 @@
     grid-template-columns: var(--sidebar-width) 1fr;
     grid-template-rows: var(--titlebar-height) 1fr auto;
     height: 100%;
+    background: var(--bg-shell);
     transition: var(
       --sidebar-resize-transition,
       grid-template-columns 220ms cubic-bezier(0.32, 0.72, 0, 1)
@@ -389,6 +390,7 @@
     grid-row: 2;
     overflow-y: auto;
     overflow-x: hidden;
+    background: var(--bg-shell);
     padding: var(--content-padding-top) var(--content-padding-x)
       var(--content-padding-bottom);
     scroll-behavior: auto;

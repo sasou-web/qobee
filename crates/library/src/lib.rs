@@ -16,8 +16,10 @@ pub mod scan;
 pub use db::Database;
 pub use model::{
     Album, AlbumDetail, AlbumKind, AlbumWithKind, Artist, ArtistDetail, DsdRate, Genre,
-    LibraryRoot, LibraryStats, Playlist, PlaylistDetail, ScanProgress, SearchResults, Track,
+    LibraryRoot, LibrarySource, LibraryStats, Playlist, PlaylistDetail, ScanProgress,
+    SearchResults, SourceKind, Track,
 };
+pub use scan::index_remote_blob;
 pub use scan::{scan_folder, ScanOptions, ScanReport};
 
 use std::path::{Path, PathBuf};
@@ -301,6 +303,73 @@ impl Library {
     pub fn list_library_roots(&self) -> LibraryResult<Vec<LibraryRoot>> {
         let db = self.inner.db.lock();
         db.list_library_roots()
+    }
+
+    // ---- Library sources (PR1: scaffolding) ----
+
+    /// List sources stored in the dedicated `library_sources` table.
+    /// Local folders are *not* projected here in PR1; the existing
+    /// `list_library_roots` surface is left untouched. Once the
+    /// Drive backend lands in PR3 we'll either unify both surfaces
+    /// or migrate `library_roots` rows into this table — TBD.
+    pub fn list_library_sources(&self) -> LibraryResult<Vec<LibrarySource>> {
+        let db = self.inner.db.lock();
+        db.list_library_sources()
+    }
+
+    pub fn add_library_source(
+        &self,
+        kind: SourceKind,
+        name: &str,
+        config_json: &str,
+    ) -> LibraryResult<i64> {
+        let mut db = self.inner.db.lock();
+        db.add_library_source(kind, name, config_json, now_secs())
+    }
+
+    pub fn remove_library_source(&self, source_id: i64) -> LibraryResult<()> {
+        let mut db = self.inner.db.lock();
+        db.remove_library_source(source_id)
+    }
+
+    pub fn set_library_source_enabled(&self, source_id: i64, enabled: bool) -> LibraryResult<()> {
+        let mut db = self.inner.db.lock();
+        db.set_library_source_enabled(source_id, enabled)
+    }
+
+    /// Insert or update a track stored remotely. Mirrors
+    /// [`Self::scan_folder`]'s upsert path but lets the caller (the
+    /// Drive indexer) supply the synthetic path + parent source.
+    pub fn upsert_remote_track(
+        &self,
+        track: &Track,
+        source_id: i64,
+        mtime: i64,
+    ) -> LibraryResult<i64> {
+        let mut db = self.inner.db.lock();
+        db.upsert_remote_track(track, source_id, mtime)
+    }
+
+    pub fn delete_tracks_for_source(&self, source_id: i64) -> LibraryResult<usize> {
+        let mut db = self.inner.db.lock();
+        db.delete_tracks_for_source(source_id)
+    }
+
+    /// Drive file ids that are currently favorited for `source_id`.
+    pub fn favorite_drive_file_ids(&self, source_id: i64) -> LibraryResult<Vec<String>> {
+        let db = self.inner.db.lock();
+        db.favorite_drive_file_ids(source_id)
+    }
+
+    /// Replace the favorites for `source_id` with the given list
+    /// of Drive file ids.
+    pub fn set_drive_favorites(
+        &self,
+        source_id: i64,
+        drive_file_ids: &[String],
+    ) -> LibraryResult<usize> {
+        let mut db = self.inner.db.lock();
+        db.set_drive_favorites(source_id, drive_file_ids, now_secs())
     }
 
     // ---- Favorites ----

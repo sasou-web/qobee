@@ -1,0 +1,52 @@
+[package]
+name = "qobee-drive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Google Drive backend for Qobee: OAuth Desktop flow, file listing, byte-range streaming."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+
+# Symphonia is needed for the `MediaSource` trait we implement on
+# top of HTTP byte-range reads.
+symphonia = { workspace = true }
+
+# Sync HTTP — Drive listings and small range reads run on a worker
+# thread, not in async, to keep the existing `Library` API
+# blocking-friendly. `reqwest::blocking` is already pulled in by
+# `qobee-app` for cover uploads, so we don't add a new transitive.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+
+# Tokens have to live in the OS keychain (Keychain Services on
+# macOS, Credential Manager on Windows, Secret Service on Linux).
+# `keyring` papers over the three; the `apple-native` /
+# `windows-native` features keep us off `dbus`/etc. we don't need.
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+# PKCE: SHA-256 of the verifier, base64-url-no-pad of the challenge.
+sha2 = "0.10"
+base64 = "0.22"
+
+# Random verifier + nonce.
+rand = "0.9"
+
+# Open the user's browser for the consent screen.
+webbrowser = "1.0"
+
+# url parsing for the redirect callback.
+url = "2.5"
+
+# Time helpers for token expiry.
+time = { version = "0.3", features = ["serde", "parsing", "formatting"] }
+
+[dev-dependencies]
+tempfile = "3"

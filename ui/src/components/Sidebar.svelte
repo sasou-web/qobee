@@ -275,8 +275,11 @@
   aside {
     display: flex;
     flex-direction: column;
-    background: var(--bg-0);
-    border-right: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+    background: var(--bg-shell);
+    /* Hairline divider between the sidebar and the content area.
+       Kept very low alpha so the shell still reads as unified, but
+       the eye can pick out the boundary without effort. */
+    border-right: 1px solid rgba(255, 255, 255, 0.05);
     padding: var(--space-2) var(--space-3) var(--space-3);
     gap: 2px;
     grid-column: 1;

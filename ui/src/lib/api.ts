@@ -106,6 +106,21 @@ export interface LibraryRoot {
   added_at: number;
 }
 
+/** Kind of a remote library source. PR1 only ships the type and
+ *  the persistence layer; backends arrive in PR2/PR3. */
+export type SourceKind = "local" | "google_drive";
+
+export interface LibrarySource {
+  id: number;
+  kind: SourceKind;
+  name: string;
+  /** Backend-specific JSON-encoded configuration. Always
+   *  `"{}"` for local sources today. */
+  config: string;
+  enabled: boolean;
+  added_at: number;
+}
+
 export interface LibraryStats {
   track_count: number;
   album_count: number;
@@ -727,6 +742,143 @@ export async function addLibraryRoot(path: string): Promise<LibraryRoot> {
 
 export async function removeLibraryRoot(rootId: number): Promise<void> {
   await invoke("remove_library_root", { rootId });
+}
+
+// ---------------------------------------------------------------------------
+// Library sources (PR1 scaffolding for upcoming Google Drive backend)
+// ---------------------------------------------------------------------------
+
+export async function listLibrarySources(): Promise<LibrarySource[]> {
+  return invoke<LibrarySource[]>("list_library_sources");
+}
+
+export async function addLibrarySource(
+  kind: SourceKind,
+  name: string,
+  configJson: string,
+): Promise<number> {
+  return invoke<number>("add_library_source", { kind, name, configJson });
+}
+
+export async function removeLibrarySource(sourceId: number): Promise<void> {
+  await invoke("remove_library_source", { sourceId });
+}
+
+export async function setLibrarySourceEnabled(
+  sourceId: number,
+  enabled: boolean,
+): Promise<void> {
+  await invoke("set_library_source_enabled", { sourceId, enabled });
+}
+
+// ---------------------------------------------------------------------------
+// Google Drive backend (PR2)
+// ---------------------------------------------------------------------------
+
+export interface OAuthStartResult {
+  session_id: string;
+  auth_url: string;
+}
+
+export interface OAuthFinishResult {
+  source_id: number;
+  email: string | null;
+  display_name: string | null;
+}
+
+export interface DriveStatus {
+  source_id: number;
+  connected: boolean;
+  email: string | null;
+  display_name: string | null;
+  message: string | null;
+}
+
+export interface DriveListItem {
+  id: string;
+  name: string;
+  mime_type: string;
+  is_folder: boolean;
+}
+
+/** Start the OAuth desktop flow. Opens the browser at the consent
+ *  screen and binds a localhost listener for the redirect. */
+export async function driveOAuthStart(
+  clientId: string,
+  clientSecret: string,
+): Promise<OAuthStartResult> {
+  return invoke<OAuthStartResult>("drive_oauth_start", {
+    clientId,
+    clientSecret,
+  });
+}
+
+/** Wait for the user to finish the consent screen, then exchange
+ *  the code for tokens and persist them in the OS keychain. The
+ *  promise resolves once the source row is created in the DB. */
+export async function driveOAuthWait(
+  sessionId: string,
+  name: string,
+): Promise<OAuthFinishResult> {
+  return invoke<OAuthFinishResult>("drive_oauth_wait", { sessionId, name });
+}
+
+export async function driveOAuthCancel(sessionId: string): Promise<void> {
+  await invoke("drive_oauth_cancel", { sessionId });
+}
+
+export async function driveStatus(sourceId: number): Promise<DriveStatus> {
+  return invoke<DriveStatus>("drive_status", { sourceId });
+}
+
+export async function driveDisconnect(sourceId: number): Promise<void> {
+  await invoke("drive_disconnect", { sourceId });
+}
+
+export async function driveListFolder(
+  sourceId: number,
+  folderId: string,
+): Promise<DriveListItem[]> {
+  return invoke<DriveListItem[]>("drive_list_folder", { sourceId, folderId });
+}
+
+export async function driveSetFolder(
+  sourceId: number,
+  folderId: string,
+  folderName: string,
+): Promise<void> {
+  await invoke("drive_set_folder", { sourceId, folderId, folderName });
+}
+
+export interface DriveIndexResult {
+  files_visited: number;
+  files_indexed: number;
+  errors: string[];
+}
+
+export async function driveIndex(sourceId: number): Promise<DriveIndexResult> {
+  return invoke<DriveIndexResult>("drive_index", { sourceId });
+}
+
+export interface DriveSyncResult {
+  pulled: number;
+  pushed: number;
+  source_id: number;
+}
+
+/** Push local favorites for `sourceId` to Drive. */
+export async function driveSyncPush(sourceId: number): Promise<DriveSyncResult> {
+  return invoke<DriveSyncResult>("drive_sync_push", { sourceId });
+}
+
+/** Replace local favorites for `sourceId` with whatever Drive holds. */
+export async function driveSyncPull(sourceId: number): Promise<DriveSyncResult> {
+  return invoke<DriveSyncResult>("drive_sync_pull", { sourceId });
+}
+
+/** Two-way sync: pull then push. Local wins on conflicts. */
+export async function driveSync(sourceId: number): Promise<DriveSyncResult> {
+  return invoke<DriveSyncResult>("drive_sync", { sourceId });
 }
 
 export async function scanAllRoots(): Promise<ScanResult> {

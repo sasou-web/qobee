@@ -8,6 +8,11 @@ target/
 src-tauri/target/
 src-tauri/gen/schemas/
 
+# Local dev override that disables the beforeDevCommand hook;
+# only meaningful on the maintainer's box where `npm --prefix ../ui`
+# resolves wrong because of a parent-folder name shadowing.
+src-tauri/tauri.conf.dev-override.json
+
 # Node / Vite
 node_modules/
 ui/dist/

@@ -233,23 +233,26 @@
 </script>
 
 <footer class="bar">
-  <!-- Hairline progress strip pinned to the very top of the bar, the
-       way most modern desktop players (Spotify on web, Apple Music
-       Beta) show the seek line. The native range input sits flush
-       against this row — its thumb fades in on hover. The gradient
-       fill uses --accent so the dynamic accent feature tints the
-       seek line. -->
-  <input
-    class="seek"
-    type="range"
-    min="0"
-    max="100"
-    step="0.1"
-    value={progressPct}
-    oninput={handleSeek}
-    style:--range-fill={`${progressPct}%`}
-    aria-label="Seek"
-  />
+  <!-- Top progress strip: a thin seek bar with the elapsed time on
+       its left and the remaining time on its right. Styled to feel
+       like a single horizontal unit (no full-width bleed). -->
+  <div class="seek-row">
+    <span class="seek-time tabular">{formatDuration(app.player.position_seconds)}</span>
+    <div class="seek-track">
+      <input
+        class="seek"
+        type="range"
+        min="0"
+        max="100"
+        step="0.1"
+        value={progressPct}
+        oninput={handleSeek}
+        style:--range-fill={`${progressPct}%`}
+        aria-label="Seek"
+      />
+    </div>
+    <span class="seek-time tabular">−{formatDuration(remainingSeconds)}</span>
+  </div>
 
   <div class="grid">
     <!-- Left: transport + secondary actions. -->
@@ -290,8 +293,6 @@
       >
         <Icon name={repeatMode === "track" ? "repeat-one" : "repeat"} size={15} />
       </button>
-
-      <span class="time tabular">{formatDuration(app.player.position_seconds)}</span>
     </div>
 
     <!-- Center: now-playing card. The whole card opens the
@@ -371,10 +372,8 @@
       </button>
     </div>
 
-    <!-- Right: format badges, queue, volume, remaining time. -->
+    <!-- Right: format badges, queue, volume. -->
     <div class="right">
-      <span class="time tabular remaining">−{formatDuration(remainingSeconds)}</span>
-
       <span class="badge quality" title={`${formatOutputMode(app.player.output_mode)} · ${formatQuality(app.player.sample_rate, app.player.bit_depth)}`}>
         {formatQuality(app.player.sample_rate, app.player.bit_depth)}
       </span>
@@ -413,61 +412,85 @@
     grid-column: 2 / -1;
     grid-row: 3;
     position: relative;
-    height: var(--player-height);
-    background: var(--bg-1);
-    border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
-    /* Containment: the bar is allowed to shrink with the content
-       column so its grid never overflows past the right edge. */
+    /* The bar now stacks: a seek row on top, then the controls grid.
+       Height adapts to content; --player-height keeps a comfortable
+       floor and is bumped to account for the new strip. */
+    height: auto;
+    min-height: var(--player-height);
+    background: var(--bg-shell);
+    border-top: none;
+    display: flex;
+    flex-direction: column;
     min-width: 0;
     overflow: hidden;
   }
 
-  /* Hairline seek input pinned to the top edge. Stays a thin 2 px
-     line at rest, grows to 4 px on hover. The thumb only appears
-     when the bar is hovered, keeping the rendering clean and
-     unambiguous (no floating handle in the middle of the track). */
-  .seek {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
+  /* Seek row — sits at the very top of the player bar but with
+     comfortable horizontal padding and the elapsed/remaining
+     timestamps flanking the track. */
+  .seek-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: 6px 18px 0;
     width: 100%;
-    height: 12px;
-    margin: -6px 0 0;
+    box-sizing: border-box;
+  }
+  .seek-time {
+    color: var(--fg-2);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.04em;
+    flex: 0 0 auto;
+    min-width: 36px;
+    text-align: center;
+  }
+  .seek-track {
+    flex: 1 1 auto;
+    position: relative;
+    height: 14px;
+    display: flex;
+    align-items: center;
+  }
+  .seek {
+    width: 100%;
+    height: 14px;
+    margin: 0;
     padding: 0;
     background: transparent;
     cursor: pointer;
     --range-fill: 0%;
-    z-index: 2;
   }
   .seek::-webkit-slider-runnable-track {
-    height: 2px;
-    border-radius: 0;
+    height: 3px;
+    border-radius: 999px;
     background: linear-gradient(
       to right,
       var(--accent) 0%,
       var(--accent) var(--range-fill),
-      rgba(255, 255, 255, 0.08) var(--range-fill),
-      rgba(255, 255, 255, 0.08) 100%
+      rgba(255, 255, 255, 0.12) var(--range-fill),
+      rgba(255, 255, 255, 0.12) 100%
     );
     transition: height var(--dur-fast) var(--ease-out);
   }
-  .bar:hover .seek::-webkit-slider-runnable-track {
-    height: 4px;
+  .seek-row:hover .seek::-webkit-slider-runnable-track {
+    height: 5px;
   }
   .seek::-moz-range-track {
-    height: 2px;
-    background: rgba(255, 255, 255, 0.08);
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
   }
   .seek::-moz-range-progress {
-    height: 2px;
+    height: 3px;
+    border-radius: 999px;
     background: var(--accent);
   }
   .seek::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 10px;
-    height: 10px;
+    width: 11px;
+    height: 11px;
     margin-top: -4px;
     border-radius: 50%;
     background: var(--fg-0);
@@ -477,13 +500,14 @@
     transition: opacity var(--dur-fast) var(--ease-out),
       transform var(--dur-base) var(--ease-spring);
   }
-  .bar:hover .seek::-webkit-slider-thumb {
+  .seek-row:hover .seek::-webkit-slider-thumb {
     opacity: 1;
     transform: scale(1);
   }
 
   .grid {
-    height: 100%;
+    flex: 1 1 auto;
+    min-height: 64px;
     display: grid;
     /* Auto columns size from content with no hard floor; only the
        center column claims a comfortable minimum. Each zone has
@@ -571,19 +595,8 @@
     align-items: center;
     gap: 2px;
   }
-  .time {
-    color: var(--fg-3);
-    font-size: 11px;
-    transition: color var(--dur-fast) var(--ease-out);
-  }
   .tabular {
     font-variant-numeric: tabular-nums;
-  }
-  .left .time {
-    margin-left: var(--space-3);
-  }
-  .bar:hover .time {
-    color: var(--fg-2);
   }
 
   /* --- center zone --- */
@@ -766,9 +779,6 @@
     gap: var(--space-3);
     justify-content: flex-end;
     min-width: 0;
-  }
-  .right .remaining {
-    margin-right: var(--space-1);
   }
   .badge {
     font-size: 10px;

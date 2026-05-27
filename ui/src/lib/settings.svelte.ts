@@ -9,9 +9,20 @@
 import { getSetting, setSetting } from "./api";
 
 export type Theme = "system" | "dark" | "light";
+export type BgTheme = "dark-neutral" | "black" | "gray" | "indigo";
+
+export const BG_THEMES: { id: BgTheme; label: string; sample: string }[] = [
+  { id: "dark-neutral", label: "Dark neutral", sample: "#0e0e10" },
+  { id: "black", label: "Deep black", sample: "#050507" },
+  { id: "gray", label: "Soft gray", sample: "#1a1a1d" },
+  { id: "indigo", label: "Indigo tint", sample: "#0e1018" },
+];
 
 export interface SettingsValues {
   theme: Theme;
+  /** Background palette for the whole shell. Picks `--bg-shell` and
+   *  the related `--bg-0/1/2/3` family. */
+  bgTheme: BgTheme;
   accent: string;
   /** When true, the accent CSS variable follows the dominant color of
    *  the currently playing cover. Falls back to `accent` otherwise. */
@@ -37,6 +48,7 @@ export interface SettingsValues {
 
 const DEFAULTS: SettingsValues = {
   theme: "system",
+  bgTheme: "dark-neutral",
   accent: "#7c5cff",
   accentFollowsCover: true,
   defaultVolume: 1.0,
@@ -51,6 +63,7 @@ const DEFAULTS: SettingsValues = {
 
 const KEYS = {
   theme: "ui.theme",
+  bgTheme: "ui.bg_theme",
   accent: "ui.accent",
   accentFollowsCover: "ui.accent_follows_cover",
   defaultVolume: "playback.default_volume",
@@ -69,9 +82,10 @@ class SettingsStore {
 
   async load(): Promise<void> {
     try {
-      const [theme, accent, follow, vol, mode, dev, eqg, eqe, drpc, dcid, dupload] =
+      const [theme, bgTheme, accent, follow, vol, mode, dev, eqg, eqe, drpc, dcid, dupload] =
         await Promise.all([
           getSetting(KEYS.theme),
+          getSetting(KEYS.bgTheme),
           getSetting(KEYS.accent),
           getSetting(KEYS.accentFollowsCover),
           getSetting(KEYS.defaultVolume),
@@ -85,6 +99,7 @@ class SettingsStore {
         ]);
       this.values = {
         theme: (theme as Theme) ?? DEFAULTS.theme,
+        bgTheme: isBgTheme(bgTheme) ? bgTheme : DEFAULTS.bgTheme,
         accent: accent ?? DEFAULTS.accent,
         accentFollowsCover:
           follow === null ? DEFAULTS.accentFollowsCover : follow === "true",
@@ -131,12 +146,22 @@ class SettingsStore {
       (this.values.theme === "system" &&
         window.matchMedia?.("(prefers-color-scheme: dark)").matches !== false);
     root.dataset.theme = dark ? "dark" : "light";
+    root.dataset.bgTheme = this.values.bgTheme;
     root.style.setProperty("--accent", this.values.accent);
     root.style.setProperty("--accent-soft", hexWithAlpha(this.values.accent, 0.18));
   }
 }
 
 export const settings = new SettingsStore();
+
+function isBgTheme(v: string | null): v is BgTheme {
+  return (
+    v === "dark-neutral" ||
+    v === "black" ||
+    v === "gray" ||
+    v === "indigo"
+  );
+}
 
 function clamp01(v: number): number {
   if (!Number.isFinite(v)) return 0;

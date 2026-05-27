@@ -15,7 +15,6 @@
 
   import { fade, fly } from "svelte/transition";
   import {
-    coverUrl,
     isFavorite,
     nextTrack,
     pause,
@@ -29,6 +28,7 @@
   import { app } from "../lib/stores.svelte";
   import { nowPlayingFullscreen } from "../lib/nowPlayingFullscreen.svelte";
   import { formatDuration } from "../lib/format";
+  import AnimatedAmbientBackground from "./AnimatedAmbientBackground.svelte";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import LyricsPanel from "./LyricsPanel.svelte";
@@ -44,11 +44,6 @@
     Math.max(app.player.duration_seconds, track?.duration_seconds ?? 0),
   );
   let pct = $derived(dur > 0 ? Math.min(100, (pos / dur) * 100) : 0);
-
-  // Cover URL fed straight to the background. Falls back to a flat
-  // accent gradient when no artwork is available so the layout still
-  // looks intentional.
-  let bgUrl = $derived(coverUrl(track?.cover_key ?? null));
 
   let nowFavorite = $state(false);
   let lastResolvedId = "";
@@ -121,13 +116,12 @@
   aria-modal="true"
   aria-label="Now Playing"
 >
-  <!-- Cinematic background: blurred cover image + dark overlay. -->
-  <div
-    class="bg-art"
-    style:background-image={bgUrl ? `url("${bgUrl}")` : ""}
-    aria-hidden="true"
-  ></div>
-  <div class="bg-veil" aria-hidden="true"></div>
+  <!-- Premium ambient background — layered radial blobs, vignette,
+       grain. Drives subtle motion off `isPlaying`. -->
+  <AnimatedAmbientBackground
+    coverKey={track?.cover_key ?? null}
+    {isPlaying}
+  />
 
   <!-- Fullscreen exit button — top-right, glass pill. -->
   <button
@@ -136,7 +130,7 @@
     aria-label="Close Now Playing"
     title="Close (Esc)"
   >
-    <Icon name="compress" size={16} />
+    <Icon name="compress" size={14} />
   </button>
 
   {#if track}
@@ -199,7 +193,7 @@
           aria-label="Previous"
           title="Previous"
         >
-          <Icon name="prev" size={22} />
+          <Icon name="prev" size={18} />
         </button>
         <button
           class="ctrl play"
@@ -207,7 +201,7 @@
           aria-label={isPlaying ? "Pause" : "Play"}
           title={isPlaying ? "Pause" : "Play"}
         >
-          <Icon name={isPlaying ? "pause" : "play"} size={28} />
+          <Icon name={isPlaying ? "pause" : "play"} size={22} />
         </button>
         <button
           class="ctrl"
@@ -215,7 +209,7 @@
           aria-label="Next"
           title="Next"
         >
-          <Icon name="next" size={22} />
+          <Icon name="next" size={18} />
         </button>
       </div>
 
@@ -231,7 +225,7 @@
         >
           <Icon
             name={nowFavorite ? "heart-filled" : "heart"}
-            size={16}
+            size={15}
           />
         </button>
         <button
@@ -241,7 +235,7 @@
           aria-label={showLyrics ? "Hide lyrics" : "Show lyrics"}
           title={showLyrics ? "Hide lyrics" : "Show lyrics"}
         >
-          <Icon name="quote" size={15} />
+          <Icon name="quote" size={14} />
         </button>
       </div>
     </div>
@@ -269,38 +263,10 @@
   }
 
   /* ============================================================ */
-  /* Cinematic background — blurred cover + dark veil.             */
+  /* Background — see AnimatedAmbientBackground.svelte. The                */
+  /* component is positioned absolutely inside this overlay and  */
+  /* paints behind everything via z-index 0.                      */
   /* ============================================================ */
-  .bg-art {
-    position: absolute;
-    inset: -10%;
-    background-size: cover;
-    background-position: center;
-    background-color: var(--accent-soft);
-    filter: blur(80px) saturate(140%);
-    transform: scale(1.15);
-    opacity: 0.55;
-    z-index: 0;
-    pointer-events: none;
-  }
-  .bg-veil {
-    position: absolute;
-    inset: 0;
-    background:
-      radial-gradient(
-        circle at 50% 30%,
-        rgba(0, 0, 0, 0.25),
-        rgba(0, 0, 0, 0.7) 70%,
-        rgba(0, 0, 0, 0.85) 100%
-      ),
-      linear-gradient(
-        180deg,
-        rgba(0, 0, 0, 0.15) 0%,
-        rgba(0, 0, 0, 0.55) 100%
-      );
-    z-index: 1;
-    pointer-events: none;
-  }
 
   /* ============================================================ */
   /* Stage — single vertical column, perfectly centred.            */
@@ -311,44 +277,68 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
     /* Generous gaps that grow with viewport size; fixed minimum
        keeps a tight rhythm on small windows. */
-    gap: clamp(14px, 2.4dvh, 26px);
-    width: min(640px, 92vw);
+    gap: clamp(14px, 2.4dvh, 22px);
+    width: min(560px, 88vw);
     max-height: 100dvh;
-    padding: clamp(24px, 4dvh, 48px) 24px;
+    padding: clamp(20px, 4dvh, 40px) 24px;
     box-sizing: border-box;
   }
 
-  /* Exit button — glass pill, top-right, never overlaps the cover. */
+  /* Exit button — glass pill, top-right, never overlaps the cover.
+     Override the global focus-visible rule with an inner accent
+     ring so the focus state looks at home on the translucent pill. */
   .exit-btn {
     position: absolute;
     top: max(env(safe-area-inset-top), 16px);
     right: 16px;
     z-index: 5;
-    width: 36px;
-    height: 36px;
+    width: 32px;
+    height: 32px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(12px) saturate(140%);
-    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.1) 0%,
+      rgba(255, 255, 255, 0.03) 100%
+    );
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
     border: 1px solid rgba(255, 255, 255, 0.12);
-    color: var(--fg-0);
+    color: var(--fg-1);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
+    box-shadow:
+      0 4px 14px rgba(0, 0, 0, 0.32),
+      inset 0 1px 0 rgba(255, 255, 255, 0.16);
     transition: background var(--dur-fast) var(--ease-out),
       border-color var(--dur-fast) var(--ease-out),
-      transform var(--dur-fast) var(--ease-out);
+      transform var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out),
+      box-shadow var(--dur-fast) var(--ease-out);
   }
   .exit-btn:hover {
-    background: rgba(255, 255, 255, 0.14);
-    border-color: rgba(255, 255, 255, 0.2);
+    background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.18) 0%,
+      rgba(255, 255, 255, 0.06) 100%
+    );
+    border-color: rgba(255, 255, 255, 0.22);
+    color: var(--fg-0);
     transform: scale(1.05);
   }
   .exit-btn:active {
     transform: scale(0.96);
+  }
+  .exit-btn:focus-visible {
+    outline: none;
+    box-shadow:
+      0 6px 18px rgba(0, 0, 0, 0.35),
+      inset 0 1px 0 rgba(255, 255, 255, 0.18),
+      0 0 0 2px rgba(255, 255, 255, 0.18);
   }
 
   /* ============================================================ */
@@ -356,7 +346,7 @@
   /* ============================================================ */
   .hero {
     position: relative;
-    width: min(45dvh, 380px);
+    width: min(42dvh, 360px);
     aspect-ratio: 1 / 1;
     display: flex;
     align-items: center;
@@ -364,67 +354,86 @@
     flex-shrink: 0;
   }
   .cover-frame {
+    position: relative;
+    z-index: 1;
     width: 100%;
     height: 100%;
-    border-radius: 18px;
+    border-radius: 22px;
     overflow: hidden;
     box-shadow:
-      0 30px 80px -20px rgba(0, 0, 0, 0.7),
-      0 8px 24px -8px rgba(0, 0, 0, 0.5),
-      0 0 0 1px rgba(255, 255, 255, 0.04);
+      0 40px 100px -25px rgba(0, 0, 0, 0.85),
+      0 16px 40px -12px rgba(0, 0, 0, 0.6),
+      0 0 0 1px rgba(255, 255, 255, 0.08),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
   .cover-frame :global(.cover) {
     width: 100% !important;
     height: 100% !important;
-    border-radius: 18px;
+    border-radius: 22px;
     box-shadow: none;
   }
   .lyrics-frame {
+    position: relative;
+    z-index: 1;
     width: 100%;
     height: 100%;
-    background: rgba(0, 0, 0, 0.35);
-    backdrop-filter: blur(20px) saturate(140%);
-    -webkit-backdrop-filter: blur(20px) saturate(140%);
-    border-radius: 18px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.05) 0%,
+      rgba(0, 0, 0, 0.45) 100%
+    );
+    backdrop-filter: blur(28px) saturate(160%);
+    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    border-radius: 22px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      0 20px 60px -20px rgba(0, 0, 0, 0.6);
     overflow: hidden;
   }
 
   /* ============================================================ */
-  /* Title block.                                                  */
+  /* Title block — hero typography. The title sets the rhythm,     */
+  /* artist and album step down in size and weight.                */
   /* ============================================================ */
   .text {
     display: flex;
     flex-direction: column;
     align-items: center;
     text-align: center;
-    gap: 4px;
+    gap: 6px;
     width: 100%;
     min-width: 0;
   }
   .title {
     font-size: clamp(20px, 3.2dvh, 26px);
     font-weight: 700;
-    letter-spacing: -0.015em;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
     color: var(--fg-0);
     margin: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 100%;
-    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+    text-shadow:
+      0 2px 14px rgba(0, 0, 0, 0.55),
+      0 1px 2px rgba(0, 0, 0, 0.6);
   }
   .artist {
-    font-size: clamp(13px, 2dvh, 15px);
+    font-size: clamp(13px, 1.9dvh, 14px);
+    font-weight: 500;
     color: var(--fg-1);
     margin: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 100%;
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.5);
   }
   .album {
-    font-size: clamp(11px, 1.6dvh, 12px);
+    font-size: clamp(9px, 1.2dvh, 10px);
+    font-weight: 600;
     color: var(--fg-2);
     margin: 0;
     overflow: hidden;
@@ -432,18 +441,19 @@
     white-space: nowrap;
     max-width: 100%;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.16em;
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
   }
 
   /* ============================================================ */
-  /* Progress bar — premium rendering with discrete glow.          */
+  /* Progress bar — slim glass tube with accent fill.              */
   /* ============================================================ */
   .progress-wrap {
     width: 100%;
     max-width: 480px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
   }
   .progress {
     position: relative;
@@ -451,9 +461,6 @@
     cursor: pointer;
     outline: none;
     --pct: 0%;
-  }
-  .progress:focus-visible .rail {
-    box-shadow: 0 0 0 2px var(--accent);
   }
   .rail {
     position: absolute;
@@ -464,6 +471,9 @@
     transform: translateY(-50%);
     background: rgba(255, 255, 255, 0.12);
     border-radius: 999px;
+    box-shadow:
+      inset 0 1px 1px rgba(0, 0, 0, 0.4),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.06);
     transition: height var(--dur-fast) var(--ease-out);
   }
   .fill {
@@ -475,11 +485,13 @@
     transform: translateY(-50%);
     background: linear-gradient(
       90deg,
-      var(--accent),
-      color-mix(in srgb, var(--accent) 80%, white)
+      rgba(255, 255, 255, 0.85),
+      rgba(255, 255, 255, 1)
     );
     border-radius: 999px;
-    box-shadow: 0 0 12px var(--accent-glow);
+    box-shadow:
+      0 0 10px rgba(255, 255, 255, 0.3),
+      inset 0 1px 0 rgba(255, 255, 255, 0.4);
     transition: height var(--dur-fast) var(--ease-out);
   }
   .thumb {
@@ -489,11 +501,15 @@
     width: 12px;
     height: 12px;
     transform: translate(-50%, -50%) scale(0);
-    background: var(--fg-0);
+    background: linear-gradient(
+      180deg,
+      #ffffff 0%,
+      #e6e6ea 100%
+    );
     border-radius: 50%;
     box-shadow:
-      0 2px 6px rgba(0, 0, 0, 0.4),
-      0 0 0 4px var(--accent-glow);
+      0 2px 8px rgba(0, 0, 0, 0.5),
+      0 0 0 4px rgba(255, 255, 255, 0.18);
     transition: transform var(--dur-base) var(--ease-spring);
     pointer-events: none;
   }
@@ -505,17 +521,27 @@
   .progress:focus-visible .thumb {
     transform: translate(-50%, -50%) scale(1);
   }
+  .progress:focus-visible .rail {
+    box-shadow:
+      inset 0 1px 1px rgba(0, 0, 0, 0.4),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+      0 0 0 2px rgba(255, 255, 255, 0.2);
+  }
   .times {
     display: flex;
     justify-content: space-between;
     color: var(--fg-2);
     font-size: 11px;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.04em;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
   }
 
   /* ============================================================ */
-  /* Controls — primary triad, secondary row underneath.           */
+  /* Controls — minimalist frosted-glass discs. The play button   */
+  /* is a true frosted disc with a stronger inner highlight; the  */
+  /* secondary buttons are just the icons with a hover hit area.  */
   /* ============================================================ */
   .controls {
     display: flex;
@@ -523,66 +549,92 @@
     justify-content: center;
   }
   .controls.primary {
-    gap: 18px;
+    gap: 28px;
   }
   .controls.secondary {
-    gap: 12px;
+    gap: 16px;
+    margin-top: 4px;
   }
+
+  /* Default ctrl — minimalist: no fill, just an icon. The hit
+     area is a big invisible disc that lights up on hover with a
+     subtle frosted background. Removes the "cluster of pills"
+     feel of the previous version. */
   .ctrl {
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: var(--fg-0);
-    width: 52px;
-    height: 52px;
+    position: relative;
+    background: transparent;
+    border: none;
+    color: var(--fg-1);
+    width: 44px;
+    height: 44px;
     border-radius: 999px;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
     transition: background var(--dur-fast) var(--ease-out),
-      border-color var(--dur-fast) var(--ease-out),
-      transform var(--dur-fast) var(--ease-out),
-      color var(--dur-fast) var(--ease-out);
+      color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out);
   }
   .ctrl:hover {
-    background: rgba(255, 255, 255, 0.12);
-    border-color: rgba(255, 255, 255, 0.2);
-    transform: translateY(-1px);
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--fg-0);
   }
   .ctrl:active {
-    transform: scale(0.95);
+    transform: scale(0.92);
   }
+  .ctrl:focus-visible {
+    outline: none;
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--fg-0);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.16);
+  }
+
+  /* Play button — the only one that's truly a button. A frosted
+     disc with a strong rim and a glow that lifts it off the
+     background. Slight inset highlight on the top edge. */
   .ctrl.play {
-    width: 68px;
-    height: 68px;
-    background: var(--accent);
-    border-color: transparent;
-    color: #fff;
+    width: 64px;
+    height: 64px;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    color: var(--fg-0);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
     box-shadow:
-      0 8px 28px -8px var(--accent-glow),
-      0 4px 12px rgba(0, 0, 0, 0.35);
+      0 12px 32px -10px rgba(0, 0, 0, 0.6),
+      0 4px 14px rgba(0, 0, 0, 0.35),
+      inset 0 1px 0 rgba(255, 255, 255, 0.32),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.12);
   }
   .ctrl.play:hover {
-    filter: brightness(1.08);
-    transform: translateY(-1px) scale(1.02);
+    background: rgba(255, 255, 255, 0.22);
+    border-color: rgba(255, 255, 255, 0.32);
+    transform: scale(1.04);
+    box-shadow:
+      0 16px 40px -10px rgba(0, 0, 0, 0.65),
+      0 6px 18px rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.4),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.12);
   }
+  .ctrl.play:active {
+    transform: scale(0.96);
+  }
+
+  /* Small actions (favorite, lyrics) — same minimalist treatment
+     as the prev/next buttons, just smaller. */
   .ctrl.small {
-    width: 38px;
-    height: 38px;
-    background: transparent;
-    border-color: rgba(255, 255, 255, 0.12);
-    color: var(--fg-1);
+    width: 34px;
+    height: 34px;
+    color: var(--fg-2);
   }
   .ctrl.small:hover {
     background: rgba(255, 255, 255, 0.08);
     color: var(--fg-0);
   }
   .ctrl.small.active {
-    background: var(--accent-soft);
-    border-color: var(--accent);
-    color: var(--accent);
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--fg-0);
   }
   .empty {
     color: var(--fg-2);

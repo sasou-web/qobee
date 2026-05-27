@@ -13,6 +13,7 @@
 //!   [`crate::windows_integration`] and [`crate::tray`].
 
 pub mod commands;
+pub mod commands_drive;
 pub mod commands_integration;
 pub mod cover_host;
 pub mod discord;
@@ -83,6 +84,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(app_state.clone())
         .manage(tray_state.clone())
+        .manage(commands_drive::OAuthSessions::default())
         .register_uri_scheme_protocol("qobee-cover", move |ctx, request| {
             cover_protocol(ctx, request)
         })
@@ -156,6 +158,21 @@ pub fn run() {
             commands::list_library_roots,
             commands::add_library_root,
             commands::remove_library_root,
+            commands::list_library_sources,
+            commands::add_library_source,
+            commands::remove_library_source,
+            commands::set_library_source_enabled,
+            commands_drive::drive_oauth_start,
+            commands_drive::drive_oauth_wait,
+            commands_drive::drive_oauth_cancel,
+            commands_drive::drive_status,
+            commands_drive::drive_disconnect,
+            commands_drive::drive_list_folder,
+            commands_drive::drive_set_folder,
+            commands_drive::drive_index,
+            commands_drive::drive_sync,
+            commands_drive::drive_sync_push,
+            commands_drive::drive_sync_pull,
             commands::scan_all_roots,
             commands::library_stats,
             commands::clear_history,

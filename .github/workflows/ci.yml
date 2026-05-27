@@ -10,8 +10,17 @@ permissions:
 
 jobs:
   build:
-    name: Build & check
-    runs-on: windows-latest
+    name: Build & check (${{ matrix.os }})
+    # Matrix CI catches platform regressions before they reach a
+    # release tag. The macOS job validates that the engine still
+    # compiles without `wasapi` / `windows` crates, that the Tauri
+    # shell falls back to the cross-platform integration stubs, and
+    # that the universal bundle target builds.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout

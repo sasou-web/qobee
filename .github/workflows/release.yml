@@ -1,10 +1,14 @@
 name: Release
 
-# Build a Windows installer (MSI + NSIS) every time a tag matching
-# v*.*.* is pushed, and attach the resulting binaries to a draft
-# GitHub Release. Keep the workflow minimal: no signing, no cache
-# poisoning, no auto-publish — the maintainer flips the release
-# from draft to public manually.
+# Build platform installers every time a tag matching v*.*.* is
+# pushed, and attach the resulting binaries to a draft GitHub
+# Release. Two parallel jobs:
+#
+#   * Windows  → MSI + NSIS exe
+#   * macOS    → universal .dmg + .app bundle
+#
+# Both jobs upload their artifacts to the same draft release. The
+# maintainer flips the release from draft to public manually.
 
 on:
   push:
@@ -56,7 +60,7 @@ jobs:
           # must run it from the workspace root (where both `ui/` and
           # `src-tauri/` are subfolders), not from `ui/` (which has no
           # subfolders containing the conf).
-          ./ui/node_modules/.bin/tauri.cmd build
+          ./ui/node_modules/.bin/tauri.cmd build --bundles msi,nsis
 
       - name: Collect installers
         shell: pwsh
@@ -89,6 +93,98 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: qobee-windows-installers
+          path: artifacts/*
+          if-no-files-found: error
+
+      - name: Draft GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: artifacts/*
+          generate_release_notes: true
+
+  macos:
+    name: macOS bundle (universal)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Both Apple Silicon and Intel architectures so a single .dmg
+      # works on every Mac shipped since 2020. Tauri's `--target
+      # universal-apple-darwin` flag handles the lipo step for us.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            ./src-tauri
+          # Separate cache key from the Windows job so the two
+          # don't fight over `target/`.
+          key: macos
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: ui
+        run: npm run build
+
+      - name: Build Tauri bundle (universal .dmg + .app)
+        run: |
+          # Same caveat as the Windows job: invoke the Tauri CLI from
+          # the workspace root, not from `ui/`. We restrict the
+          # bundle targets so the macOS run doesn't try to build a
+          # Windows installer (`msi` would just be skipped on this
+          # platform but the explicit list keeps logs clean).
+          ./ui/node_modules/.bin/tauri build \
+            --target universal-apple-darwin \
+            --bundles dmg,app
+
+      - name: Collect bundles
+        run: |
+          mkdir -p artifacts
+          # Tauri lays bundle output under
+          # target/<triple>/release/bundle when --target is set.
+          BUNDLE_BASE="target/universal-apple-darwin/release/bundle"
+          if [ ! -d "$BUNDLE_BASE" ]; then
+            echo "::error::No bundle directory at $BUNDLE_BASE"
+            exit 1
+          fi
+          # .dmg lives in $BUNDLE_BASE/dmg/, .app under $BUNDLE_BASE/macos/.
+          # We zip the .app so it survives upload (a .app bundle is a
+          # directory; uploading a directory would lose its
+          # executable bits).
+          if compgen -G "$BUNDLE_BASE/dmg/*.dmg" > /dev/null; then
+            cp "$BUNDLE_BASE"/dmg/*.dmg artifacts/
+          fi
+          if compgen -G "$BUNDLE_BASE/macos/*.app" > /dev/null; then
+            for app in "$BUNDLE_BASE"/macos/*.app; do
+              name="$(basename "$app" .app)"
+              ditto -c -k --keepParent "$app" "artifacts/${name}.app.zip"
+            done
+          fi
+          ls -lh artifacts
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qobee-macos-bundles
           path: artifacts/*
           if-no-files-found: error
 

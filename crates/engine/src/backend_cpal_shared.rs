@@ -915,7 +915,7 @@ fn run_worker(ctx: WorkerCtx) {
                 let cur_bd = ctx.shared.bit_depth.load(Ordering::Relaxed) as u8;
                 let cur_is_dsd = ctx.shared.is_dsd_active();
                 let cur_dsd_rate = crate::DsdRate::from_hz_bits(cur_sr, cur_bd);
-                match SymphoniaDecoder::open(&path) {
+                match SymphoniaDecoder::open_uri(path.to_string_lossy().as_ref()) {
                     Ok(decoder) => {
                         let fmt = decoder.format();
                         let next_dsd_rate = crate::DsdRate::from_hz_bits(
@@ -1117,7 +1117,7 @@ fn stop_active(active: ActiveStream) {
 
 /// Set up a CPAL stream and a decoder thread to feed it.
 fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
-    let decoder = SymphoniaDecoder::open(path)?;
+    let decoder = SymphoniaDecoder::open_uri(path.to_string_lossy().as_ref())?;
     let format = decoder.format();
 
     ctx.shared

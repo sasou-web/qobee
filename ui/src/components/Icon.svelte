@@ -46,19 +46,43 @@
 
 {#if name === "play"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-    <path d="M8 5.14v13.72L19 12 8 5.14z" />
+    <path d="M9 6.75c0-.86.94-1.39 1.68-.95l8 4.6a1.1 1.1 0 0 1 0 1.9l-8 4.6c-.74.43-1.68-.1-1.68-.95V6.75z" />
   </svg>
 {:else if name === "pause"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-    <path d="M6 5h4v14H6zM14 5h4v14h-4z" />
+    <rect x="7" y="5" width="3.6" height="14" rx="1.4" />
+    <rect x="13.4" y="5" width="3.6" height="14" rx="1.4" />
   </svg>
 {:else if name === "next"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-    <path d="M6 6l8 6-8 6V6zM16 6h2v12h-2z" />
+    <path d="M7 7.4c0-.86.96-1.39 1.69-.94l6.36 3.94a1.18 1.18 0 0 1 0 2l-6.36 3.94c-.73.45-1.69-.08-1.69-.94V7.4z" />
+    <rect x="16" y="6.6" width="2.2" height="10.8" rx="1.1" />
   </svg>
 {:else if name === "prev"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-    <path d="M6 6h2v12H6zM18 6l-8 6 8 6V6z" />
+    <rect x="5.8" y="6.6" width="2.2" height="10.8" rx="1.1" />
+    <path d="M17 7.4c0-.86-.96-1.39-1.69-.94l-6.36 3.94a1.18 1.18 0 0 0 0 2l6.36 3.94c.73.45 1.69-.08 1.69-.94V7.4z" />
+  </svg>
+{:else if name === "heart"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M12 20.5c-.6 0-1.1-.2-1.5-.6l-7-7C2.2 11.6 1.7 10.3 1.7 9c0-1.4.5-2.6 1.5-3.6 2-2 5.2-2 7.2 0L12 6.6l1.5-1.2c2-2 5.2-2 7.2 0 1 1 1.5 2.2 1.5 3.6 0 1.3-.5 2.6-1.5 3.6L13.5 20c-.4.3-.9.5-1.5.5z" />
+  </svg>
+{:else if name === "heart-filled"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <path d="M12 20.5c-.6 0-1.1-.2-1.5-.6l-7-7C2.2 11.6 1.7 10.3 1.7 9c0-1.4.5-2.6 1.5-3.6 2-2 5.2-2 7.2 0L12 6.6l1.5-1.2c2-2 5.2-2 7.2 0 1 1 1.5 2.2 1.5 3.6 0 1.3-.5 2.6-1.5 3.6L13.5 20c-.4.3-.9.5-1.5.5z" />
+  </svg>
+{:else if name === "quote"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <line x1="5" y1="7" x2="19" y2="7" />
+    <line x1="5" y1="12" x2="19" y2="12" />
+    <line x1="5" y1="17" x2="13" y2="17" />
+  </svg>
+{:else if name === "compress"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M9 3v4a2 2 0 0 1-2 2H3" />
+    <path d="M15 3v4a2 2 0 0 0 2 2h4" />
+    <path d="M9 21v-4a2 2 0 0 0-2-2H3" />
+    <path d="M15 21v-4a2 2 0 0 1 2-2h4" />
   </svg>
 {:else if name === "library"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -138,14 +162,6 @@
     <path d="M21 13v2a4 4 0 0 1-4 4H3" />
     <text x="9" y="15" font-size="8" font-weight="700" fill="currentColor" stroke="none">1</text>
   </svg>
-{:else if name === "heart"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-  </svg>
-{:else if name === "heart-filled"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-  </svg>
 {:else if name === "queue"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
     <line x1="3" y1="6" x2="21" y2="6" />
@@ -200,19 +216,6 @@
     <polyline points="9 21 3 21 3 15" />
     <line x1="21" y1="3" x2="14" y2="10" />
     <line x1="3" y1="21" x2="10" y2="14" />
-  </svg>
-{:else if name === "compress"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <polyline points="4 14 10 14 10 20" />
-    <polyline points="20 10 14 10 14 4" />
-    <line x1="14" y1="10" x2="21" y2="3" />
-    <line x1="3" y1="21" x2="10" y2="14" />
-  </svg>
-{:else if name === "quote"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <line x1="4" y1="6" x2="20" y2="6" />
-    <line x1="4" y1="12" x2="20" y2="12" />
-    <line x1="4" y1="18" x2="14" y2="18" />
   </svg>
 {:else if name === "minimize-2"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

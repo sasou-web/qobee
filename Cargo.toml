@@ -4,11 +4,12 @@ members = [
     "crates/engine",
     "crates/library",
     "crates/core",
+    "crates/drive",
     "src-tauri",
 ]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -88,6 +89,7 @@ tracing-test = "0.2"
 qobee-engine = { path = "crates/engine" }
 qobee-library = { path = "crates/library" }
 qobee-core = { path = "crates/core" }
+qobee-drive = { path = "crates/drive" }
 
 [profile.release]
 opt-level = 3

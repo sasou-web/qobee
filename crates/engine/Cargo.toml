@@ -22,11 +22,14 @@ symphonia = { workspace = true }
 cpal = { workspace = true }
 rubato = { workspace = true }
 fft-convolver = { workspace = true }
-# Real-FFT cross-correlation aligner used by the null-test
-# diagnostic (Phase F, task 49). Promoted from dev-dep to a
-# regular dep so `crates/engine/src/diagnostic/align.rs` can ship
-# in production builds.
 realfft = "3"
+
+# Drive backend used by `SymphoniaDecoder::open_uri` when the
+# track path is a `drv://...` URI. The dependency is one-way
+# (engine depends on drive, never the reverse); drive only knows
+# about the `MediaSource` trait from symphonia, so there's no
+# loop.
+qobee-drive = { workspace = true }
 
 # WASAPI Exclusive backend (Windows-only). Pulled via target-cfg below.
 

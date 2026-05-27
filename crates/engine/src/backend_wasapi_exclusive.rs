@@ -890,7 +890,7 @@ fn negotiate_with_fallback(
 }
 
 fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveTrack> {
-    let decoder = SymphoniaDecoder::open(path)?;
+    let decoder = SymphoniaDecoder::open_uri(path.to_string_lossy().as_ref())?;
     let format = decoder.format();
 
     let device_name = ctx.selected_device.lock().clone();

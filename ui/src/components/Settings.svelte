@@ -5,11 +5,14 @@
     clearCoverCache,
     clearHistory,
     clearSettings,
+    driveSync,
     getSelectedOutputDevice,
     libraryStats,
     listLibraryRoots,
+    listLibrarySources,
     listOutputDevices,
     removeLibraryRoot,
+    removeLibrarySource,
     resetLibrary,
     scanAllRoots,
     scanLibrary,
@@ -23,17 +26,21 @@
     type OutputMode,
     setVolume,
     type LibraryRoot,
+    type LibrarySource,
     type LibraryStats,
     type OutputDevice,
   } from "../lib/api";
-  import { settings, type Theme } from "../lib/settings.svelte";
+  import { settings, type Theme, BG_THEMES, type BgTheme } from "../lib/settings.svelte";
   import { app } from "../lib/stores.svelte";
   import { discordPresence, type DiscordStatus } from "../lib/discordPresence";
   import { toasts } from "../lib/toasts.svelte";
   import SettingsAudio from "./audio/SettingsAudio.svelte";
   import SettingsWindowsIntegration from "./SettingsWindowsIntegration.svelte";
+  import DriveWizard from "./DriveWizard.svelte";
 
   let roots = $state<LibraryRoot[]>([]);
+  let sources = $state<LibrarySource[]>([]);
+  let driveWizardOpen = $state(false);
   let devices = $state<OutputDevice[]>([]);
   let selectedDeviceId = $state<string>("");
   let stats = $state<LibraryStats | null>(null);
@@ -60,8 +67,9 @@
       libraryStats(),
       getReplayGainMode(),
       getUserOutputMode(),
+      listLibrarySources(),
     ]);
-    const [rs, ds, sel, st, rg, om] = results;
+    const [rs, ds, sel, st, rg, om, ss] = results;
 
     if (rs.status === "fulfilled") roots = rs.value;
     else app.lastError = `Library roots: ${String(rs.reason)}`;
@@ -71,6 +79,7 @@
     if (st.status === "fulfilled") stats = st.value;
     if (rg.status === "fulfilled") replayGainMode = rg.value;
     if (om.status === "fulfilled") outputMode = om.value;
+    if (ss.status === "fulfilled") sources = ss.value;
   }
 
   $effect(() => {
@@ -133,6 +142,43 @@
       await load();
     } catch (e) {
       app.lastError = String(e);
+    }
+  }
+
+  function handleAddDriveSource(): void {
+    // The wizard handles every step (OAuth, token persistence,
+    // about-the-account check). We just open it; on success it
+    // dispatches a callback that re-loads the source list.
+    driveWizardOpen = true;
+  }
+
+  async function handleDriveWizardSuccess(): Promise<void> {
+    sources = await listLibrarySources();
+  }
+
+  async function handleRemoveSource(id: number, name: string): Promise<void> {
+    if (!window.confirm(`Remove source "${name}"?`)) return;
+    try {
+      await removeLibrarySource(id);
+      sources = await listLibrarySources();
+    } catch (e) {
+      app.lastError = String(e);
+    }
+  }
+
+  let syncingSourceId = $state<number | null>(null);
+  async function handleSyncSource(id: number, name: string): Promise<void> {
+    syncingSourceId = id;
+    try {
+      const r = await driveSync(id);
+      window.alert(
+        `Synced "${name}".\n` +
+          `${r.pulled} favorites pulled from Drive, ${r.pushed} pushed back.`,
+      );
+    } catch (e) {
+      app.lastError = `Sync ${name}: ${String(e)}`;
+    } finally {
+      syncingSourceId = null;
     }
   }
 
@@ -209,6 +255,10 @@
   async function handleTheme(e: Event): Promise<void> {
     const v = (e.target as HTMLSelectElement).value as Theme;
     await settings.set("theme", v);
+  }
+
+  async function handleBgTheme(id: BgTheme): Promise<void> {
+    await settings.set("bgTheme", id);
   }
 
   async function handleAccent(e: Event): Promise<void> {
@@ -364,6 +414,49 @@
       </button>
     </div>
 
+    <!-- Remote sources (PR1 scaffolding). The Drive backend is not
+         yet implemented; the placeholder lets the user see where
+         remote sources will live. -->
+    <div class="sources-section">
+      <h3>Remote sources</h3>
+      <p class="hint subtle">
+        Stream from a Google Drive folder. Requires creating your own OAuth
+        client in the Google Cloud console — full setup wizard ships in a
+        later build.
+      </p>
+      {#if sources.length === 0}
+        <p class="empty">No remote source yet.</p>
+      {:else}
+        <ul class="roots">
+          {#each sources as s (s.id)}
+            <li>
+              <span class="source-kind">{s.kind === "google_drive" ? "Drive" : s.kind}</span>
+              <span class="path" title={s.name}>{s.name}</span>
+              {#if !s.enabled}
+                <span class="badge subtle">disabled</span>
+              {/if}
+              {#if s.kind === "google_drive"}
+                <button
+                  class="ghost"
+                  onclick={() => handleSyncSource(s.id, s.name)}
+                  disabled={syncingSourceId === s.id}
+                  title="Two-way sync of favorites with the Drive folder"
+                >
+                  {syncingSourceId === s.id ? "Syncing…" : "Sync"}
+                </button>
+              {/if}
+              <button class="ghost" onclick={() => handleRemoveSource(s.id, s.name)}>Remove</button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <div class="actions">
+        <button class="secondary" onclick={handleAddDriveSource}>
+          + Connect Google Drive
+        </button>
+      </div>
+    </div>
+
     {#if stats}
       <div class="stats">
         <div><span>Tracks</span><strong>{stats.track_count.toLocaleString()}</strong></div>
@@ -500,6 +593,27 @@
         <option value="dark">Dark</option>
         <option value="light">Light</option>
       </select>
+    </div>
+
+    <div class="row bg-theme-row">
+      <span>Background</span>
+      <div class="bg-theme-list" role="radiogroup" aria-label="Background theme">
+        {#each BG_THEMES as t (t.id)}
+          <button
+            type="button"
+            class="bg-swatch"
+            class:active={settings.values.bgTheme === t.id}
+            style:background={t.sample}
+            onclick={() => handleBgTheme(t.id)}
+            title={t.label}
+            role="radio"
+            aria-checked={settings.values.bgTheme === t.id}
+          >
+            <span class="bg-swatch-label">{t.label}</span>
+          </button>
+        {/each}
+      </div>
+      <span></span>
     </div>
 
     <div class="row">
@@ -718,6 +832,14 @@
   </details>
 </section>
 
+<DriveWizard
+  open={driveWizardOpen}
+  onclose={() => (driveWizardOpen = false)}
+  onsuccess={() => {
+    void handleDriveWizardSuccess();
+  }}
+/>
+
 <style>
   .settings {
     display: flex;
@@ -819,6 +941,44 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  /* Remote sources block — visually grouped under the local roots
+     by a subtle top divider; same list look. */
+  .sources-section {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  }
+  .sources-section h3 {
+    margin: 0 0 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg-1);
+  }
+  .source-kind {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--fg-2);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    flex-shrink: 0;
+  }
+  .badge.subtle {
+    background: transparent;
+    color: var(--fg-3);
+    border: 1px dashed var(--border);
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    text-transform: lowercase;
+    letter-spacing: 0;
+  }
   .actions {
     display: flex;
     gap: 8px;
@@ -910,6 +1070,49 @@
     height: 30px;
     padding: 2px;
     width: 60px;
+  }
+
+  /* Background theme picker — a row of clickable swatches. The
+     selected one shows a check ring; on hover the label fades in. */
+  .bg-theme-row .bg-theme-list {
+    grid-column: 2 / 4;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .bg-swatch {
+    position: relative;
+    height: 36px;
+    min-width: 64px;
+    flex: 1 1 auto;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    cursor: pointer;
+    color: var(--fg-2);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
+  }
+  .bg-swatch:hover {
+    border-color: rgba(255, 255, 255, 0.18);
+    color: var(--fg-0);
+  }
+  .bg-swatch.active {
+    border-color: var(--accent);
+    box-shadow:
+      0 0 0 2px var(--accent-soft),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    color: var(--fg-0);
+  }
+  .bg-swatch-label {
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
   }
   .discord-status {
     font-size: 11px;

@@ -38,6 +38,7 @@ blake3 = { workspace = true }
 qobee-engine = { workspace = true }
 qobee-library = { workspace = true }
 qobee-core = { workspace = true }
+qobee-drive = { workspace = true }
 lofty = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]

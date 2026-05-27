@@ -46,10 +46,39 @@ impl SymphoniaDecoder {
     /// streaming.
     pub fn open(path: &Path) -> EngineResult<Self> {
         let file = File::open(path)?;
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string());
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        Self::open_from_source(mss, ext.as_deref())
+    }
 
+    /// Open a track from a path **or** a Drive URI
+    /// (`drv://<source_id>/<file_id>`). Backends call this instead
+    /// of [`Self::open`] so a single code path covers both local
+    /// and remote tracks.
+    pub fn open_uri(track_path: &str) -> EngineResult<Self> {
+        if let Some((source_id, file_id)) = qobee_drive::parse_drive_uri(track_path) {
+            use std::sync::Arc;
+            let client = qobee_drive::DriveClient::new(source_id)
+                .map_err(|e| EngineError::Decode(format!("Drive auth: {e}")))?;
+            let source = qobee_drive::DriveMediaSource::open(Arc::new(client), file_id)
+                .map_err(|e| EngineError::Decode(format!("Drive open: {e}")))?;
+            let mss = MediaSourceStream::new(Box::new(source), Default::default());
+            return Self::open_from_source(mss, None);
+        }
+        Self::open(Path::new(track_path))
+    }
+
+    /// Same as [`Self::open`] but takes an arbitrary
+    /// [`symphonia::core::io::MediaSource`]. Used by the Drive
+    /// backend to feed Symphonia an HTTP byte-range source. The
+    /// optional `ext_hint` (e.g. `"flac"`) helps Symphonia pick
+    /// the right demuxer when the source has no filesystem path.
+    pub fn open_from_source(mss: MediaSourceStream, ext_hint: Option<&str>) -> EngineResult<Self> {
         let mut hint = Hint::new();
-        if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+        if let Some(ext) = ext_hint {
             hint.with_extension(ext);
         }
 
@@ -62,6 +91,10 @@ impl SymphoniaDecoder {
             )
             .map_err(|e| EngineError::Decode(e.to_string()))?;
 
+        Self::from_probed(probed)
+    }
+
+    fn from_probed(probed: symphonia::core::probe::ProbeResult) -> EngineResult<Self> {
         let format = probed.format;
 
         let track = format

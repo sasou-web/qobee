@@ -6,6 +6,49 @@ follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-05-27
+
+Two big themes for this release:
+
+- **Now Playing redesign**. The fullscreen view ditches the flat
+  blurred-cover background for an `AnimatedAmbientBackground` that
+  drifts and rotates two saturated copies of the cover, with the
+  motion entirely independent of pause/play so the field never
+  resets when you tap pause. The cluster of pill-shaped controls
+  becomes a single frosted-glass play disc surrounded by minimalist
+  icon hit areas, the progress bar lives in its own row with
+  inline timestamps, and the icon set (play / pause / prev / next /
+  heart / quote / compress) is redrawn with rounded geometry. A
+  new "Background" picker in Settings → Appearance ships four
+  shell-wide palettes (Dark neutral / Deep black / Soft gray /
+  Indigo tint), all of which now drive a unified `--bg-shell`
+  variable so the title bar, sidebar, content area and player bar
+  read as one continuous surface. The hairline progress strip
+  pinned to the top of the player bar is gone — replaced by a
+  centered seek row inside the bar — and the only remaining
+  divider is a faint right border on the sidebar.
+
+- **Google Drive backend**. A new `qobee-drive` crate implements
+  the OAuth Desktop / PKCE flow, a folder picker, the indexer that
+  pulls head + tail of each remote audio file to extract tags via
+  `lofty`, a `MediaSource` that serves Symphonia from HTTP
+  byte-range reads (with an LRU page cache), and two-way favorite
+  sync via a `qobee-state.json` file written into the source
+  folder. Tokens live in the OS keychain (Credential Manager on
+  Windows, Keychain on macOS, Secret Service on Linux); the user
+  brings their own OAuth client id + secret, so nothing about the
+  library transits through a shared third party. Settings → Library
+  gains a "Remote sources" sub-section with a Connect / Sync /
+  Remove triad per source. Local tracks and Drive tracks share the
+  same player surface — the engine dispatches via a custom
+  `drv://<source_id>/<file_id>` URI scheme.
+
+The release also lays the groundwork for a macOS build: a
+`macos-latest` job in the release workflow produces a universal
+`.dmg` (Apple Silicon + Intel via `lipo`) on every `v*.*.*` tag,
+and the CI workflow runs the same matrix so cross-platform
+regressions surface on PRs rather than at release time.
+
 ## [0.4.1] - 2026-05-26
 
 A maintenance release that scrubs every lint, restores `cargo doc`
@@ -78,6 +121,7 @@ runtime characteristics are identical to 0.4.0.
   with (the clippy error above was latent because the previous
   CI only ran `cargo check`).
 
+[0.4.2]: https://github.com/qobee/qobee/releases/tag/v0.4.2
 [0.4.1]: https://github.com/qobee/qobee/releases/tag/v0.4.1
 [0.4.0]: https://github.com/qobee/qobee/releases/tag/v0.4.0
 

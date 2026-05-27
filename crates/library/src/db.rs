@@ -6,12 +6,12 @@
 
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{
     model::{
-        Album, AlbumDetail, Artist, Genre, LibraryRoot, Playlist, PlaylistDetail, SearchResults,
-        Track,
+        Album, AlbumDetail, Artist, Genre, LibraryRoot, LibrarySource, Playlist, PlaylistDetail,
+        SearchResults, SourceKind, Track,
     },
     LibraryError, LibraryResult,
 };
@@ -91,6 +91,22 @@ CREATE TABLE IF NOT EXISTS favorite_tracks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_favorite_tracks_added ON favorite_tracks(added_at DESC);
+
+-- Library sources: registry for both local folders (existing) and
+-- future remote backends (Google Drive, WebDAV, etc.). Local roots
+-- listed in `library_roots` are mirrored here on first run via a
+-- one-shot migration in code so the rest of the app can speak a
+-- single concept ("source"). Remote backends store their config —
+-- folder ID, OAuth client ID, etc. — as a JSON blob in `config`.
+CREATE TABLE IF NOT EXISTS library_sources (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT    NOT NULL,            -- 'local' | 'google_drive'
+    name        TEXT    NOT NULL,            -- user-facing label
+    config      TEXT    NOT NULL DEFAULT '{}', -- JSON, kind-dependent
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    added_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_library_sources_kind ON library_sources(kind);
 "#;
 
 pub struct Database {
@@ -111,6 +127,9 @@ impl Database {
             "ALTER TABLE tracks ADD COLUMN replaygain_album_db REAL",
             "ALTER TABLE tracks ADD COLUMN replaygain_track_peak REAL",
             "ALTER TABLE tracks ADD COLUMN replaygain_album_peak REAL",
+            // PR3 — track may belong to a remote source. NULL when
+            // it comes from a local folder (legacy rows).
+            "ALTER TABLE tracks ADD COLUMN source_id INTEGER",
         ] {
             if let Err(e) = conn.execute(stmt, []) {
                 let msg = e.to_string();
@@ -191,6 +210,86 @@ impl Database {
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Insert or update a track that lives on a remote source. The
+    /// `path` is expected to be a synthetic URI (e.g. `drv://12/abc`)
+    /// so the engine can dispatch it to the right backend, and
+    /// `source_id` lets us list / delete by source. `mtime` is the
+    /// remote file's `modifiedTime` translated to unix seconds so
+    /// repeat scans can skip unchanged rows.
+    pub fn upsert_remote_track(
+        &mut self,
+        track: &Track,
+        source_id: i64,
+        mtime: i64,
+    ) -> LibraryResult<i64> {
+        self.conn.execute(
+            r#"
+            INSERT INTO tracks (
+                path, title, artist, album, album_artist,
+                track_number, disc_number, year, genre,
+                duration_seconds, sample_rate, bit_depth, channels,
+                cover_key, mtime, source_id,
+                replaygain_track_db, replaygain_album_db,
+                replaygain_track_peak, replaygain_album_peak
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+            ON CONFLICT(path) DO UPDATE SET
+                title = excluded.title,
+                artist = excluded.artist,
+                album = excluded.album,
+                album_artist = excluded.album_artist,
+                track_number = excluded.track_number,
+                disc_number = excluded.disc_number,
+                year = excluded.year,
+                genre = excluded.genre,
+                duration_seconds = excluded.duration_seconds,
+                sample_rate = excluded.sample_rate,
+                bit_depth = excluded.bit_depth,
+                channels = excluded.channels,
+                cover_key = excluded.cover_key,
+                mtime = excluded.mtime,
+                source_id = excluded.source_id,
+                replaygain_track_db = excluded.replaygain_track_db,
+                replaygain_album_db = excluded.replaygain_album_db,
+                replaygain_track_peak = excluded.replaygain_track_peak,
+                replaygain_album_peak = excluded.replaygain_album_peak
+            "#,
+            params![
+                track.path,
+                track.title,
+                track.artist,
+                track.album,
+                track.album_artist,
+                track.track_number,
+                track.disc_number,
+                track.year,
+                track.genre,
+                track.duration_seconds,
+                track.sample_rate,
+                track.bit_depth,
+                track.channels,
+                track.cover_key,
+                mtime,
+                source_id,
+                track.replaygain_track_db.map(|v| v as f64),
+                track.replaygain_album_db.map(|v| v as f64),
+                track.replaygain_track_peak.map(|v| v as f64),
+                track.replaygain_album_peak.map(|v| v as f64),
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Remove every track tied to `source_id`. Used when the user
+    /// disconnects or removes a Drive source.
+    pub fn delete_tracks_for_source(&mut self, source_id: i64) -> LibraryResult<usize> {
+        let n = self.conn.execute(
+            "DELETE FROM tracks WHERE source_id = ?1",
+            params![source_id],
+        )?;
+        Ok(n)
     }
 
     pub fn list_albums(&self) -> LibraryResult<Vec<Album>> {
@@ -1041,6 +1140,78 @@ impl Database {
     }
 
     // ------------------------------------------------------------------
+    // Library sources (PR1: scaffolding for upcoming Google Drive support)
+    // ------------------------------------------------------------------
+
+    /// List every source registered in the database. Local folders
+    /// (rows in `library_roots`) are *not* projected here — the
+    /// frontend reads them via the existing `list_library_roots`
+    /// command. PR1 intentionally keeps the two surfaces separate
+    /// so we can land the table without changing existing UI; PR2
+    /// will unify them once the Drive backend lands.
+    pub fn list_library_sources(&self) -> LibraryResult<Vec<LibrarySource>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, name, config, enabled, added_at \
+             FROM library_sources ORDER BY added_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                let kind_s: String = row.get(1)?;
+                Ok(LibrarySource {
+                    id: row.get(0)?,
+                    // Default to Local on unknown values rather than
+                    // failing the whole list — keeps the app
+                    // resilient to future schema additions.
+                    kind: SourceKind::parse(&kind_s).unwrap_or(SourceKind::Local),
+                    name: row.get(2)?,
+                    config: row.get(3)?,
+                    enabled: row.get::<_, i64>(4)? != 0,
+                    added_at: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Insert a new remote source. Returns the id of the row.
+    /// `config_json` is opaque to the library layer — the backend
+    /// implementation owns its shape.
+    pub fn add_library_source(
+        &mut self,
+        kind: SourceKind,
+        name: &str,
+        config_json: &str,
+        now: i64,
+    ) -> LibraryResult<i64> {
+        self.conn.execute(
+            "INSERT INTO library_sources (kind, name, config, enabled, added_at) \
+             VALUES (?1, ?2, ?3, 1, ?4)",
+            params![kind.as_str(), name, config_json, now],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn remove_library_source(&mut self, source_id: i64) -> LibraryResult<()> {
+        self.conn.execute(
+            "DELETE FROM library_sources WHERE id = ?1",
+            params![source_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_library_source_enabled(
+        &mut self,
+        source_id: i64,
+        enabled: bool,
+    ) -> LibraryResult<()> {
+        self.conn.execute(
+            "UPDATE library_sources SET enabled = ?1 WHERE id = ?2",
+            params![if enabled { 1_i64 } else { 0 }, source_id],
+        )?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
     // Favorites
     // ------------------------------------------------------------------
 
@@ -1080,6 +1251,66 @@ impl Database {
             .query_map([], |row| row.get::<_, i64>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Return every Drive file id that's currently a favorite for
+    /// the given source. Used by the sync layer to push the local
+    /// state to the source's `qobee-state.json`.
+    pub fn favorite_drive_file_ids(&self, source_id: i64) -> LibraryResult<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.path FROM favorite_tracks f \
+             JOIN tracks t ON t.id = f.track_id \
+             WHERE t.source_id = ?1 AND t.path LIKE 'drv://%'",
+        )?;
+        let prefix = format!("drv://{source_id}/");
+        let rows = stmt
+            .query_map(params![source_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|p| p.strip_prefix(&prefix).map(|s| s.to_string()))
+            .collect())
+    }
+
+    /// Set the favorites for a source by replacing whatever the
+    /// DB currently holds for it. Used when pulling the remote
+    /// state. Atomic via transaction.
+    pub fn set_drive_favorites(
+        &mut self,
+        source_id: i64,
+        drive_file_ids: &[String],
+        now: i64,
+    ) -> LibraryResult<usize> {
+        let tx = self.conn.transaction()?;
+        // Drop existing favorites that map to this source.
+        tx.execute(
+            "DELETE FROM favorite_tracks \
+             WHERE track_id IN (SELECT id FROM tracks WHERE source_id = ?1)",
+            params![source_id],
+        )?;
+        // Re-insert from the supplied list. Skip ids we don't
+        // have indexed yet — they'll come back if the user
+        // re-indexes the source.
+        let mut inserted = 0usize;
+        for file_id in drive_file_ids {
+            let track_id: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM tracks WHERE path = ?1",
+                    params![format!("drv://{source_id}/{file_id}")],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(tid) = track_id {
+                tx.execute(
+                    "INSERT INTO favorite_tracks (track_id, added_at) VALUES (?1, ?2) \
+                     ON CONFLICT(track_id) DO NOTHING",
+                    params![tid, now],
+                )?;
+                inserted += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
     }
 
     // ------------------------------------------------------------------

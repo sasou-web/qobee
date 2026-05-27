@@ -200,6 +200,56 @@ pub struct LibraryRoot {
     pub added_at: i64,
 }
 
+/// Kind of a [`LibrarySource`]. Local sources mirror the existing
+/// `library_roots` rows; future remote backends (Google Drive,
+/// WebDAV) live alongside in the same `library_sources` table.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    Local,
+    GoogleDrive,
+}
+
+impl SourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SourceKind::Local => "local",
+            SourceKind::GoogleDrive => "google_drive",
+        }
+    }
+
+    /// Parse a snake_case kind string. Named `parse` rather than
+    /// `from_str` to dodge the clippy lint that expects the latter
+    /// to come from `std::str::FromStr`; we don't need the trait
+    /// here.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "local" => Some(SourceKind::Local),
+            "google_drive" => Some(SourceKind::GoogleDrive),
+            _ => None,
+        }
+    }
+}
+
+/// A library source is a place Qobee reads tracks from. The
+/// existing `library_roots` table stays the source of truth for
+/// local folder paths in PR1 — `LibrarySource` rows are the
+/// unified view the UI consumes (local entries are projected from
+/// `library_roots`, remote entries live natively in
+/// `library_sources`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibrarySource {
+    pub id: i64,
+    pub kind: SourceKind,
+    pub name: String,
+    /// JSON-encoded backend-specific configuration. Always `"{}"`
+    /// for local sources today; will hold the Drive folder id +
+    /// OAuth client info once the Drive backend lands.
+    pub config: String,
+    pub enabled: bool,
+    pub added_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LibraryStats {
     pub track_count: i64,

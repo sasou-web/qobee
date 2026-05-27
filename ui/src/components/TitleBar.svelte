@@ -164,8 +164,8 @@
     align-items: center;
     position: relative;
     height: var(--titlebar-height);
-    background: var(--bg-0);
-    border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+    background: var(--bg-shell);
+    border-bottom: none;
     -webkit-user-select: none;
     user-select: none;
     z-index: 10;

@@ -17,8 +17,8 @@ use qobee_core::queue::RepeatMode;
 use qobee_core::{audio_settings::ALL_KEYS, AudioSettingsError, ReplayGainMode};
 use qobee_engine::{BitPerfectHealth, EffectiveOutputMode, OutputDevice, OutputMode, PlayerState};
 use qobee_library::{
-    Album, AlbumDetail, Artist, ArtistDetail, Genre, LibraryRoot, LibraryStats, Playlist,
-    PlaylistDetail, ScanOptions, SearchResults, Track,
+    Album, AlbumDetail, Artist, ArtistDetail, Genre, LibraryRoot, LibrarySource, LibraryStats,
+    Playlist, PlaylistDetail, ScanOptions, SearchResults, SourceKind, Track,
 };
 
 use crate::lyrics::Lyrics;
@@ -845,6 +845,52 @@ pub fn remove_library_root(root_id: i64, state: State<'_, AppState>) -> Result<(
     state
         .library()
         .remove_library_root(root_id)
+        .map_err(map_err)
+}
+
+// ---------------------------------------------------------------------------
+// Library sources (PR1 scaffolding for upcoming Google Drive support)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_library_sources(state: State<'_, AppState>) -> Result<Vec<LibrarySource>, String> {
+    state.library().list_library_sources().map_err(map_err)
+}
+
+/// Register a new remote source. Returns the new row id.
+/// `kind` is a free-form snake_case string ("google_drive", etc.).
+/// `config_json` is opaque to the library layer and stored verbatim.
+#[tauri::command]
+pub fn add_library_source(
+    kind: String,
+    name: String,
+    config_json: String,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let kind = SourceKind::parse(&kind).ok_or_else(|| format!("unknown source kind: {kind}"))?;
+    state
+        .library()
+        .add_library_source(kind, &name, &config_json)
+        .map_err(map_err)
+}
+
+#[tauri::command]
+pub fn remove_library_source(source_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .library()
+        .remove_library_source(source_id)
+        .map_err(map_err)
+}
+
+#[tauri::command]
+pub fn set_library_source_enabled(
+    source_id: i64,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .library()
+        .set_library_source_enabled(source_id, enabled)
         .map_err(map_err)
 }
 

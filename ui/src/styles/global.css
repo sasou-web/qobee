@@ -23,7 +23,6 @@
   --danger: #ef5d6f;
 
   --border: #2a2a30;
-
   /* Spacing scale — 4px base unit. Use the named tokens everywhere
      so the rhythm stays consistent. 4 / 8 / 12 / 16 / 24 / 32 are
      the workhorses. */
@@ -96,6 +95,51 @@ html[data-theme="light"] {
   color-scheme: light;
 }
 
+/* Background theme presets — pick the floor color for the whole shell.
+ * The principle: every "shell" surface (titlebar, sidebar, content
+ * area, player bar) reads `--bg-shell`. Cards and hover states read
+ * `--bg-1` / `--bg-2` which are kept *very* close to `--bg-shell` so
+ * the shell looks unified rather than partitioned in tiles.
+ *
+ * `data-bg-theme` is set by the settings store on `:root`. Default
+ * (no attribute) maps to "dark-neutral" so the look matches the
+ * legacy values.
+ */
+:root,
+html[data-bg-theme="dark-neutral"] {
+  --bg-shell: #0e0e10;
+  --bg-0: #0e0e10;
+  --bg-1: #16161a;
+  --bg-2: #1d1d22;
+  --bg-3: #27272d;
+  --border: #2a2a30;
+}
+html[data-bg-theme="black"] {
+  --bg-shell: #050507;
+  --bg-0: #050507;
+  --bg-1: #0c0c0f;
+  --bg-2: #131318;
+  --bg-3: #1c1c22;
+  --border: #1f1f25;
+}
+html[data-bg-theme="gray"] {
+  --bg-shell: #1a1a1d;
+  --bg-0: #1a1a1d;
+  --bg-1: #212126;
+  --bg-2: #28282e;
+  --bg-3: #313138;
+  --border: #34343b;
+}
+html[data-bg-theme="indigo"] {
+  --bg-shell: #0e1018;
+  --bg-0: #0e1018;
+  --bg-1: #15182a;
+  --bg-2: #1c2034;
+  --bg-3: #262b3d;
+  --border: #232739;
+  /* A muted indigo cast — perceivable but sober. */
+}
+
 * {
   box-sizing: border-box;
 }
@@ -107,7 +151,7 @@ html, body {
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.4;
-  background: var(--bg-0);
+  background: var(--bg-shell);
   color: var(--fg-0);
   -webkit-font-smoothing: antialiased;
   user-select: none;

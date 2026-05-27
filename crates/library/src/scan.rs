@@ -221,14 +221,6 @@ fn index_one(path: &Path, cover_cache_dir: &Path) -> LibraryResult<(Track, Optio
         .and_then(|p| p.channels())
         .map(|c| c as u16);
 
-    // R7.1 — DSD overrides. The DB recognises DSD tracks by the
-    // pair `(sample_rate, bit_depth=1)`; a DSD64 file therefore
-    // stores `sample_rate = 2_822_400`. Lofty surfaces the bit
-    // rate inconsistently across taggers, so we always override
-    // these two fields by reading the DSD container header
-    // directly. On any parse failure we fall back to
-    // `sample_rate = 0` so `Track::dsd_rate()` returns `None`
-    // (the file is still indexed, just not flagged as DSD).
     if is_dsd {
         bit_depth = Some(1);
         let parsed = match ext.as_deref() {
@@ -249,9 +241,6 @@ fn index_one(path: &Path, cover_cache_dir: &Path) -> LibraryResult<(Track, Optio
         }
     }
 
-    // ReplayGain. Lofty surfaces these as plain string items via
-    // `ItemKey`. Values look like "-7.45 dB" or "-7.45". We strip the
-    // unit and parse to f32; absent or unparseable -> None.
     let parse_rg = |s: &str| -> Option<f32> {
         s.split_whitespace()
             .next()
@@ -265,12 +254,6 @@ fn index_one(path: &Path, cover_cache_dir: &Path) -> LibraryResult<(Track, Optio
         .and_then(|t| t.get_string(lofty::tag::ItemKey::ReplayGainAlbumGain))
         .and_then(parse_rg);
 
-    // RG peak: linear amplitude, full-scale = 1.0 (true-peak values
-    // can technically exceed 1.0, e.g. "1.0234"). Some taggers append
-    // a stray " dB" suffix even though the value is linear; we strip
-    // any trailing token and parse the leading float. Clamp to a
-    // generous `[0.0, 4.0]` window — anything outside that range is
-    // almost certainly garbage.
     let parse_rg_peak = |s: &str| -> Option<f32> {
         s.split_whitespace()
             .next()
@@ -317,6 +300,142 @@ fn index_one(path: &Path, cover_cache_dir: &Path) -> LibraryResult<(Track, Optio
     };
 
     Ok((track, cover_blob))
+}
+
+/// Read tags + properties from an in-memory blob and a virtual
+/// path. Used by the Drive indexer (PR3): the caller has streamed
+/// the head + footer of a remote file into a single buffer; this
+/// function turns that buffer into a [`Track`] populated with
+/// everything lofty can pull out.
+///
+/// `synthetic_path` becomes `track.path`. The caller is expected
+/// to use a recognisable scheme (e.g. `drv://<source_id>/<file_id>`)
+/// so the engine can dispatch the right backend at playback time.
+pub fn index_remote_blob(
+    blob: &[u8],
+    file_extension: Option<&str>,
+    synthetic_path: &str,
+    fallback_title: &str,
+    cover_cache_dir: &Path,
+) -> LibraryResult<(Track, Option<Vec<u8>>)> {
+    use std::io::Cursor;
+
+    let mut probe = Probe::new(Cursor::new(blob));
+    if let Some(ext) = file_extension {
+        probe = probe.set_file_type(file_type_from_ext(ext));
+    }
+
+    let tagged = probe.read().map_err(|e| LibraryError::Tag(e.to_string()))?;
+
+    let properties = tagged.properties().clone();
+    let primary_tag = tagged.primary_tag().or_else(|| tagged.first_tag());
+
+    let title = primary_tag
+        .and_then(|t| t.title().map(|s| s.to_string()))
+        .unwrap_or_else(|| fallback_title.to_string());
+
+    let artist = primary_tag
+        .and_then(|t| t.artist().map(|s| s.to_string()))
+        .unwrap_or_else(|| "Unknown Artist".to_string());
+
+    let album_artist = primary_tag.and_then(|t| {
+        t.get_string(lofty::tag::ItemKey::AlbumArtist)
+            .map(|s| s.to_string())
+    });
+
+    let album = primary_tag
+        .and_then(|t| t.album().map(|s| s.to_string()))
+        .unwrap_or_else(|| "Unknown Album".to_string());
+
+    let track_number = primary_tag.and_then(|t| t.track());
+    let disc_number = primary_tag.and_then(|t| t.disk());
+    let year = primary_tag
+        .and_then(|t| t.get_string(lofty::tag::ItemKey::Year))
+        .and_then(|s| s.parse::<i32>().ok())
+        .or_else(|| {
+            primary_tag
+                .and_then(|t| t.get_string(lofty::tag::ItemKey::RecordingDate))
+                .and_then(|s| s.get(..4).and_then(|y| y.parse::<i32>().ok()))
+        });
+    let genre = primary_tag.and_then(|t| t.genre().map(|s| s.to_string()));
+
+    let duration_seconds = properties.duration().as_secs_f64();
+    let sample_rate = properties.sample_rate();
+    let bit_depth = properties.bit_depth();
+    let channels = properties.channels().map(|c| c as u16);
+
+    let parse_rg = |s: &str| -> Option<f32> {
+        s.split_whitespace()
+            .next()
+            .and_then(|t| t.parse::<f32>().ok())
+            .map(|v| v.clamp(-30.0, 30.0))
+    };
+    let parse_rg_peak = |s: &str| -> Option<f32> {
+        s.split_whitespace()
+            .next()
+            .and_then(|t| t.parse::<f32>().ok())
+            .map(|v| v.clamp(0.0, 4.0))
+    };
+
+    let replaygain_track_db = primary_tag
+        .and_then(|t| t.get_string(lofty::tag::ItemKey::ReplayGainTrackGain))
+        .and_then(parse_rg);
+    let replaygain_album_db = primary_tag
+        .and_then(|t| t.get_string(lofty::tag::ItemKey::ReplayGainAlbumGain))
+        .and_then(parse_rg);
+    let replaygain_track_peak = primary_tag
+        .and_then(|t| t.get_string(lofty::tag::ItemKey::ReplayGainTrackPeak))
+        .and_then(parse_rg_peak);
+    let replaygain_album_peak = primary_tag
+        .and_then(|t| t.get_string(lofty::tag::ItemKey::ReplayGainAlbumPeak))
+        .and_then(parse_rg_peak);
+
+    let cover_info = primary_tag
+        .and_then(|t| t.pictures().first().cloned())
+        .and_then(|p: Picture| persist_cover(&p, cover_cache_dir).ok().flatten());
+
+    let (cover_key, cover_blob) = match cover_info {
+        Some((key, blob)) => (Some(key), Some(blob)),
+        None => (None, None),
+    };
+
+    let track = Track {
+        id: 0,
+        track_uid: String::new(),
+        path: synthetic_path.to_string(),
+        title,
+        artist,
+        album,
+        album_artist,
+        track_number,
+        disc_number,
+        year,
+        genre,
+        duration_seconds,
+        sample_rate,
+        bit_depth,
+        channels,
+        cover_key,
+        replaygain_track_db,
+        replaygain_album_db,
+        replaygain_track_peak,
+        replaygain_album_peak,
+    };
+
+    Ok((track, cover_blob))
+}
+
+fn file_type_from_ext(ext: &str) -> lofty::file::FileType {
+    match ext.to_ascii_lowercase().as_str() {
+        "flac" => lofty::file::FileType::Flac,
+        "mp3" => lofty::file::FileType::Mpeg,
+        "m4a" | "mp4" | "aac" | "alac" => lofty::file::FileType::Mp4,
+        "ogg" | "opus" => lofty::file::FileType::Opus,
+        "wav" => lofty::file::FileType::Wav,
+        "aiff" | "aif" => lofty::file::FileType::Aiff,
+        "wv" => lofty::file::FileType::WavPack,
+        _ => lofty::file::FileType::Flac, // best-guess; lofty will sniff if wrong
+    }
 }
 
 /// Parse just enough of a DSF header to extract
