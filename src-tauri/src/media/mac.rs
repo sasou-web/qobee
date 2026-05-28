@@ -592,10 +592,12 @@ fn install_menu_bar<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> 
 
     let menu = Menu::with_items(app, &[&qobee_submenu, &playback_submenu, &window_submenu])?;
 
-    // Hook menu events on the menu itself so any item routes
-    // through the same dispatch closure.
+    // Route every item to the same dispatcher. In Tauri 2.11 the
+    // event hook lives on `AppHandle` (not on the `Menu` itself —
+    // that method only existed in earlier 2.x previews), so we
+    // register it before installing the menu.
     let app_for_events = app.clone();
-    menu.on_menu_event(move |_app, event| {
+    app.on_menu_event(move |_app, event| {
         dispatch_menu_event(&app_for_events, event.id().as_ref());
     });
 
