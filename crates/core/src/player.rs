@@ -31,21 +31,24 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::Mutex;
 use thiserror::Error;
+use tokio::sync::broadcast;
 
 #[cfg(target_os = "windows")]
 use qobee_engine::backend_wasapi_exclusive::WasapiExclusiveEngine;
 use qobee_engine::{
     backend_cpal_shared::{list_output_devices, CpalSharedEngine},
-    AudioEngine, EngineError, EngineEvent, OutputDevice, OutputMode, PlayerState, PreGainContext,
+    AudioEngine, EngineError, EngineEvent, OutputDevice, OutputMode, PlaybackStatus, PlayerState,
+    PreGainContext,
 };
 use qobee_library::{Library, LibraryError};
 
 use crate::queue::{Queue, QueueSnapshot, RepeatMode, TrackId};
-use crate::{PlayerEvent, ReplayGainMode};
+use crate::{PlayerErrorKind, PlayerEvent, ReplayGainMode, TrackMeta};
 
 /// Map a library-side `DsdRate` to the engine's identical-but-
 /// independent enum. Both layers carry the same four-variant set
@@ -73,6 +76,19 @@ pub enum PlayerError {
 }
 
 pub type PlayerResult<T> = Result<T, PlayerError>;
+
+/// Capacity of the [`broadcast::Sender`] sitting on the R8
+/// transport bus. 256 is enough to absorb a brief lag of one of
+/// the OS bridges (SMTC / MPNowPlayingInfoCenter) without dropping
+/// transitions; the pump's worst-case rate is ~4 events/s
+/// (250 ms `PositionTick` throttle).
+const BROADCAST_CAPACITY: usize = 256;
+
+/// `PositionTick` throttle window. The decoder emits position
+/// updates at chunk cadence (typically every ~10–20 ms); we
+/// resample to one tick every 250 ms before broadcasting so the
+/// UI / OS bridges aren't flooded.
+const POSITION_TICK_THROTTLE: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 pub struct PlayerHandle {
@@ -120,6 +136,12 @@ struct PlayerInner {
     replaygain_mode: AtomicU8,
     event_tx: Sender<PlayerEvent>,
     event_rx: Receiver<PlayerEvent>,
+    /// R8 transport bus: every player-side transition (`Started`,
+    /// `Paused`, `Resumed`, `Stopped`, `TrackChanged`,
+    /// `PositionTick`, `Errored`) is fan-out via this
+    /// `tokio::sync::broadcast` channel. Sits next to the legacy
+    /// crossbeam `event_tx` so existing consumers keep working.
+    broadcast_tx: broadcast::Sender<PlayerEvent>,
 }
 
 impl PlayerInner {
@@ -127,6 +149,40 @@ impl PlayerInner {
     /// `Arc<dyn AudioEngine>` (refcount bump only).
     fn engine(&self) -> Arc<dyn AudioEngine> {
         Arc::clone(&self.active_engine.lock())
+    }
+
+    /// Broadcast a transport bus event, dropping silently when no
+    /// receiver is currently subscribed (the broadcast sender
+    /// surfaces this case via `Err(SendError)`; semantically a
+    /// no-op for us — UI / OS bridges may simply not be wired
+    /// yet during early init).
+    fn broadcast(&self, ev: PlayerEvent) {
+        let _ = self.broadcast_tx.send(ev);
+    }
+
+    /// Build a [`TrackMeta`] from a library row. Reads the cover
+    /// blob from the cover cache directory when a `cover_key` is
+    /// available so the OS bridges can render a thumbnail; the
+    /// frontend itself never receives the bytes (cf. `#[serde(skip)]`
+    /// on `TrackMeta::cover_bytes`).
+    fn track_meta_for(&self, track_id: TrackId) -> Option<TrackMeta> {
+        let track = self.library.get_track(track_id).ok().flatten()?;
+        let duration_ms = (track.duration_seconds * 1000.0).max(0.0) as u64;
+        let cover_bytes = track.cover_key.as_deref().and_then(|key| {
+            // Cover keys use forward-slashes (`aa/abcd….jpg`); the
+            // cache directory uses native separators.
+            let normalized = key.replace('/', std::path::MAIN_SEPARATOR_STR);
+            let path = self.library.cover_cache_dir().join(normalized);
+            std::fs::read(&path).ok()
+        });
+        Some(TrackMeta {
+            id: track.id,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            duration_ms,
+            cover_bytes,
+        })
     }
 
     /// Direct handle to the always-present `CpalSharedEngine`. Used
@@ -276,6 +332,24 @@ impl PlayerInner {
         if let Err(e) = self.library.record_play(track_id, now) {
             tracing::warn!(target: "qobee::core", error = %e, "record_play failed");
         }
+
+        // Broadcast a `Started` transition on the R8 transport
+        // bus so the UI store and OS bridges can refresh their
+        // Now Playing surface in lock-step. The fan-out task in
+        // `src-tauri::setup` (cf. design §Player_Sync) translates
+        // a `TrackChanged` for in-queue advances; here we always
+        // emit `Started` because `start_track` is the single
+        // entry point used by both the initial play and manual
+        // jumps within a queue, and the spec models both cases
+        // as a freshly-started playback session.
+        if let Some(meta) = self.track_meta_for(track_id) {
+            let duration_ms = meta.duration_ms;
+            self.broadcast(PlayerEvent::Started {
+                track: meta,
+                position_ms: 0,
+                duration_ms,
+            });
+        }
         Ok(())
     }
 
@@ -331,6 +405,7 @@ impl Player {
     pub fn new(library: Library) -> PlayerResult<Self> {
         let shared_engine = Arc::new(CpalSharedEngine::new()?);
         let (event_tx, event_rx) = bounded::<PlayerEvent>(256);
+        let (broadcast_tx, _) = broadcast::channel::<PlayerEvent>(BROADCAST_CAPACITY);
 
         let active_engine: Arc<dyn AudioEngine> =
             Arc::clone(&shared_engine) as Arc<dyn AudioEngine>;
@@ -351,6 +426,7 @@ impl Player {
             cached_eq_gains_db: Mutex::new(None),
             event_tx,
             event_rx,
+            broadcast_tx,
         });
 
         // Pump events from the Shared engine. When the user toggles
@@ -379,10 +455,35 @@ impl PlayerHandle {
         self.inner.event_rx.clone()
     }
 
+    /// Subscribe to the R8 transport bus. Returns a fresh
+    /// `tokio::sync::broadcast::Receiver` that yields every
+    /// transition emitted by the player after the call. Cheap to
+    /// create — capacity is shared, the receiver only stores its
+    /// own read cursor. Safe to call any number of times (UI store,
+    /// SMTC bridge, MPNowPlayingInfoCenter bridge each get their
+    /// own receiver).
+    ///
+    /// Slow consumers receive `RecvError::Lagged(n)` when they fall
+    /// more than [`BROADCAST_CAPACITY`] events behind; the design
+    /// asks them to resnapshot via [`Self::state`] in that case.
+    pub fn subscribe_broadcast(&self) -> broadcast::Receiver<PlayerEvent> {
+        self.inner.broadcast_tx.subscribe()
+    }
+
     pub fn state(&self) -> PlayerState {
         let mut state = self.inner.engine().state();
         state.current_track_id = self.inner.current_track_id.lock().map(|id| id.to_string());
         state
+    }
+
+    /// Build a [`TrackMeta`] for the currently active track, when
+    /// any. Used by the R8 fan-out task in `src-tauri::setup` to
+    /// re-publish a synthetic `Started` / `Paused` event after a
+    /// `broadcast::RecvError::Lagged`, so the OS bridges and the UI
+    /// store can resnapshot without losing track info.
+    pub fn current_track_meta(&self) -> Option<TrackMeta> {
+        let track_id = (*self.inner.current_track_id.lock())?;
+        self.inner.track_meta_for(track_id)
     }
 
     pub fn output_mode(&self) -> qobee_engine::types::EffectiveOutputMode {
@@ -469,6 +570,44 @@ impl PlayerHandle {
         let ids: Vec<TrackId> = detail.tracks.iter().map(|t| t.id).collect();
         let start = ids.iter().position(|id| *id == start_track_id);
         self.inner.queue.replace(ids, start);
+        let cur = self.inner.queue.current().ok_or(PlayerError::QueueEmpty)?;
+        let path = self.inner.resolve_path(cur)?;
+        self.inner.start_track(cur, path)
+    }
+
+    /// Start playing an album from its first track. Used by the R3
+    /// `Play_Button` when the user clicks Play on an album card or
+    /// on the album detail header — the UI carries an album id
+    /// without knowing the first track id, so we look it up here.
+    pub fn play_album(&self, album_id: i64) -> PlayerResult<()> {
+        let detail = self
+            .inner
+            .library
+            .get_album(album_id)?
+            .ok_or(PlayerError::QueueEmpty)?;
+        if detail.tracks.is_empty() {
+            return Err(PlayerError::QueueEmpty);
+        }
+        let ids: Vec<TrackId> = detail.tracks.iter().map(|t| t.id).collect();
+        self.inner.queue.replace(ids, Some(0));
+        let cur = self.inner.queue.current().ok_or(PlayerError::QueueEmpty)?;
+        let path = self.inner.resolve_path(cur)?;
+        self.inner.start_track(cur, path)
+    }
+
+    /// Start playing a playlist from its first track. Companion to
+    /// [`play_album`] for the R3 `Play_Button` on playlist cards.
+    pub fn play_playlist(&self, playlist_id: i64) -> PlayerResult<()> {
+        let detail = self
+            .inner
+            .library
+            .get_playlist(playlist_id)?
+            .ok_or(PlayerError::QueueEmpty)?;
+        if detail.tracks.is_empty() {
+            return Err(PlayerError::QueueEmpty);
+        }
+        let ids: Vec<TrackId> = detail.tracks.iter().map(|t| t.id).collect();
+        self.inner.queue.replace(ids, Some(0));
         let cur = self.inner.queue.current().ok_or(PlayerError::QueueEmpty)?;
         let path = self.inner.resolve_path(cur)?;
         self.inner.start_track(cur, path)
@@ -569,19 +708,63 @@ impl PlayerHandle {
         self.inner.start_track(id, path)
     }
 
+    /// Resume / start playback **idempotently** (R8.5).
+    ///
+    /// - When the engine is already in `Playing`, the call is a
+    ///   silent no-op: no engine call, no `PlayerEvent` broadcast.
+    /// - When the engine is in `Paused`, this delegates to
+    ///   [`Self::resume`] and emits a `Resumed` transport event.
+    /// - When the engine is in `Idle | Stopped | Loading | Errored`
+    ///   without a current track, this is a no-op (use
+    ///   `play_track`, `play_album_from_track`, ... to actually
+    ///   start playback).
+    pub fn play(&self) -> PlayerResult<()> {
+        let status = self.inner.engine().state().status;
+        match status {
+            PlaybackStatus::Playing => Ok(()),
+            PlaybackStatus::Paused => self.resume(),
+            // Nothing currently loaded → caller must pick a target
+            // via the dedicated `play_*` methods.
+            _ => Ok(()),
+        }
+    }
+
     pub fn pause(&self) -> PlayerResult<()> {
+        // R8.4 — Pausing while already Paused is a silent no-op:
+        // no engine call, no broadcast event. Same for any state
+        // where a Pause makes no semantic sense (Idle / Stopped /
+        // Errored): we don't want to surface a spurious `Paused`
+        // transition on the bus.
+        let status = self.inner.engine().state().status;
+        if !matches!(status, PlaybackStatus::Playing) {
+            return Ok(());
+        }
         self.inner.engine().pause()?;
+        let position_ms = (self.inner.engine().state().position_seconds * 1000.0).max(0.0) as u64;
+        self.inner.broadcast(PlayerEvent::Paused { position_ms });
         Ok(())
     }
 
     pub fn resume(&self) -> PlayerResult<()> {
+        // R8.5 — Resuming while already Playing is a silent no-op.
+        // Resuming from a non-Paused state (Idle / Stopped /
+        // Errored) is also a no-op: there is nothing to resume; the
+        // caller should pick a target via the dedicated `play_*`
+        // methods.
+        let status = self.inner.engine().state().status;
+        if !matches!(status, PlaybackStatus::Paused) {
+            return Ok(());
+        }
         self.inner.engine().resume()?;
+        let position_ms = (self.inner.engine().state().position_seconds * 1000.0).max(0.0) as u64;
+        self.inner.broadcast(PlayerEvent::Resumed { position_ms });
         Ok(())
     }
 
     pub fn stop(&self) -> PlayerResult<()> {
         self.inner.engine().stop()?;
         *self.inner.current_track_id.lock() = None;
+        self.inner.broadcast(PlayerEvent::Stopped);
         Ok(())
     }
 
@@ -1062,6 +1245,15 @@ fn shorten_error(msg: &str) -> String {
 
 /// Pump engine events into the player event channel.
 fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEvent>) {
+    // Local state for throttling `PositionTick` on the R8 transport
+    // bus to one event every 250 ms. The decoder pushes positions
+    // at chunk cadence (~10 ms); the UI / OS bridges only need the
+    // throttled stream. We keep both `last_position_ms` and the
+    // wall-clock instant: the bus carries milliseconds while the
+    // decoder reports seconds.
+    let mut last_tick_at: Option<Instant> = None;
+    let mut last_tick_position_ms: u64 = u64::MAX;
+
     while let Ok(ev) = engine_events.recv() {
         let player_ev = match ev {
             EngineEvent::StateChanged { mut state } => {
@@ -1076,6 +1268,28 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                 if dur > 0.0 && position_seconds >= dur - 5.0 {
                     inner.prefetch_next_if_any();
                 }
+
+                // R8.3 — throttle `PositionTick` to one broadcast
+                // every 250 ms. The first non-zero position after
+                // a (re)start is always allowed through so the UI
+                // gets an immediate confirmation.
+                let position_ms = (position_seconds * 1000.0).max(0.0) as u64;
+                let now = Instant::now();
+                let should_emit = match last_tick_at {
+                    None => true,
+                    Some(prev) if now.duration_since(prev) >= POSITION_TICK_THROTTLE => true,
+                    // Position rewound (seek backward, new track) →
+                    // resync immediately, otherwise the bus would
+                    // appear stuck for up to 250 ms.
+                    _ if position_ms < last_tick_position_ms => true,
+                    _ => false,
+                };
+                if should_emit {
+                    last_tick_at = Some(now);
+                    last_tick_position_ms = position_ms;
+                    inner.broadcast(PlayerEvent::PositionTick { position_ms });
+                }
+
                 PlayerEvent::Position { position_seconds }
             }
             EngineEvent::EndOfTrack => {
@@ -1093,6 +1307,13 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                                     "no random album available; staying idle"
                                 );
                             }
+                        } else {
+                            // Endless off + nothing left: surface a
+                            // clean `Stopped` on the transport bus so
+                            // the UI / OS bridges freeze their
+                            // timeline rather than the user seeing
+                            // the last `PositionTick` linger.
+                            inner.broadcast(PlayerEvent::Stopped);
                         }
                     }
                     Err(e) => {
@@ -1102,9 +1323,20 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                             error = %msg,
                             "auto-advance failed"
                         );
-                        let _ = inner.event_tx.try_send(PlayerEvent::Error { message: msg });
+                        let _ = inner.event_tx.try_send(PlayerEvent::Error {
+                            message: msg.clone(),
+                        });
+                        inner.broadcast(PlayerEvent::Errored {
+                            kind: PlayerErrorKind::Other,
+                            message: msg,
+                        });
                     }
                 }
+                // Reset the throttle so the next track starts at
+                // tick 0 instead of inheriting the previous track's
+                // last instant.
+                last_tick_at = None;
+                last_tick_position_ms = u64::MAX;
                 PlayerEvent::EndOfTrack
             }
             EngineEvent::GaplessTransition => {
@@ -1113,6 +1345,7 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                 // (without calling start_track), record the play in
                 // history, and clear the prefetch flag so we can
                 // prepare the *next* track.
+                let mut new_track_meta: Option<TrackMeta> = None;
                 if let Some(new_id) = inner.queue.advance() {
                     *inner.current_track_id.lock() = Some(new_id);
                     inner
@@ -1129,6 +1362,7 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                             "record_play failed (gapless)"
                         );
                     }
+                    new_track_meta = inner.track_meta_for(new_id);
                 }
                 *inner.prefetched_track.lock() = None;
 
@@ -1139,6 +1373,15 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                 let mut state = inner.engine().state();
                 state.current_track_id = inner.current_track_id.lock().map(|id| id.to_string());
                 let _ = inner.event_tx.try_send(PlayerEvent::StateChanged { state });
+
+                // R8 transport bus: gapless = `TrackChanged` (not
+                // `Started`). The session is the same; only the
+                // active track flips.
+                if let Some(meta) = new_track_meta {
+                    inner.broadcast(PlayerEvent::TrackChanged { track: meta });
+                }
+                last_tick_at = None;
+                last_tick_position_ms = u64::MAX;
 
                 PlayerEvent::EndOfTrack
             }
@@ -1194,16 +1437,31 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                         // Tell the UI we fell back so the dropdown can
                         // sync. We surface a soft warning rather than
                         // the raw HRESULT.
+                        let fallback_msg = format!(
+                            "Exclusive output unavailable: {}. Switched to Shared.",
+                            shorten_error(&message)
+                        );
                         let _ = inner.event_tx.try_send(PlayerEvent::Error {
-                            message: format!(
-                                "Exclusive output unavailable: {}. Switched to Shared.",
-                                shorten_error(&message)
-                            ),
+                            message: fallback_msg.clone(),
+                        });
+                        inner.broadcast(PlayerEvent::Errored {
+                            kind: PlayerErrorKind::DeviceUnavailable,
+                            message: fallback_msg,
                         });
                         continue;
                     }
                 }
 
+                // Surface every other engine error on the transport
+                // bus too, with a coarse `kind`. The orchestrator
+                // does not have enough context to discriminate
+                // FileNotFound vs DecodeFailed at this point — the
+                // engine carries that signal in the message text and
+                // future revisions can refine the mapping.
+                inner.broadcast(PlayerEvent::Errored {
+                    kind: classify_engine_error(&message),
+                    message: message.clone(),
+                });
                 PlayerEvent::Error { message }
             }
             EngineEvent::IrLoadError { message } => {
@@ -1211,9 +1469,12 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                 // (if any) stayed in place, so we surface the
                 // message as a regular player error and let the UI
                 // toast it.
-                PlayerEvent::Error {
-                    message: format!("Convolver IR: {message}"),
-                }
+                let payload = format!("Convolver IR: {message}");
+                inner.broadcast(PlayerEvent::Errored {
+                    kind: PlayerErrorKind::Other,
+                    message: payload.clone(),
+                });
+                PlayerEvent::Error { message: payload }
             }
             EngineEvent::DopUnsupported => {
                 // R7.5 — surfaced alongside an `Error` event by
@@ -1242,6 +1503,35 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                 "player event channel saturated; dropping engine event"
             );
         }
+    }
+}
+
+/// Coarse classifier mapping a free-form engine error message onto a
+/// [`PlayerErrorKind`] for the R8 transport bus. The mapping is
+/// intentionally lossy: the kind is only used by the UI to pick a
+/// FR-localised toast / aria-label, while the original message is
+/// always preserved alongside.
+fn classify_engine_error(message: &str) -> PlayerErrorKind {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("not found")
+        || lower.contains("no such file")
+        || lower.contains("introuvable")
+    {
+        PlayerErrorKind::FileNotFound
+    } else if lower.contains("decode")
+        || lower.contains("symphonia")
+        || lower.contains("codec")
+    {
+        PlayerErrorKind::DecodeFailed
+    } else if lower.contains("device")
+        || lower.contains("wasapi")
+        || lower.contains("exclusive")
+        || lower.contains("cpal")
+        || lower.contains("backend")
+    {
+        PlayerErrorKind::DeviceUnavailable
+    } else {
+        PlayerErrorKind::Other
     }
 }
 

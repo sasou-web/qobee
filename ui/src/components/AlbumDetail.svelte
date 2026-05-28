@@ -2,12 +2,11 @@
   import {
     albumSizeBytes,
     getAlbum,
-    playAlbumFromTrack,
     type AlbumDetail as AlbumDetailT,
   } from "../lib/api";
   import { app } from "../lib/stores.svelte";
   import Cover from "./Cover.svelte";
-  import Icon from "./Icon.svelte";
+  import PlayButton from "./PlayButton.svelte";
   import TrackList from "./TrackList.svelte";
   import { formatDuration } from "../lib/format";
 
@@ -41,19 +40,6 @@
       return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   }
-
-  async function handlePlayAlbum(): Promise<void> {
-    if (!detail || detail.tracks.length === 0) return;
-    const first = detail.tracks[0];
-    if (!first) return;
-    try {
-      // Queue the whole album from the first track. Lets the engine
-      // pick up shuffle/repeat state without us re-implementing it.
-      await playAlbumFromTrack(detail.album.id, first.id);
-    } catch (e) {
-      app.lastError = String(e);
-    }
-  }
 </script>
 
 <button class="back" onclick={() => app.goBack()}>← Back</button>
@@ -83,15 +69,10 @@
         {/if}
       </div>
       <div class="actions">
-        <button
-          class="play-btn"
-          onclick={handlePlayAlbum}
-          disabled={detail.tracks.length === 0}
-          aria-label="Play album"
-        >
-          <Icon name="play" size={16} />
-          <span>Play</span>
-        </button>
+        <PlayButton
+          target={{ kind: "album", id: album.id }}
+          size="lg"
+        />
       </div>
     </div>
   </header>
@@ -165,36 +146,6 @@
     display: flex;
     gap: var(--space-3);
     margin-top: var(--space-4);
-  }
-  .play-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2);
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    padding: 10px var(--space-5);
-    border-radius: var(--radius-pill);
-    font-weight: 600;
-    font-size: 13px;
-    cursor: pointer;
-    box-shadow: 0 6px 18px -6px var(--accent-glow);
-    transition: transform var(--dur-base) var(--ease-spring),
-      box-shadow var(--dur-base) var(--ease-out),
-      background var(--dur-fast) var(--ease-out);
-  }
-  .play-btn:hover {
-    transform: scale(1.04);
-    box-shadow: 0 10px 24px -6px var(--accent-glow);
-    background: var(--accent);
-  }
-  .play-btn:active:not(:disabled) {
-    transform: scale(0.96);
-  }
-  .play-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    box-shadow: none;
   }
   .state {
     color: var(--fg-2);

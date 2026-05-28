@@ -22,6 +22,7 @@
   import { createPlaylist } from "../lib/api";
   import { app } from "../lib/stores.svelte";
   import Icon from "./Icon.svelte";
+  import NamePromptDialog from "./NamePromptDialog.svelte";
 
   // ---- Constants -----------------------------------------------------------
 
@@ -142,11 +143,16 @@
 
   // ---- Existing actions ----------------------------------------------------
 
-  async function handleNewPlaylist(): Promise<void> {
-    const name = window.prompt("Playlist name");
-    if (!name || !name.trim()) return;
+  let showNewPlaylistDialog = $state(false);
+
+  function openNewPlaylistDialog(): void {
+    showNewPlaylistDialog = true;
+  }
+
+  async function submitNewPlaylist(name: string): Promise<void> {
+    showNewPlaylistDialog = false;
     try {
-      const created = await createPlaylist(name.trim());
+      const created = await createPlaylist(name);
       await app.refreshPlaylists();
       app.selectPlaylist(created.id);
     } catch (e) {
@@ -226,9 +232,12 @@
     <span class="label">Playlists</span>
     <button
       class="ghost"
-      onclick={handleNewPlaylist}
+      onclick={openNewPlaylistDialog}
       title="New playlist"
-    >+</button>
+      aria-label="New playlist"
+    >
+      <Icon name="plus" size={14} />
+    </button>
   </div>
 
   <nav class="playlists">
@@ -270,6 +279,16 @@
     ondblclick={onHandleDouble}
   ></div>
 </aside>
+
+<NamePromptDialog
+  open={showNewPlaylistDialog}
+  title="New playlist"
+  label="Playlist name"
+  placeholder="My playlist"
+  submitLabel="Create"
+  onsubmit={submitNewPlaylist}
+  oncancel={() => (showNewPlaylistDialog = false)}
+/>
 
 <style>
   aside {
@@ -427,20 +446,41 @@
   aside.collapsed .section-header .label {
     display: none;
   }
+  /* Inline action button next to the "Playlists" header. Replaces
+     the previous text "+" + 90° rotate animation, which sub-pixel-
+     rendered with red/blue chromatic fringes on Windows WebView2.
+     The new version uses a real SVG glyph and a clean scale +
+     background pulse on hover. */
   .ghost {
     background: transparent;
     border: none;
     color: var(--fg-2);
     cursor: pointer;
-    padding: 0 6px;
-    font-size: 16px;
-    line-height: 1;
-    transition: color var(--dur-fast) var(--ease-out),
-      transform var(--dur-base) var(--ease-spring);
+    padding: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition:
+      color var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out);
   }
   .ghost:hover {
-    color: var(--accent);
-    transform: rotate(90deg);
+    color: var(--fg-0);
+    background: rgba(255, 255, 255, 0.08);
+    transform: scale(1.08);
+  }
+  .ghost:active {
+    transform: scale(0.94);
+  }
+  .ghost:focus-visible {
+    outline: none;
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--fg-0);
+    box-shadow: 0 0 0 2px var(--accent-soft);
   }
   .spacer {
     flex: 1;

@@ -38,3 +38,36 @@ export function formatOutputMode(mode: string): string {
       return mode;
   }
 }
+
+/**
+ * EQ gain label.
+ *
+ * - `v > 0`  → `"+{v} dB"` (explicit `+`)
+ * - `v === 0`→ `"0 dB"` (no sign)
+ * - `v < 0`  → `"-{|v|} dB"` (explicit `-`)
+ *
+ * The numeric portion is stringified as-is so a half-step like `1.5`
+ * renders as `"+1.5 dB"`. Callers that want a fixed precision should
+ * round before invoking this function.
+ *
+ * Validates: Requirements R4.1, R4.2, R4.3.
+ */
+export function formatGainDb(v: number): string {
+  if (v > 0) return `+${v} dB`;
+  if (v === 0) return `0 dB`;
+  return `-${Math.abs(v)} dB`;
+}
+
+/**
+ * EQ band frequency label.
+ *
+ * Below 1000 Hz the value is shown in Hz (`"32 Hz"`), at or above
+ * 1000 Hz it switches to kHz (`"1 kHz"`, `"16 kHz"`). Division is a
+ * plain `/ 1000` so canonical bands like 1000 / 2000 / 4000 / 8000
+ * / 16000 produce integer kHz strings.
+ *
+ * Validates: Requirements R4.4.
+ */
+export function formatFrequency(hz: number): string {
+  return hz < 1000 ? `${hz} Hz` : `${hz / 1000} kHz`;
+}

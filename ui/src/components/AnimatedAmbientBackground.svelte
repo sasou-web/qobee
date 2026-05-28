@@ -137,23 +137,25 @@
     opacity: 0;
   }
 
-  /* Dark veil — gentle radial dim plus a vertical wash so the
-     foreground stays readable. Kept light because the colored
-     field beneath now has structure and we don't want to mask it. */
+  /* Dark veil — strong enough to handle very light or near-white
+     artwork. We rely on this veil (not text-shadow) to keep the
+     foreground legible, so it has to be opaque enough that white
+     text reads against any cover. */
   .veil {
     position: absolute;
     inset: 0;
     background:
       radial-gradient(
         ellipse 115% 100% at 50% 45%,
-        transparent 50%,
-        rgba(0, 0, 0, 0.32) 88%,
-        rgba(0, 0, 0, 0.5) 100%
+        rgba(0, 0, 0, 0.4) 0%,
+        rgba(0, 0, 0, 0.6) 60%,
+        rgba(0, 0, 0, 0.78) 88%,
+        rgba(0, 0, 0, 0.88) 100%
       ),
       linear-gradient(
         180deg,
-        rgba(0, 0, 0, 0) 0%,
-        rgba(0, 0, 0, 0.18) 100%
+        rgba(0, 0, 0, 0.25) 0%,
+        rgba(0, 0, 0, 0.45) 100%
       );
   }
 

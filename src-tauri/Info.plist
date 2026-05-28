@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Qobee — macOS Info.plist override.
+
+        Tauri 2 derives CFBundleName from `productName` and maps
+        `bundle.category = "Music"` to LSApplicationCategoryType
+        automatically. We override both explicitly here so the values
+        are auditable in source and survive any future upstream
+        change to the auto-mapping.
+
+        Validates: Requirements R6.1, R6.4 in
+        `.kiro/specs/native-media-integration-and-ux/requirements.md`.
+    -->
+    <key>CFBundleName</key>
+    <string>Qobee</string>
+    <key>CFBundleDisplayName</key>
+    <string>Qobee</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.music</string>
+</dict>
+</plist>

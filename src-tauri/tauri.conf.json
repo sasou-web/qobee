@@ -1,6 +1,6 @@
 {
   "productName": "Qobee",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "identifier": "app.qobee.player",
   "build": {
     "beforeDevCommand": "npm --prefix ../ui run dev",
@@ -21,7 +21,9 @@
         "fullscreen": false,
         "decorations": false,
         "shadow": true,
-        "transparent": false
+        "transparent": false,
+        "visible": false,
+        "backgroundColor": "#0a0c10"
       }
     ],
     "security": {

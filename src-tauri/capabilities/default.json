@@ -19,6 +19,7 @@
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:webview:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "notification:default"
   ]
 }

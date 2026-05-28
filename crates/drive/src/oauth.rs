@@ -174,7 +174,7 @@ impl OAuthSession {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().unwrap_or_default();
-            return Err(DriveError::Api { status, body });
+            return Err(classify_token_error(status, body));
         }
         let tr: TokenResponse = resp.json()?;
         let now = unix_now();
@@ -220,6 +220,12 @@ pub fn refresh_access_token(tokens: &mut StoredTokens) -> DriveResult<()> {
         // error so the UI can route the user to the wizard.
         if status == 400 || status == 401 {
             return Err(DriveError::NeedsReauth(body));
+        }
+        // 403 / explicit `error=access_denied` etc. mean Google
+        // refuses the user, not the token — caller routes to
+        // `DriveErrorScreen` instead of replaying the wizard.
+        if status == 403 {
+            return Err(DriveError::AccessDenied { reason: body });
         }
         return Err(DriveError::Api { status, body });
     }
@@ -294,28 +300,28 @@ fn handle_redirect(stream: &mut TcpStream, expected_state: &str) -> DriveResult<
         .and_then(|line| line.split_whitespace().nth(1))
         .ok_or_else(|| DriveError::OAuth("malformed redirect request".into()))?;
 
-    let url = url::Url::parse(&format!("http://localhost{path}"))
-        .map_err(|e| DriveError::OAuth(format!("bad redirect url: {e}")))?;
-
-    let mut got_code: Option<String> = None;
-    let mut got_state: Option<String> = None;
-    let mut got_error: Option<String> = None;
-    for (k, v) in url.query_pairs() {
-        match &*k {
-            "code" => got_code = Some(v.into_owned()),
-            "state" => got_state = Some(v.into_owned()),
-            "error" => got_error = Some(v.into_owned()),
-            _ => {}
-        }
-    }
+    let parsed = parse_redirect_query(path)?;
 
     // Always close the response, success or not, so the browser
-    // doesn't hang waiting.
-    let body = match got_error {
-        Some(ref e) => format!(
-            "<html><body><h1>Qobee — authorization failed</h1><pre>{e}</pre><p>You can close this tab.</p></body></html>"
+    // doesn't hang waiting. Page copy is in French (R5.1) — the
+    // tab is the only thing the user sees right after the consent
+    // screen and Qobee is a French-speaking app.
+    let body = match parsed.outcome {
+        RedirectOutcome::Code(_) => {
+            "<html><body><h1>Qobee est connecté.</h1>\
+             <p>Tu peux fermer cet onglet.</p></body></html>"
+                .to_string()
+        }
+        RedirectOutcome::AccessDenied(ref reason) => format!(
+            "<html><body><h1>Qobee — accès refusé</h1>\
+             <pre>{reason}</pre>\
+             <p>Tu peux fermer cet onglet.</p></body></html>"
         ),
-        None => "<html><body><h1>Qobee is connected.</h1><p>You can close this tab.</p></body></html>".into(),
+        RedirectOutcome::Error(ref err) => format!(
+            "<html><body><h1>Qobee — autorisation échouée</h1>\
+             <pre>{err}</pre>\
+             <p>Tu peux fermer cet onglet.</p></body></html>"
+        ),
     };
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -325,17 +331,121 @@ fn handle_redirect(stream: &mut TcpStream, expected_state: &str) -> DriveResult<
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
 
-    if let Some(err) = got_error {
-        return Err(DriveError::OAuth(format!("OAuth provider error: {err}")));
+    match parsed.outcome {
+        RedirectOutcome::AccessDenied(reason) => {
+            Err(DriveError::AccessDenied { reason })
+        }
+        RedirectOutcome::Error(err) => {
+            Err(DriveError::OAuth(format!("OAuth provider error: {err}")))
+        }
+        RedirectOutcome::Code(code) => {
+            if parsed.state.as_deref().unwrap_or("") != expected_state {
+                return Err(DriveError::OAuth(
+                    "state mismatch in OAuth callback (possible CSRF)".into(),
+                ));
+            }
+            Ok(code)
+        }
     }
-    let code = got_code.ok_or_else(|| DriveError::OAuth("no `code` in redirect".into()))?;
-    let state = got_state.unwrap_or_default();
-    if state != expected_state {
-        return Err(DriveError::OAuth(
-            "state mismatch in OAuth callback (possible CSRF)".into(),
-        ));
+}
+
+/// Outcome of parsing the `?code=…&state=…` (or `?error=…`) tail
+/// of a redirect URL. Split out from `handle_redirect` so we can
+/// unit-test it without spinning up a TCP listener.
+#[derive(Debug, PartialEq, Eq)]
+enum RedirectOutcome {
+    /// `error=access_denied | admin_policy_enforced | unauthorized_client`
+    /// — Google refused the user. Reason carries the raw `error`
+    /// (and `error_description` when present).
+    AccessDenied(String),
+    /// Any other `error=...` value — generic OAuth failure.
+    Error(String),
+    /// Authorization code captured. The caller still has to verify
+    /// `state` matches.
+    Code(String),
+}
+
+#[derive(Debug)]
+struct ParsedRedirect {
+    outcome: RedirectOutcome,
+    state: Option<String>,
+}
+
+/// Returns the access-denial classification for a Google `error=...`
+/// query parameter. These three values are the ones Google emits
+/// when the consent flow itself refuses the user (R5.1):
+///
+/// * `access_denied`         — the user clicked Cancel or the app is
+///   not verified and the account is not in the test users list.
+/// * `admin_policy_enforced` — Workspace admin policy blocks the
+///   scopes / app.
+/// * `unauthorized_client`   — the OAuth client is misconfigured for
+///   this account (wrong type, wrong project).
+fn is_access_denied(error: &str) -> bool {
+    matches!(
+        error,
+        "access_denied" | "admin_policy_enforced" | "unauthorized_client"
+    )
+}
+
+fn parse_redirect_query(path: &str) -> DriveResult<ParsedRedirect> {
+    let url = url::Url::parse(&format!("http://localhost{path}"))
+        .map_err(|e| DriveError::OAuth(format!("bad redirect url: {e}")))?;
+
+    let mut got_code: Option<String> = None;
+    let mut got_state: Option<String> = None;
+    let mut got_error: Option<String> = None;
+    let mut got_error_description: Option<String> = None;
+    for (k, v) in url.query_pairs() {
+        match &*k {
+            "code" => got_code = Some(v.into_owned()),
+            "state" => got_state = Some(v.into_owned()),
+            "error" => got_error = Some(v.into_owned()),
+            "error_description" => got_error_description = Some(v.into_owned()),
+            _ => {}
+        }
     }
-    Ok(code)
+
+    let outcome = if let Some(err) = got_error {
+        let reason = match got_error_description {
+            Some(desc) if !desc.is_empty() => format!("{err}: {desc}"),
+            _ => err.clone(),
+        };
+        if is_access_denied(&err) {
+            RedirectOutcome::AccessDenied(reason)
+        } else {
+            RedirectOutcome::Error(reason)
+        }
+    } else {
+        let code = got_code
+            .ok_or_else(|| DriveError::OAuth("no `code` in redirect".into()))?;
+        RedirectOutcome::Code(code)
+    };
+
+    Ok(ParsedRedirect {
+        outcome,
+        state: got_state,
+    })
+}
+
+/// Map a non-2xx response from the token endpoint to the right
+/// `DriveError` variant. Mirrors the redirect classifier so a 403
+/// at any point in the flow ends up on `DriveErrorScreen` instead
+/// of as a raw API error.
+fn classify_token_error(status: u16, body: String) -> DriveError {
+    if status == 403 {
+        return DriveError::AccessDenied { reason: body };
+    }
+    // Cheap parse: Google returns JSON like
+    // `{"error":"access_denied","error_description":"..."}`.
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+        if let Some(err) = value.get("error").and_then(|v| v.as_str()) {
+            if is_access_denied(err) {
+                return DriveError::AccessDenied { reason: body };
+            }
+        }
+    }
+    DriveError::Api { status, body }
 }
 
 /// Generate a 64-character PKCE verifier (RFC 7636 §4.1: 43-128
@@ -396,5 +506,106 @@ mod tests {
     fn verifier_length() {
         let v = generate_pkce_verifier();
         assert!(v.len() >= 43 && v.len() <= 128);
+    }
+
+    // --- Redirect parser ---------------------------------------------------
+
+    #[test]
+    fn redirect_parses_authorization_code() {
+        let parsed = parse_redirect_query("/qobee/oauth/callback?code=abc&state=st").unwrap();
+        assert_eq!(parsed.outcome, RedirectOutcome::Code("abc".into()));
+        assert_eq!(parsed.state.as_deref(), Some("st"));
+    }
+
+    #[test]
+    fn redirect_classifies_access_denied_user_decline() {
+        let parsed = parse_redirect_query(
+            "/qobee/oauth/callback?error=access_denied&error_description=The%20user%20denied%20the%20request",
+        )
+        .unwrap();
+        match parsed.outcome {
+            RedirectOutcome::AccessDenied(reason) => {
+                assert!(reason.contains("access_denied"));
+                assert!(reason.contains("denied the request"));
+            }
+            other => panic!("expected AccessDenied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn redirect_classifies_admin_policy_enforced() {
+        let parsed =
+            parse_redirect_query("/qobee/oauth/callback?error=admin_policy_enforced").unwrap();
+        assert!(matches!(parsed.outcome, RedirectOutcome::AccessDenied(_)));
+    }
+
+    #[test]
+    fn redirect_classifies_unauthorized_client() {
+        let parsed =
+            parse_redirect_query("/qobee/oauth/callback?error=unauthorized_client").unwrap();
+        assert!(matches!(parsed.outcome, RedirectOutcome::AccessDenied(_)));
+    }
+
+    #[test]
+    fn redirect_keeps_unknown_errors_generic() {
+        let parsed =
+            parse_redirect_query("/qobee/oauth/callback?error=server_error").unwrap();
+        assert!(matches!(parsed.outcome, RedirectOutcome::Error(_)));
+    }
+
+    #[test]
+    fn redirect_missing_both_code_and_error_is_oauth_error() {
+        let err = parse_redirect_query("/qobee/oauth/callback").unwrap_err();
+        match err {
+            DriveError::OAuth(msg) => assert!(msg.contains("no `code`")),
+            other => panic!("expected OAuth error, got {other:?}"),
+        }
+    }
+
+    // --- HTTP 403 classifier -----------------------------------------------
+
+    #[test]
+    fn http_403_maps_to_access_denied() {
+        let err = classify_token_error(403, "{\"error\":\"forbidden\"}".into());
+        match err {
+            DriveError::AccessDenied { reason } => assert!(reason.contains("forbidden")),
+            other => panic!("expected AccessDenied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn http_400_with_access_denied_body_maps_to_access_denied() {
+        let err = classify_token_error(
+            400,
+            "{\"error\":\"access_denied\",\"error_description\":\"App not verified\"}".into(),
+        );
+        assert!(matches!(err, DriveError::AccessDenied { .. }));
+    }
+
+    #[test]
+    fn http_500_stays_generic_api_error() {
+        let err = classify_token_error(500, "boom".into());
+        match err {
+            DriveError::Api { status, .. } => assert_eq!(status, 500),
+            other => panic!("expected Api, got {other:?}"),
+        }
+    }
+
+    // --- Scope assertions --------------------------------------------------
+
+    #[test]
+    fn drive_scope_is_exactly_readonly_pair() {
+        // R5.4: Qobee asks for `drive.readonly` and
+        // `drive.metadata.readonly` and nothing else.
+        let scopes: Vec<&str> = crate::DRIVE_SCOPE.split_whitespace().collect();
+        assert_eq!(
+            scopes,
+            vec![
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/drive.metadata.readonly",
+            ]
+        );
+        assert!(!crate::DRIVE_SCOPE.contains("drive.file"));
+        assert!(!crate::DRIVE_SCOPE.contains("/drive "));
     }
 }

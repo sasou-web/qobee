@@ -69,14 +69,18 @@ use crate::audio_settings::{AudioSettings, PeakLimiterMode};
 use crate::dsp::clip::soft_clip;
 use crate::dsp::DspStage;
 
-/// Fixed attack length: R3.5 mandates `≤ 1 ms`. The look-ahead
-/// buffer is what gives the limiter its gradual, distortion-free
-/// envelope on the *output* timeline; on the internal envelope
-/// signal we use an instant snap when ducking. This satisfies
-/// Property 6's literal reading ("envelope reaches target by 1 ms")
-/// while staying consistent with the design's pseudocode (the
-/// follower formula collapses to `envelope = target_gain` when
-/// `attack_coef = 0`).
+/// Attack time constant: R3.5 mandates `≤ 1 ms`. The follower
+/// uses a one-pole `exp(-1/attack_samples)` coefficient on ducking
+/// (target below current envelope) so the gain reduction is
+/// progressive rather than a hard snap. With the default 5 ms
+/// look-ahead the envelope is `1 - e^-5 ≈ 99.3 %` of the way to
+/// target by the time the offending peak exits the buffer, which
+/// gives the same audible peak protection as a snap without the
+/// "all subsequent samples are ducked from frame zero" pumping
+/// that a snap produces on transient-rich material (kicks, bass
+/// attacks). The hard clamp to `±ceiling_linear` at the very end
+/// of the loop catches any residual that the follower has not
+/// reached yet (1 or 2 samples on a fast-rising peak).
 const ATTACK_MS: f32 = 1.0;
 
 // -----------------------------------------------------------------------------
@@ -206,12 +210,12 @@ pub struct PeakLimiter {
 
     buffer: ChannelBuffer,
     envelope: f32,
-    /// One-pole attack coefficient `exp(-1 / attack_samples)`. Stored
-    /// for compatibility with the design pseudocode; the look-ahead
-    /// path uses an instant-snap attack instead, so this is currently
-    /// only used by `reconfigure` for trace consistency. See
-    /// `process_lookahead` for the actual ducking behaviour.
-    #[allow(dead_code)]
+    /// One-pole attack coefficient `exp(-1 / attack_samples)`. Used
+    /// in `process_lookahead` to ramp the envelope toward the target
+    /// gain over `≈ ATTACK_MS` (R3.5). With a look-ahead window of
+    /// `≥ 5 × ATTACK_MS` the follower is essentially at target by
+    /// the time the offending peak reaches the output, so the
+    /// protective clamp downstream rarely needs to engage.
     attack_coef: f32,
     release_coef: f32,
 
@@ -313,17 +317,25 @@ impl PeakLimiter {
                 self.unity_envelope_streak = 0;
             }
 
-            // 3) asymmetric envelope follower. A look-ahead limiter
-            //    snaps the envelope to its target instantly on
-            //    attack (gain reduction) — the look-ahead buffer is
-            //    what gives the *output* the gradual, distortion-free
-            //    transition. On release we use the standard one-pole
-            //    coefficient. This is equivalent to the design's
-            //    pseudocode with `attack_coef = 0`, which makes
-            //    Property 6 ("envelope reaches target in ≤ 1 ms")
-            //    a hard guarantee rather than an asymptote.
+            // 3) asymmetric envelope follower. On attack (target
+            //    below current envelope) we use the one-pole
+            //    `attack_coef` (≈ 1 ms time constant) so the gain
+            //    reduction is progressive: a kick at the head of
+            //    the look-ahead window does not immediately duck
+            //    every subsequent sample by its full reduction.
+            //    With a 5 ms look-ahead the follower has reached
+            //    `1 - e^-5 ≈ 99.3 %` of target by the time the peak
+            //    leaves the buffer, so the hard clamp downstream
+            //    catches at most a handful of residual samples.
+            //    On release we use the standard one-pole
+            //    coefficient. This matches the design's pseudocode
+            //    literally (asymmetric one-pole follower) and
+            //    eliminates the "pumping" audible on transient-rich
+            //    material when the previous implementation snapped
+            //    the envelope on attack.
             if target_gain < self.envelope {
-                self.envelope = target_gain;
+                let coef = self.attack_coef;
+                self.envelope = coef * self.envelope + (1.0 - coef) * target_gain;
             } else {
                 let coef = self.release_coef;
                 self.envelope = coef * self.envelope + (1.0 - coef) * target_gain;

@@ -2,7 +2,10 @@
   import { onMount } from "svelte";
   import { fly } from "svelte/transition";
   import { listen } from "@tauri-apps/api/event";
+  import { invoke } from "@tauri-apps/api/core";
   import { app } from "./lib/stores.svelte";
+  import { playerStore } from "./lib/playerStore.svelte";
+  import type { PlayerEventDto } from "./lib/playerEvent";
   import { settings } from "./lib/settings.svelte";
   import { accent } from "./lib/accent.svelte";
   import { discordPresence } from "./lib/discordPresence";
@@ -117,6 +120,20 @@
       cleanupDeepLink = un;
     });
 
+    // R8 transport bus: a single listener on `player:event` feeds
+    // the reactive `playerStore`. Registered here in App.svelte —
+    // the root is never unmounted (Qobee uses a home-grown router
+    // on top of App.svelte, not SvelteKit) so the listener
+    // survives every page transition. Doing this in any child
+    // page would re-register on each visit and either leak
+    // listeners or miss events between mounts.
+    let cleanupPlayerEvent: (() => void) | null = null;
+    void listen<PlayerEventDto>("player:event", (e) => {
+      playerStore.apply(e.payload);
+    }).then((un) => {
+      cleanupPlayerEvent = un;
+    });
+
     void (async () => {
       await settings.load();
       await app.wire();
@@ -152,11 +169,27 @@
       }
     })();
 
+    // R7 — reveal the window once Svelte has mounted and the first
+    // paint is done. We create the window with `visible: false` in
+    // `tauri.conf.json` so the user never sees the WebView's default
+    // white background flash before the dark theme paints. Two
+    // chained `requestAnimationFrame`s give Svelte time to commit
+    // the DOM and the browser time to actually paint it.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        void invoke("show_main_window").catch(() => {
+          // If the command fails (e.g. running outside Tauri during
+          // `vite preview`) the window is already visible. No-op.
+        });
+      });
+    });
+
     return () => {
       window.removeEventListener("contextmenu", onContext);
       cleanupKeys();
       if (cleanupDrop) cleanupDrop();
       if (cleanupDeepLink) cleanupDeepLink();
+      if (cleanupPlayerEvent) cleanupPlayerEvent();
     };
   });
 

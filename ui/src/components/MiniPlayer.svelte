@@ -3,9 +3,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import {
     nextTrack,
-    pause,
     prevTrack,
-    resume,
     seek,
     type Track,
     getTrack,
@@ -15,6 +13,7 @@
   import { formatDuration } from "../lib/format";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
+  import PlayButton from "./PlayButton.svelte";
 
   // The MiniPlayer runs in its own webview window, so it has its
   // own Svelte runtime. We must wire the player events ourselves
@@ -43,19 +42,9 @@
       });
   });
 
-  let isPlaying = $derived(app.player.status === "playing");
   let pos = $derived(app.player.position_seconds);
   let dur = $derived(Math.max(app.player.duration_seconds, track?.duration_seconds ?? 0));
   let pct = $derived(dur > 0 ? Math.min(100, (pos / dur) * 100) : 0);
-
-  async function togglePlayPause(): Promise<void> {
-    try {
-      if (isPlaying) await pause();
-      else await resume();
-    } catch (e) {
-      console.error(e);
-    }
-  }
 
   let alwaysOnTop = $state(true);
   async function toggleAlwaysOnTop(): Promise<void> {
@@ -167,18 +156,11 @@
           >
             <Icon name="prev" size={18} />
           </button>
-          <button
-            class="play"
-            onclick={togglePlayPause}
-            aria-label={isPlaying ? "Pause" : "Play"}
-            title={isPlaying ? "Pause" : "Play"}
-          >
-            {#if isPlaying}
-              <Icon name="pause" size={20} />
-            {:else}
-              <Icon name="play" size={20} />
-            {/if}
-          </button>
+          <PlayButton
+            target={{ kind: "track", id: track.id }}
+            size="md"
+            class="mini-play"
+          />
           <button
             class="ghost"
             onclick={() => void nextTrack()}
@@ -363,18 +345,13 @@
   .controls .ghost:active {
     transform: scale(0.95);
   }
-  .controls .play {
-    background: var(--accent);
-    color: #ffffff;
+  /* The PlayButton sized "md" is 36px which sits well between the
+     32px ghost siblings. Use the named class to bump elevation
+     slightly so it feels like the primary action. */
+  :global(.controls .mini-play) {
     width: 38px;
     height: 38px;
-    box-shadow: 0 4px 12px var(--accent-glow);
-  }
-  .controls .play:hover {
-    background: var(--accent-2);
-  }
-  .controls .play:active {
-    transform: scale(0.95);
+    --pb-size: 38px;
   }
 
   .empty {

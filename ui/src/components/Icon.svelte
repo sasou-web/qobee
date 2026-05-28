@@ -34,7 +34,8 @@
     | "expand"
     | "compress"
     | "quote"
-    | "minimize-2";
+    | "minimize-2"
+    | "plus";
 
   interface Props {
     name: IconName;
@@ -46,22 +47,22 @@
 
 {#if name === "play"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-    <path d="M9 6.75c0-.86.94-1.39 1.68-.95l8 4.6a1.1 1.1 0 0 1 0 1.9l-8 4.6c-.74.43-1.68-.1-1.68-.95V6.75z" />
+    <path d="M8 5.5c0-1 1.1-1.6 1.95-1.1l9.9 6c.83.5.83 1.7 0 2.2l-9.9 6C9.1 19.1 8 18.5 8 17.5v-12z" />
   </svg>
 {:else if name === "pause"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-    <rect x="7" y="5" width="3.6" height="14" rx="1.4" />
-    <rect x="13.4" y="5" width="3.6" height="14" rx="1.4" />
+    <rect x="6.5" y="4.5" width="3.8" height="15" rx="1.6" />
+    <rect x="13.7" y="4.5" width="3.8" height="15" rx="1.6" />
   </svg>
 {:else if name === "next"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-    <path d="M7 7.4c0-.86.96-1.39 1.69-.94l6.36 3.94a1.18 1.18 0 0 1 0 2l-6.36 3.94c-.73.45-1.69-.08-1.69-.94V7.4z" />
-    <rect x="16" y="6.6" width="2.2" height="10.8" rx="1.1" />
+    <path d="M3.4 6.6c0-.88.97-1.42 1.71-.96l7.4 4.6a1.13 1.13 0 0 1 0 1.92l-7.4 4.6c-.74.46-1.71-.08-1.71-.96V6.6z" />
+    <path d="M12.4 6.6c0-.88.97-1.42 1.71-.96l7.4 4.6a1.13 1.13 0 0 1 0 1.92l-7.4 4.6c-.74.46-1.71-.08-1.71-.96V6.6z" />
   </svg>
 {:else if name === "prev"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-    <rect x="5.8" y="6.6" width="2.2" height="10.8" rx="1.1" />
-    <path d="M17 7.4c0-.86-.96-1.39-1.69-.94l-6.36 3.94a1.18 1.18 0 0 0 0 2l6.36 3.94c.73.45 1.69-.08 1.69-.94V7.4z" />
+    <path d="M20.6 6.6c0-.88-.97-1.42-1.71-.96l-7.4 4.6a1.13 1.13 0 0 0 0 1.92l7.4 4.6c.74.46 1.71-.08 1.71-.96V6.6z" />
+    <path d="M11.6 6.6c0-.88-.97-1.42-1.71-.96l-7.4 4.6a1.13 1.13 0 0 0 0 1.92l7.4 4.6c.74.46 1.71-.08 1.71-.96V6.6z" />
   </svg>
 {:else if name === "heart"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -110,8 +111,10 @@
     <path d="M7 12h10" />
   </svg>
 {:else if name === "volume"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-    <path d="M3 9v6h4l5 5V4L7 9H3zM16.5 12a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z" />
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M11 5L6.5 9H3v6h3.5L11 19V5z" fill="currentColor" stroke="none" />
+    <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+    <path d="M18.5 6a8 8 0 0 1 0 12" />
   </svg>
 {:else if name === "home"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -140,34 +143,36 @@
     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
   </svg>
 {:else if name === "shuffle"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <polyline points="16 3 21 3 21 8" />
-    <line x1="4" y1="20" x2="21" y2="3" />
-    <polyline points="21 16 21 21 16 21" />
-    <line x1="15" y1="15" x2="21" y2="21" />
-    <line x1="4" y1="4" x2="9" y2="9" />
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M3 7h3.5c1 0 1.9.5 2.5 1.3l5.5 7.4c.6.8 1.5 1.3 2.5 1.3H21" />
+    <path d="M3 17h3.5c1 0 1.9-.5 2.5-1.3l1.5-2" />
+    <path d="M14.5 8.3 16 7c.6-.5 1.3-.7 2-.7H21" />
+    <polyline points="18 4 21 7 18 10" />
+    <polyline points="18 14 21 17 18 20" />
   </svg>
 {:else if name === "repeat"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <polyline points="17 1 21 5 17 9" />
-    <path d="M3 11V9a4 4 0 0 1 4-4h14" />
-    <polyline points="7 23 3 19 7 15" />
-    <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M4 12V8a3 3 0 0 1 3-3h11" />
+    <polyline points="15 2 18 5 15 8" />
+    <path d="M20 12v4a3 3 0 0 1-3 3H6" />
+    <polyline points="9 22 6 19 9 16" />
   </svg>
 {:else if name === "repeat-one"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <polyline points="17 1 21 5 17 9" />
-    <path d="M3 11V9a4 4 0 0 1 4-4h14" />
-    <polyline points="7 23 3 19 7 15" />
-    <path d="M21 13v2a4 4 0 0 1-4 4H3" />
-    <text x="9" y="15" font-size="8" font-weight="700" fill="currentColor" stroke="none">1</text>
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M4 12V8a3 3 0 0 1 3-3h11" />
+    <polyline points="15 2 18 5 15 8" />
+    <path d="M20 12v4a3 3 0 0 1-3 3H6" />
+    <polyline points="9 22 6 19 9 16" />
+    <path d="M11.6 11l1.4-.6V14" stroke-width="2.4" />
   </svg>
 {:else if name === "queue"}
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <line x1="3" y1="6" x2="21" y2="6" />
-    <line x1="3" y1="12" x2="21" y2="12" />
-    <line x1="3" y1="18" x2="13" y2="18" />
-    <polyline points="17 16 21 18 17 20" />
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <line x1="3" y1="7" x2="14" y2="7" />
+    <line x1="3" y1="12" x2="14" y2="12" />
+    <line x1="3" y1="17" x2="11" y2="17" />
+    <path d="M16 17V8.4l5-1.4v9" />
+    <circle cx="14.5" cy="17" r="1.5" fill="currentColor" stroke="none" />
+    <circle cx="19.5" cy="15.6" r="1.5" fill="currentColor" stroke="none" />
   </svg>
 {:else if name === "trash"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -221,5 +226,10 @@
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
     <polyline points="4 14 10 14 10 20" />
     <polyline points="20 10 14 10 14 4" />
+  </svg>
+{:else if name === "plus"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <line x1="12" y1="5" x2="12" y2="19" />
+    <line x1="5" y1="12" x2="19" y2="12" />
   </svg>
 {/if}

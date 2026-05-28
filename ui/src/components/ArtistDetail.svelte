@@ -9,6 +9,7 @@
   import { app } from "../lib/stores.svelte";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
+  import PlayButton from "./PlayButton.svelte";
   import { formatDuration } from "../lib/format";
   import { openAlbumMenu } from "../lib/trackMenu";
 
@@ -83,7 +84,7 @@
       </p>
       <div class="actions">
         <button
-          class="play-btn"
+          class="play-pill"
           onclick={handleShuffleArtist}
           disabled={playing || detail.track_count === 0}
           aria-label="Shuffle play artist"
@@ -104,10 +105,18 @@
         <div class="grid" class:single-row={section.kind === "single"}>
           {#each items as a (a.album.id)}
             {@const cardSize = section.kind === "single" ? 110 : 160}
-            <button
+            <div
               class="card lift marquee-host"
               class:single={section.kind === "single"}
+              role="button"
+              tabindex="0"
               onclick={() => app.selectAlbum(a.album.id)}
+              onkeydown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  app.selectAlbum(a.album.id);
+                }
+              }}
               oncontextmenu={(e) => openAlbumMenu(e, a.album)}
               style:width={`${cardSize}px`}
             >
@@ -117,8 +126,11 @@
                   size={cardSize}
                   title={a.album.title}
                 />
-                <span class="play-overlay" aria-hidden="true">
-                  <Icon name="play" size={20} />
+                <span class="play-overlay">
+                  <PlayButton
+                    target={{ kind: "album", id: a.album.id }}
+                    size={section.kind === "single" ? "sm" : "md"}
+                  />
                 </span>
               </div>
               <div class="t">{a.album.title}</div>
@@ -127,7 +139,7 @@
                 {a.album.track_count} track{a.album.track_count === 1 ? "" : "s"}
                 · {formatDuration(a.duration_seconds)}
               </div>
-            </button>
+            </div>
           {/each}
         </div>
       </section>
@@ -178,7 +190,7 @@
     gap: var(--space-3);
     margin-top: var(--space-4);
   }
-  .play-btn {
+  .play-pill {
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
@@ -189,20 +201,24 @@
     border-radius: var(--radius-pill);
     font-weight: 600;
     font-size: 13px;
+    white-space: nowrap;
     cursor: pointer;
     box-shadow: 0 6px 18px -6px var(--accent-glow);
     transition: transform var(--dur-base) var(--ease-spring),
       box-shadow var(--dur-base) var(--ease-out),
       background var(--dur-fast) var(--ease-out);
   }
-  .play-btn:hover:not(:disabled) {
+  .play-pill :global(svg) {
+    flex-shrink: 0;
+  }
+  .play-pill:hover:not(:disabled) {
     transform: scale(1.04);
     box-shadow: 0 10px 24px -6px var(--accent-glow);
   }
-  .play-btn:active:not(:disabled) {
+  .play-pill:active:not(:disabled) {
     transform: scale(0.96);
   }
-  .play-btn:disabled {
+  .play-pill:disabled {
     opacity: 0.5;
     cursor: not-allowed;
     box-shadow: none;
@@ -245,6 +261,11 @@
   .card:hover {
     background: transparent;
   }
+  .card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-lg);
+  }
   .thumb {
     position: relative;
     border-radius: var(--radius-lg);
@@ -255,34 +276,23 @@
   }
   .play-overlay {
     position: absolute;
-    right: 12px;
-    bottom: 12px;
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    background: var(--accent);
-    color: #fff;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
+    right: 10px;
+    bottom: 10px;
     opacity: 0;
     transform: translateY(8px) scale(0.8);
     transition: opacity var(--dur-base) var(--ease-out),
       transform var(--dur-base) var(--ease-spring);
-    box-shadow: 0 10px 24px -6px rgba(0, 0, 0, 0.55);
-    pointer-events: none;
   }
-  .card:hover .play-overlay {
+  .card:hover .play-overlay,
+  .card:focus-within .play-overlay {
     opacity: 1;
     transform: translateY(0) scale(1);
   }
-  /* Singles have a smaller cover, so the overlay needs to shrink
-     accordingly or it visually crowds the thumbnail. */
+  /* Singles have a smaller cover, so the overlay sits closer to
+     the corner. The PlayButton size prop already shrinks the disc. */
   .card.single .play-overlay {
-    width: 34px;
-    height: 34px;
-    right: 8px;
-    bottom: 8px;
+    right: 6px;
+    bottom: 6px;
   }
   .t {
     color: var(--fg-0);

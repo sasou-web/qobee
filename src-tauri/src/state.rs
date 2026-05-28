@@ -9,6 +9,7 @@
 //! the custom URI protocol can serve files from it.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -37,6 +38,13 @@ struct Inner {
     _player_owner: Mutex<Option<Player>>,
     cover_cache_dir: PathBuf,
     discord: DiscordPresence,
+    /// Latched once an explicit "Quit" intent is observed (menu /
+    /// tray / `Cmd+Q` / `Ctrl+Q` / `RunEvent::ExitRequested`). When
+    /// `true`, the `WindowEvent::CloseRequested` hook stops calling
+    /// `api.prevent_close()` and lets the platform tear the app
+    /// down, regardless of the `window.close_behavior` preference
+    /// (R7.5).
+    quit_requested: AtomicBool,
 }
 
 impl AppState {
@@ -95,6 +103,7 @@ impl AppState {
                 _player_owner: Mutex::new(Some(player)),
                 cover_cache_dir,
                 discord,
+                quit_requested: AtomicBool::new(false),
             }),
         })
     }
@@ -117,5 +126,22 @@ impl AppState {
 
     pub fn discord(&self) -> &DiscordPresence {
         &self.inner.discord
+    }
+
+    /// Mark the app as on the way out. Called by every "Quit"
+    /// affordance (menu, tray, `Cmd+Q` / `Ctrl+Q`, NSIS uninstall,
+    /// the `RunEvent::ExitRequested` arm in `lib::run`). Once set,
+    /// the close-behavior hook stops intercepting
+    /// `WindowEvent::CloseRequested` so the OS can finish tearing
+    /// the process down (R7.5).
+    pub fn request_quit(&self) {
+        self.inner.quit_requested.store(true, Ordering::SeqCst);
+    }
+
+    /// Read the latched quit flag. Cheap (`Ordering::SeqCst` on a
+    /// single `AtomicBool`); called from the close-event hook on
+    /// every window close.
+    pub fn quit_requested(&self) -> bool {
+        self.inner.quit_requested.load(Ordering::SeqCst)
     }
 }

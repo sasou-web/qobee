@@ -1,0 +1,153 @@
+/*
+ * R3 Play_Button styles.
+ *
+ * Visual states (mapped from `PlayButtonState` in PlayButton.svelte):
+ * - .state-idle    : default cover-overlay look, slightly faded
+ * - .state-hover   : opacity bumped, subtle scale; via :hover
+ * - .state-pressed : :active feedback, scale down
+ * - .state-loading : pending invoke, spinner overlay
+ * - .state-playing : the engine is currently playing this target
+ * - .state-paused  : engine has this target loaded but is paused
+ * - .state-error   : last engine error pointed at this target's track id
+ *
+ * The button is always a real <button type="button"> so screen
+ * readers and keyboard users get the right semantics. Sizes are
+ * driven by `--pb-size` on the root and are read by all child
+ * elements (icon, spinner, hit area). */
+
+.play-btn {
+  --pb-size: 36px;
+  --pb-icon: 16px;
+  --pb-bg: var(--accent);
+  --pb-fg: #ffffff;
+  --pb-shadow: 0 6px 18px -6px var(--accent-glow);
+
+  position: relative;
+  width: var(--pb-size);
+  height: var(--pb-size);
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--pb-bg);
+  color: var(--pb-fg);
+  cursor: pointer;
+  box-shadow: var(--pb-shadow);
+  /* Block parent click bleed-through on touch devices: we still
+     call e.stopPropagation() in the handler; this is belt-and-
+     braces for the rare browser that bubbles a tap-then-click. */
+  touch-action: manipulation;
+  -webkit-app-region: no-drag;
+  transition:
+    transform var(--dur-base) var(--ease-spring),
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+
+.play-btn.size-sm {
+  --pb-size: 28px;
+  --pb-icon: 12px;
+}
+.play-btn.size-md {
+  --pb-size: 36px;
+  --pb-icon: 16px;
+}
+.play-btn.size-lg {
+  --pb-size: 56px;
+  --pb-icon: 22px;
+}
+
+/* idle: slightly translucent so the cover/row breathes through */
+.play-btn.state-idle {
+  opacity: 0.92;
+}
+
+.play-btn.state-hover,
+.play-btn:hover:not(:disabled) {
+  opacity: 1;
+  transform: scale(1.04);
+  box-shadow: 0 10px 24px -6px var(--accent-glow);
+}
+
+.play-btn.state-pressed,
+.play-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.play-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.play-btn.state-loading {
+  opacity: 0.85;
+  cursor: progress;
+}
+
+.play-btn.state-playing,
+.play-btn.state-paused {
+  --pb-bg: var(--accent);
+  --pb-fg: #ffffff;
+}
+
+.play-btn.state-error {
+  --pb-bg: var(--danger, #c0392b);
+  --pb-fg: #ffffff;
+  --pb-shadow: 0 6px 18px -6px rgba(192, 57, 43, 0.55);
+}
+
+.play-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+/* Inner icon — sized via the cascaded --pb-icon variable. */
+.play-btn .pb-icon {
+  display: inline-flex;
+  width: var(--pb-icon);
+  height: var(--pb-icon);
+  align-items: center;
+  justify-content: center;
+}
+
+/* Spinner used in .state-loading. Sits on top of the icon and
+   masks it via opacity. */
+.play-btn .pb-spinner {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: calc(var(--pb-size) * 0.55);
+  height: calc(var(--pb-size) * 0.55);
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #ffffff;
+  animation: pb-spin 700ms linear infinite;
+}
+.play-btn.state-loading .pb-icon {
+  opacity: 0.25;
+}
+@keyframes pb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Visually-hidden description for assistive tech (R3.6). The
+   tooltip on `title` gives sighted users the same info. */
+.play-btn .pb-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

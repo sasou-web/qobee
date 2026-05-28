@@ -114,6 +114,20 @@ pub fn set_now_playing<R: Runtime>(
     Ok(())
 }
 
+/// Hot-toggle the tray icon at runtime: create it if `enabled` and
+/// it doesn't exist yet, drop it if `!enabled` and it does.
+///
+/// Wired to the `set_tray_enabled` Tauri command added in task 10.1
+/// so the user can flip the toggle in Settings → Window without
+/// restarting the app (R7.1, R7.3 design §Window_Manager).
+pub fn set_tray_enabled<R: Runtime>(
+    app: &AppHandle<R>,
+    state: Arc<TrayState<R>>,
+    enabled: bool,
+) -> tauri::Result<()> {
+    ensure_tray(app, state, enabled)
+}
+
 fn build_menu<R: Runtime>(app: &AppHandle<R>, now_playing_label: &str) -> tauri::Result<Menu<R>> {
     let np_text = if now_playing_label.is_empty() {
         "Nothing playing".to_string()
@@ -188,6 +202,14 @@ fn dispatch_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
             let _ = app.emit_to("main", "deep-link:navigate", "settings");
         }
         ID_QUIT => {
+            // R7.5 — record the explicit Quit intent before
+            // calling `app.exit(0)` so the
+            // `WindowEvent::CloseRequested` hook does not try to
+            // hide the window or keep the process alive while the
+            // event loop is shutting down.
+            if let Some(state) = app.try_state::<AppState>() {
+                state.request_quit();
+            }
             app.exit(0);
         }
         _ => {}

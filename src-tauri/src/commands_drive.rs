@@ -33,6 +33,46 @@ use qobee_library::{index_remote_blob, SourceKind};
 
 use crate::state::AppState;
 
+/// Error payload returned by every Drive command. Serializes to a
+/// JSON object with a `kind` discriminator the frontend can switch
+/// on:
+///
+/// * `{ "kind": "access_denied", "reason": "..." }` — Google
+///   refused authorization (R5.1). The UI routes to
+///   `DriveErrorScreen`.
+/// * `{ "kind": "needs_reauth", "message": "..." }` — refresh
+///   token is dead. The UI silently replays the OAuth wizard
+///   inside the same window (R5.6).
+/// * `{ "kind": "error", "message": "..." }` — anything else.
+///   Surfaced as a generic toast / alert.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DriveCommandError {
+    AccessDenied { reason: String },
+    NeedsReauth { message: String },
+    Error { message: String },
+}
+
+impl DriveCommandError {
+    fn other(message: impl Into<String>) -> Self {
+        Self::Error {
+            message: message.into(),
+        }
+    }
+}
+
+impl From<DriveError> for DriveCommandError {
+    fn from(err: DriveError) -> Self {
+        match err {
+            DriveError::AccessDenied { reason } => Self::AccessDenied { reason },
+            DriveError::NeedsReauth(msg) => Self::NeedsReauth { message: msg },
+            other => Self::Error {
+                message: other.to_string(),
+            },
+        }
+    }
+}
+
 /// State holder for in-flight OAuth sessions. We can't keep the
 /// session inside Tauri's `State` directly because it's `!Sync`
 /// (the `TcpListener` is fine to `Send`, but we move it across
@@ -71,10 +111,10 @@ pub fn drive_oauth_start(
     client_id: String,
     client_secret: String,
     sessions: State<'_, OAuthSessions>,
-) -> Result<OAuthStartResult, String> {
+) -> Result<OAuthStartResult, DriveCommandError> {
     let session = OAuthClient::new(client_id, client_secret)
         .start()
-        .map_err(map_err)?;
+        .map_err(DriveCommandError::from)?;
     let auth_url = session.auth_url().to_string();
 
     // Best-effort browser launch. The wizard always shows the URL
@@ -115,10 +155,10 @@ pub async fn drive_oauth_wait(
     name: String,
     sessions: State<'_, OAuthSessions>,
     state: State<'_, AppState>,
-) -> Result<OAuthFinishResult, String> {
+) -> Result<OAuthFinishResult, DriveCommandError> {
     let session = sessions
         .take(&session_id)
-        .ok_or_else(|| "no such OAuth session".to_string())?;
+        .ok_or_else(|| DriveCommandError::other("no such OAuth session"))?;
 
     // Move the work to a blocking thread so we don't tie up the
     // Tauri event loop. The OAuth listener spins for up to two
@@ -149,9 +189,9 @@ pub async fn drive_oauth_wait(
             })
         })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| DriveCommandError::other(e.to_string()))?;
 
-    result.map_err(map_err)
+    result.map_err(DriveCommandError::from)
 }
 
 /// Quick connection check used by the UI to label an existing

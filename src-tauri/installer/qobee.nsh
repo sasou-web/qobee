@@ -16,6 +16,7 @@
 
 !define QOBEE_AUMID "app.qobee.player"
 !define QOBEE_PROGID "Qobee.Music.AudioFile"
+!define QOBEE_SHORTCUT_NAME "Qobee.lnk"
 
 ; --- Helper: write the protocol handler keys --------------------------------
 
@@ -31,6 +32,33 @@
     ; the first window is shown. The value isn't strictly required
     ; by Windows but lets the uninstaller blow it away cleanly.
     WriteRegStr HKCU "Software\Qobee\WindowsIntegration" "AUMID" "${QOBEE_AUMID}"
+!macroend
+
+; --- Helper: Start Menu shortcut (R6.5 / R6.6) ------------------------------
+; Create a "Qobee" shortcut in the user Start Menu pointing at the
+; installed executable with `icons/icon.ico`. Tauri's NSIS template
+; already drops a default shortcut, but we own the name + icon
+; explicitly here so they survive template changes.
+;
+; Failure is non-fatal: per R6.6 a missing shortcut must NOT abort
+; the install. We `ClearErrors` before the call, log + `ClearErrors`
+; after, and never invoke `Abort`.
+
+!macro QobeeCreateStartMenuShortcut exe icon
+    ClearErrors
+    CreateShortCut "$SMPROGRAMS\${QOBEE_SHORTCUT_NAME}" "${exe}" "" "${icon}" 0 \
+        SW_SHOWNORMAL "" "Qobee - local music player"
+    IfErrors 0 +3
+        DetailPrint "Qobee: Start Menu shortcut creation failed (non-fatal, continuing install)"
+        ClearErrors
+!macroend
+
+!macro QobeeRemoveStartMenuShortcut
+    ClearErrors
+    Delete "$SMPROGRAMS\${QOBEE_SHORTCUT_NAME}"
+    IfErrors 0 +3
+        DetailPrint "Qobee: Start Menu shortcut removal failed (non-fatal, continuing uninstall)"
+        ClearErrors
 !macroend
 
 !macro QobeeUnregisterAll
@@ -78,8 +106,10 @@
 !macro NSIS_HOOK_POSTINSTALL
     !insertmacro QobeeRegisterProtocol "$INSTDIR\qobee-app.exe"
     !insertmacro QobeeRegisterAumid
+    !insertmacro QobeeCreateStartMenuShortcut "$INSTDIR\qobee-app.exe" "$INSTDIR\icons\icon.ico"
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
+    !insertmacro QobeeRemoveStartMenuShortcut
     !insertmacro QobeeUnregisterAll
 !macroend

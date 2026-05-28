@@ -2,12 +2,19 @@
   import { createPlaylist, deletePlaylist } from "../lib/api";
   import { app } from "../lib/stores.svelte";
   import Cover from "./Cover.svelte";
+  import Icon from "./Icon.svelte";
+  import NamePromptDialog from "./NamePromptDialog.svelte";
 
-  async function handleNew(): Promise<void> {
-    const name = window.prompt("Playlist name");
-    if (!name || !name.trim()) return;
+  let showNewDialog = $state(false);
+
+  function openNewDialog(): void {
+    showNewDialog = true;
+  }
+
+  async function submitNew(name: string): Promise<void> {
+    showNewDialog = false;
     try {
-      const created = await createPlaylist(name.trim());
+      const created = await createPlaylist(name);
       await app.refreshPlaylists();
       app.selectPlaylist(created.id);
     } catch (e) {
@@ -29,7 +36,10 @@
 <section>
   <header class="header">
     <h1>Playlists</h1>
-    <button class="new" onclick={handleNew}>+ New playlist</button>
+    <button class="new" onclick={openNewDialog}>
+      <Icon name="plus" size={14} />
+      <span>New playlist</span>
+    </button>
   </header>
 
   {#if app.playlists.length === 0}
@@ -63,6 +73,16 @@
   {/if}
 </section>
 
+<NamePromptDialog
+  open={showNewDialog}
+  title="New playlist"
+  label="Playlist name"
+  placeholder="My playlist"
+  submitLabel="Create"
+  onsubmit={submitNew}
+  oncancel={() => (showNewDialog = false)}
+/>
+
 <style>
   .header {
     display: flex;
@@ -78,15 +98,26 @@
     margin: 0;
   }
   .new {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     border: 1px solid var(--border);
     color: var(--fg-0);
     padding: 6px 12px;
     border-radius: 8px;
     cursor: pointer;
     background: transparent;
+    font-size: 13px;
+    font-weight: 500;
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
   }
   .new:hover {
     background: var(--bg-2);
+    border-color: var(--accent-soft);
+    color: var(--accent);
   }
   .empty {
     color: var(--fg-2);

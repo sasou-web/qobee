@@ -6,7 +6,195 @@ follows semantic versioning.
 
 ## [Unreleased]
 
-## [0.4.2] - 2026-05-27
+## [0.5.0] - 2026-05-28
+
+A major release that lands the **Native Media Integration & UX**
+spec end to end, reworks the immersive Now Playing screen so it
+stays legible on any artwork, and finishes a broad UI/UX polish
+pass across the player bar, Settings page, Home, and the icon set.
+
+### Highlights
+
+- **Online lyrics fetching with on-disk cache**. `lyrics::read_for_track`
+  now walks five providers in order: sidecar `.lrc` → embedded
+  `Lyrics` tag → persistent JSON cache → LRCLib (synced + plain,
+  no key required) → Genius (best-effort page scrape, plain
+  only). Successful fetches are written to
+  `<APPDATA>\Qobee\lyrics\<sha1>.json` so the second open of any
+  track is instant and offline-friendly. The Tauri command
+  `get_lyrics` was updated to plumb the full `TrackLookup`
+  (title / artist / album / duration) and a cache directory
+  through, with no front-end changes required.
+- **Unified `PlayerEvent` bus**. `qobee-core` now exposes a
+  single broadcast channel (capacity 256) carrying `Started /
+  Paused / Resumed / Stopped / TrackChanged / PositionTick /
+  Errored` plus the legacy diagnostic variants. Transport
+  commands are silently idempotent (no event for a no-op),
+  position ticks are throttled to 250 ms, and a property test
+  pins the idempotence law on random command sequences.
+- **OS now-playing surfaces**. A new `MediaBridge` trait + a
+  single tokio fan-out task in `src-tauri` projects every event
+  onto Windows SMTC (`SystemMediaTransportControls`, hardware
+  keys + lock screen tile) and macOS
+  `MPNowPlayingInfoCenter` + `MPRemoteCommandCenter` (Touch
+  Bar, Control Center, AirPods double-tap), with placeholder
+  artwork bundled at compile time so the OS thumbnail always
+  has a frame to draw. A second property test asserts both
+  bridges and the UI converge to the same snapshot for any
+  event sequence.
+- **Predictable `PlayButton`**. A new `<PlayButton>` component
+  drives every play action in the app (track row, album hero,
+  mini player, player bar). Click handling is fully scoped:
+  `e.stopPropagation()` + `e.preventDefault()` so a play click
+  never bubbles into row navigation, the error state is
+  triggered only by an `Errored` event matching the button's
+  own `target.id`, and the aria-label flips between "Play" and
+  "Pause" off the derived state. The dated "loading ring" mid-
+  click visual is gone — clicks feel instant and the engine's
+  `Started` event drives the visual flip.
+- **Album / artist cards: separated click targets**. On Home,
+  Albums grid and Artist detail, the cover hover overlay is now
+  a real `<PlayButton>`. Clicking the cover navigates to the
+  album, clicking the purple disc starts playback — no more
+  navigate-instead-of-play accidents.
+- **EQ formatters and reset**. `formatGainDb` /
+  `formatFrequency` render the gain readout (`+3 dB`, `0 dB`,
+  `-2 dB`) and the band labels (Hz under 1 kHz, kHz above) in
+  Settings → Audio. A "Réinitialiser" button zeroes all ten
+  bands. A fast-check property test pins the round-trip on
+  every gain in `[-12, 12]`.
+- **Google Drive: graceful auth failures**. `qobee-drive`
+  distinguishes `AccessDenied` (`error=access_denied |
+  admin_policy_enforced | unauthorized_client`, HTTP 403) from
+  every other failure mode and ships a dedicated
+  `DriveErrorScreen` in French explaining the cause, with a
+  one-click link to `docs/google-cloud-setup.md` (full GCP
+  walkthrough) and a Retry button. `NeedsReauth` triggers a
+  silent re-flow so the session never crashes.
+- **Window manager**. Settings → Fenêtre exposes the close
+  behaviour (`quit / minimize_to_tray / keep_running_in_background`),
+  a tray toggle and a "notify on track change" toggle. The
+  tray is created or destroyed at runtime without a restart,
+  the `WindowEvent::CloseRequested` hook routes to the right
+  branch (and a `quit_requested` flag short-circuits it on
+  Cmd+Q / Ctrl+Q / tray Quit), the Windows jumplist exposes
+  Play-Pause / Next / Previous via `--play-pause` / `--next` /
+  `--previous` args, and the macOS Dock reopens / tile menu
+  call into the same handlers.
+- **OS identity for packaging**. `productName: Qobee`,
+  `identifier: app.qobee.player`, `bundle.macOS.category:
+  public.app-category.music`, `minimumSystemVersion: 11.0`,
+  `set_app_user_model_id` is wired up before the Tauri builder
+  runs, and a new `ensure_start_menu_shortcut` writes a
+  user-level `.lnk` (`%APPDATA%\…\Programs\Qobee.lnk`) carrying
+  `System.AppUserModel.ID`. With it, the SMTC "Now Playing"
+  flyout no longer reads "Unknown app" on dev builds and the
+  Windows 11 taskbar right-click jumplist actually shows our
+  Play / Pause / Next / Previous entries.
+
+### UI / UX polish
+
+- **Settings redesign**. The 9-section accordion is replaced by
+  a Cider / Spotify-style two-column layout: a 220 px sidebar
+  with a search field plus icon-labelled categories on the
+  left, and the active category's content on the right. Long
+  prose explanations under every control are removed; toggles
+  become iOS-style switches (rounded pill, accent-coloured
+  when on); rows align on a single 160 px label column for a
+  calmer rhythm. The danger button (Wipe library) is an
+  outlined red chip that fills on hover.
+- **Home: two full rows per section, no holes**. Recent
+  albums, Genres and Recent artists each render exactly two
+  full rows. The column count adapts to the actual container
+  width (sidebar collapsed / expanded both supported via a
+  `ResizeObserver`), and the slice is recomputed so the second
+  row is never half-empty: `cols = min(natural, ceil(N/2))`.
+- **Player bar**. Top divider gone (footer fades into the
+  content via the shared `--bg-shell`); the now-playing card
+  has visible-but-discreet borders at rest that brighten
+  slightly on hover, with a soft drop-shadow to lift it from
+  the bar; the heart hugs the title rather than floating off
+  to the right; the quality badge is borderless at rest
+  (border + tint appear only on hover); the seek bar's rail
+  thickens 4 → 6 px on hover and the thumb gains an `accent-
+  glow` ring; the play control is a flat icon — no disc, no
+  fill, no halo behind it — matching prev / next / shuffle /
+  repeat. The fallback rendered when no track is loaded uses
+  the same flat-icon style at 45 % opacity.
+- **Modernised transport icon set**. Play / Pause / Prev /
+  Next / Shuffle / Repeat / Repeat-one / Queue / Volume / Plus
+  redrawn from scratch. Filled glyphs (play, prev, next) get
+  rounded edges; outlines (shuffle, repeat) bumped to
+  `stroke-width: 2.2` so they read at the same density as the
+  filled siblings; the queue glyph is now three lines + a
+  music note (Apple Music–style) instead of the dated
+  list-with-arrow.
+- **Native dialogs replaced by in-app modals**. The two
+  `window.prompt("Playlist name")` calls (Sidebar's "+" button
+  and the dedicated Playlists view) are replaced by a new
+  `<NamePromptDialog>` component: glass card with fade + scale
+  in, accent-coloured Create button (disabled while the field
+  is empty), Esc / Enter shortcuts. Keeps Qobee's visual
+  language consistent with the rest of the UI.
+- **Sidebar "new playlist" button**. Replaced the rotating
+  text `+` (which produced red/blue chromatic fringes on
+  Windows WebView2) with a real SVG plus glyph and a clean
+  scale + soft background pulse on hover.
+- **Boot flash eliminated**. The main window is now created
+  with `visible: false` + `backgroundColor: #0a0c10`, and the
+  front-end calls a new `show_main_window` Tauri command
+  inside two chained `requestAnimationFrame`s once Svelte has
+  committed its first paint. No more white flash + position
+  jump on launch.
+- **Accent legibility floor**. `accent.svelte.ts` now
+  post-processes the cover-derived swatch through an
+  `ensureLegible` helper: if the picked colour falls below
+  `0.42` Rec. 709 luminance, it's lightened toward white in
+  25 % steps until it crosses the threshold. Hue is preserved.
+  Resolves the "black PlayButton with bluish halo" seen on
+  moody / near-black album art (`mercurial`-style covers).
+- **Cursor on the title-bar settings icon**. Was inheriting
+  the system-control `cursor: default`; now `cursor: pointer`
+  to match every other interactive button.
+- **`.play-pill` rename in `ArtistDetail` / `FavoritesView`**.
+  The "Shuffle Play" pill was colliding with the global
+  `.play-btn` rule from `play-button.css` (which forces a 36 px
+  round disc). Renamed to break the collision; the pill now
+  renders correctly with its icon + label inline.
+
+### Fixed
+
+- **Webview blank screen on first run**. Vite's prod build
+  resolved Svelte 5's SSR entry instead of the browser entry
+  because `resolve.conditions` was scoped to `mode === "test"`
+  only. The bundle was a fraction of its real size (30 KB vs
+  266 KB) and `mount()` threw `lifecycle_function_unavailable`
+  silently. Pinned `conditions: ["browser"]` for every Vite
+  mode.
+- **Immersive Now Playing**: the dark veil over the blurred
+  cover was too transparent on near-white artwork, leaving the
+  title unreadable. The radial veil now ramps from 0.4 at the
+  centre to 0.88 at the edges (was 0.18 → 0.78), with a
+  matching top-to-bottom wash.
+- **Title legibility**: the layered `text-shadow` on the title
+  produced a faint embossed double under each letter. The
+  shadow is now a single soft `0 1px 12px rgba(0, 0, 0, 0.5)`
+  on each line of the title block.
+- **Play button styling**: the chunky frosted disc behind the
+  play icon is gone. Prev / play / next render as flat icons
+  in a row, the play icon is just larger (36 px vs 22 px) and
+  fully opaque, with a subtle scale-on-hover. No background,
+  border, glow or backdrop-blur on the primary controls.
+
+### Infrastructure
+
+- The release workflow drops the dead `bundle.macOS.infoPlist`
+  field that Tauri CLI 2.4.0 rejected (`Info.plist` is now
+  picked up automatically from `src-tauri/Info.plist`), so the
+  hand-built `scripts/build-dev.ps1` stops failing on a config
+  validation error before reaching the Rust build.
+
+
 
 Two big themes for this release:
 

@@ -67,7 +67,7 @@
       </div>
       {#if tracks.length > 0}
         <div class="actions">
-          <button class="play-btn" onclick={() => handlePlay(0)} aria-label="Play favorites">
+          <button class="play-pill" onclick={() => handlePlay(0)} aria-label="Play favorites">
             <Icon name="play" size={16} />
             <span>Play</span>
           </button>
@@ -197,7 +197,7 @@
     gap: var(--space-3);
     margin-top: var(--space-4);
   }
-  .play-btn {
+  .play-pill {
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
@@ -213,11 +213,11 @@
     transition: transform var(--dur-base) var(--ease-spring),
       box-shadow var(--dur-base) var(--ease-out);
   }
-  .play-btn:hover {
+  .play-pill:hover {
     transform: scale(1.04);
     box-shadow: 0 10px 24px -6px var(--accent-glow);
   }
-  .play-btn:active {
+  .play-pill:active {
     transform: scale(0.96);
   }
   .state {

@@ -16,6 +16,11 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 crossbeam-channel = { workspace = true }
+# Used by `PlayerHandle::subscribe_broadcast` (R8 fan-out): a
+# `tokio::sync::broadcast` channel sits next to the legacy
+# crossbeam one so the application layer can wire UI / SMTC /
+# MPNowPlayingInfoCenter against a single source of truth.
+tokio = { workspace = true }
 
 qobee-engine = { workspace = true }
 qobee-library = { workspace = true }

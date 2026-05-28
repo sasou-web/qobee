@@ -4,6 +4,7 @@
   import { formatDuration, formatQuality } from "../lib/format";
   import { openTrackMenu } from "../lib/trackMenu";
   import { splitArtists } from "../lib/artistNames";
+  import PlayButton from "./PlayButton.svelte";
 
   interface Props {
     tracks: Track[];
@@ -82,7 +83,9 @@
           <!-- Always render the number; on the playing row it's
                hidden (visibility) so the cell keeps its intrinsic
                width and the equalizer can overlay without nudging
-               the rest of the row. -->
+               the rest of the row. The hover-revealed Play button
+               sits in the same cell and inherits the hidden state
+               so the row stays steady when the cursor enters. -->
           <span class="num-text" class:hidden={isPlaying}>
             {track.track_number ?? ""}
           </span>
@@ -91,6 +94,12 @@
               <span></span><span></span><span></span>
             </span>
           {/if}
+          <span class="row-play">
+            <PlayButton
+              target={{ kind: "track", id: track.id }}
+              size="sm"
+            />
+          </span>
         </td>
         <td class="title-cell">
           <div class="title">{track.title}</div>
@@ -123,7 +132,7 @@
     border-collapse: collapse;
     margin-top: var(--space-2);
   }
-  .col-num { width: 40px; }
+  .col-num { width: 48px; }
   .col-quality { width: 140px; }
   .col-duration { width: 80px; }
 
@@ -214,6 +223,36 @@
   @keyframes row-bar {
     0%, 100% { transform: scaleY(0.4); }
     50% { transform: scaleY(1); }
+  }
+
+  /* Hover-revealed Play button. It overlays the same cell as the
+     track number / equalizer indicator and only becomes visible on
+     row hover (or on focus-within for keyboard). The track number
+     fades out underneath. We use opacity + pointer-events so the
+     button keeps its layout box stable across the swap. */
+  .row-play {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-fast) var(--ease-out);
+  }
+  tbody tr:hover .row-play,
+  tbody tr:focus-within .row-play {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  /* When the row's Play button shows up, fade the numeric label
+     and the equalizer so they don't compete visually. */
+  tbody tr:hover .num-text,
+  tbody tr:focus-within .num-text {
+    opacity: 0;
+  }
+  tbody tr:hover .row-eq,
+  tbody tr:focus-within .row-eq {
+    opacity: 0;
   }
 
   .title {

@@ -28,6 +28,22 @@ fn map_err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// Reveal the main window once the front-end has mounted.
+///
+/// We create the window with `visible: false` in `tauri.conf.json` so
+/// the user never sees the white WebView default before the dark
+/// theme is applied. The front-end calls this from `App.svelte::onMount`
+/// (and `MiniPlayer.svelte::onMount`) once the first paint has
+/// happened, which removes the boot flash.
+///
+/// Idempotent: subsequent calls are no-ops.
+#[tauri::command]
+pub fn show_main_window(window: tauri::Window) -> Result<(), String> {
+    window.show().map_err(map_err)?;
+    window.set_focus().map_err(map_err)?;
+    Ok(())
+}
+
 /// Result returned by `scan_library`.
 #[derive(Debug, Serialize)]
 pub struct ScanResult {
@@ -110,6 +126,15 @@ pub fn play_album_from_track(
         .player()
         .play_album_from_track(album_id, track_id)
         .map_err(map_err)
+}
+
+/// Start an album from its first track. Backs the R3 `Play_Button`
+/// on album cards and on the album detail header — the UI carries
+/// only the album id and shouldn't have to look up the first track
+/// id with an extra round-trip.
+#[tauri::command]
+pub fn play_album(album_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    state.player().play_album(album_id).map_err(map_err)
 }
 
 #[tauri::command]
@@ -344,6 +369,13 @@ pub fn play_playlist_from_track(
         .player()
         .play_playlist_from_track(playlist_id, track_id)
         .map_err(map_err)
+}
+
+/// Start a playlist from its first track. Companion to [`play_album`]
+/// for the R3 `Play_Button` on playlist cards.
+#[tauri::command]
+pub fn play_playlist(playlist_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    state.player().play_playlist(playlist_id).map_err(map_err)
 }
 
 #[tauri::command]
@@ -698,6 +730,27 @@ pub fn get_device_mix_format(
     }
 }
 
+/// Open an external URL in the user's default browser.
+///
+/// Used by `DriveErrorScreen` (R5.2) to take the user to the
+/// `docs/google-cloud-setup.md` walkthrough when a Drive
+/// authorization is rejected, and by Settings → Drive for the
+/// "Comment configurer Google Drive ?" link.
+///
+/// The frontend cannot call into the Tauri 2 shell plugin without
+/// pulling another permission/plugin pair into `capabilities/`, so
+/// we expose this single-purpose command instead. URLs are
+/// validated to start with `http://` or `https://` to avoid being
+/// turned into a generic file/process opener.
+#[tauri::command]
+pub fn shell_open(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(format!("refusing to open non-http(s) url: {url}"));
+    }
+    webbrowser::open(&url).map_err(|e| format!("could not open browser: {e}"))?;
+    Ok(())
+}
+
 /// Open the Windows "Sound" control panel (`mmsys.cpl`) on the
 /// Playback tab. No-op + warning log on other operating systems so
 /// the UI can call it unconditionally.
@@ -1004,7 +1057,22 @@ pub fn get_lyrics(track_id: i64, state: State<'_, AppState>) -> Result<Lyrics, S
         .get_track(track_id)
         .map_err(map_err)?
         .ok_or_else(|| format!("track {track_id} not found"))?;
-    Ok(crate::lyrics::read_for(std::path::Path::new(&track.path)))
+
+    // Cache directory used by the online providers (LRCLib / Genius).
+    // Same root as everything else we persist for the app: `<data_dir>\Qobee\lyrics`.
+    let cache_dir = dirs::data_dir().map(|d| d.join("Qobee").join("lyrics"));
+
+    let lookup = crate::lyrics::TrackLookup {
+        audio_path: std::path::Path::new(&track.path),
+        title: &track.title,
+        artist: &track.artist,
+        album: &track.album,
+        duration_seconds: track.duration_seconds,
+    };
+    Ok(crate::lyrics::read_for_track(
+        lookup,
+        cache_dir.as_deref(),
+    ))
 }
 
 // ---------------------------------------------------------------------------

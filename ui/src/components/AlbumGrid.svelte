@@ -10,8 +10,8 @@
     type SortDirection,
   } from "../lib/sort";
   import Cover from "./Cover.svelte";
-  import Icon from "./Icon.svelte";
   import Marquee from "./Marquee.svelte";
+  import PlayButton from "./PlayButton.svelte";
   import SortMenu from "./SortMenu.svelte";
   import { openAlbumMenu } from "../lib/trackMenu";
 
@@ -57,16 +57,24 @@
   </header>
   <div class="grid">
     {#each sortedAlbums as album, i (album.id)}
-      <button
+      <div
         class="card lift marquee-host"
+        role="button"
+        tabindex="0"
         onclick={() => app.selectAlbum(album.id)}
+        onkeydown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            app.selectAlbum(album.id);
+          }
+        }}
         oncontextmenu={(e) => openAlbumMenu(e, album)}
         in:fly|global={{ y: 10, duration: 260, delay: stagger(i) }}
       >
         <div class="thumb">
           <Cover coverKey={album.cover_key} size={180} title={album.title} />
-          <span class="play-overlay" aria-hidden="true">
-            <Icon name="play" size={20} />
+          <span class="play-overlay">
+            <PlayButton target={{ kind: "album", id: album.id }} size="md" />
           </span>
         </div>
         <div class="meta">
@@ -76,7 +84,7 @@
             text={`${album.artist}${album.year ? ` · ${album.year}` : ""}`}
           />
         </div>
-      </button>
+      </div>
     {/each}
   </div>
 {/if}
@@ -118,6 +126,10 @@
   .card:hover {
     background: rgba(255, 255, 255, 0.04);
   }
+  .card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 0;
+  }
   .thumb {
     position: relative;
     border-radius: var(--radius-md);
@@ -133,23 +145,13 @@
     position: absolute;
     right: 10px;
     bottom: 10px;
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    background: var(--accent);
-    color: #fff;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
     opacity: 0;
     transform: translateY(8px) scale(0.8);
     transition: opacity var(--dur-base) var(--ease-out),
       transform var(--dur-base) var(--ease-spring);
-    box-shadow: 0 8px 20px -4px rgba(0, 0, 0, 0.55),
-      0 0 20px var(--accent-glow);
-    pointer-events: none;
   }
-  .card:hover .play-overlay {
+  .card:hover .play-overlay,
+  .card:focus-within .play-overlay {
     opacity: 1;
     transform: translateY(0) scale(1);
   }

@@ -232,6 +232,7 @@
     height: 28px;
     align-self: center;
     color: var(--fg-2);
+    cursor: pointer;
   }
   .ctrl.settings-btn:hover {
     color: var(--fg-0);

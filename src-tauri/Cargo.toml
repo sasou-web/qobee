@@ -21,6 +21,13 @@ tauri-plugin-dialog = "2.2"
 tauri-plugin-window-state = "2.4"
 tauri-plugin-single-instance = { version = "2.2", features = ["deep-link"] }
 tauri-plugin-deep-link = "2.2"
+# R7.7 — native OS notifications on `PlayerEvent::TrackChanged`
+# (Windows toast / macOS UserNotifications), routed by the R8
+# fan-out task in `src-tauri::lib::run::setup`. Throttled to one
+# per 5 s so a quick-skip burst does not flood the system tray.
+# Pinned to 2.3 (latest published series at time of writing); upgrade
+# in lock-step with the rest of the Tauri 2 plugin family.
+tauri-plugin-notification = "2.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -33,7 +40,20 @@ dirs = { workspace = true }
 crossbeam-channel = { workspace = true }
 discord-rich-presence = "1.1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "multipart"] }
+# Used by the `shell_open` Tauri command (R5.2) to open external URLs
+# in the user's default browser — typically the link to
+# `docs/google-cloud-setup.md` shown by `DriveErrorScreen`. Pinned to
+# the same major version as the one already used by `qobee-drive` so
+# only one copy is built.
+webbrowser = "1.0"
 blake3 = { workspace = true }
+# Used by the R8 fan-out task in `lib::run::setup` to consume the
+# `tokio::sync::broadcast` channel exposed by
+# `qobee_core::PlayerHandle::subscribe_broadcast`. Tauri 2.x already
+# brings a full tokio runtime through `tauri::async_runtime`; we add
+# this so the `tokio::sync::broadcast::error::RecvError` import in
+# `lib.rs` resolves at the crate level.
+tokio = { workspace = true }
 
 qobee-engine = { workspace = true }
 qobee-library = { workspace = true }
@@ -48,6 +68,17 @@ lofty = { workspace = true }
 wasapi = "0.23"
 # Used by the Windows integration module for AppUserModelID,
 # autostart registry, and the deep-link / context menu plumbing.
+# `UI_StartScreen` + `Foundation_Collections` power the jumplist
+# implementation in `windows_integration::setup_jumplist` (R7.2).
+# `Win32_System_WinRT` exposes `ISystemMediaTransportControlsInterop`
+# (`GetForWindow`); `Media` + `Media_Control` give us the SMTC
+# control surface itself (`SystemMediaTransportControls`,
+# `*DisplayUpdater`, `*TimelineProperties`, button enums) and
+# `Storage_Streams` provides `InMemoryRandomAccessStream` /
+# `DataWriter` / `RandomAccessStreamReference` used to publish the
+# album-art thumbnail. `Foundation` brings `TypedEventHandler` and
+# `TimeSpan` for the SMTC button / position-change handlers.
+# All of these are consumed by `crate::media::smtc` (R1.x).
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Registry",
@@ -55,6 +86,35 @@ windows = { version = "0.61", features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_WinRT",
     "Win32_UI_WindowsAndMessaging",
+    "UI_StartScreen",
+    "Foundation",
+    "Foundation_Collections",
+    "Media",
+    "Media_Control",
+    "Storage_Streams",
 ] }
 winreg = "0.55"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Used by `src-tauri/src/media/mac.rs` (R2: macOS Now Playing bridge —
+# `MPNowPlayingInfoCenter`, `MPRemoteCommandCenter`, NSApp menu bar).
+#
+# The native-media-integration spec asks for the four `objc2*` crates
+# pinned at `0.6.x`. In practice only the runtime crate (`objc2`)
+# ships at 0.6; the framework binding crates live on the matching
+# `0.3` release track per madsmtm's release scheme. The bridge
+# implementation went with the spec's documented fallback ("manual
+# binding via `objc2::msg_send`") and resolves Apple's MediaPlayer /
+# Foundation classes at runtime by name. That keeps the dependency
+# footprint to the runtime + block helper only and side-steps the
+# binding-version pinning question entirely. If a future task needs
+# typed bindings (e.g. for `MPMediaItemArtwork` artwork support),
+# add `objc2-foundation = "0.3"` and `objc2-media-player = "0.3"`
+# alongside the entries below.
+#
+# These deps are macOS-only so the Windows / Linux build doesn't
+# attempt to resolve them.
+objc2 = "0.6"
+block2 = "0.6"

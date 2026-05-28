@@ -185,7 +185,8 @@
         </div>
       </div>
 
-      <!-- Primary controls: prev / play / next, sized as a triad. -->
+      <!-- Primary controls: prev / play / next, flat icons in a row.
+           The play icon is just larger; no frosted disc around it. -->
       <div class="controls primary">
         <button
           class="ctrl"
@@ -193,7 +194,7 @@
           aria-label="Previous"
           title="Previous"
         >
-          <Icon name="prev" size={18} />
+          <Icon name="prev" size={22} />
         </button>
         <button
           class="ctrl play"
@@ -201,7 +202,7 @@
           aria-label={isPlaying ? "Pause" : "Play"}
           title={isPlaying ? "Pause" : "Play"}
         >
-          <Icon name={isPlaying ? "pause" : "play"} size={22} />
+          <Icon name={isPlaying ? "pause" : "play"} size={36} />
         </button>
         <button
           class="ctrl"
@@ -209,7 +210,7 @@
           aria-label="Next"
           title="Next"
         >
-          <Icon name="next" size={18} />
+          <Icon name="next" size={22} />
         </button>
       </div>
 
@@ -247,19 +248,38 @@
 <style>
   /* ============================================================ */
   /* Layout — strictly fills the viewport, never scrolls.          */
+  /*                                                                */
+  /* The immersive view is intentionally always cinematic-dark,    */
+  /* regardless of the app's light/dark theme. We override the     */
+  /* foreground / background variables locally so all child        */
+  /* components (Cover, LyricsPanel, etc.) inherit a dark palette  */
+  /* and the white-on-translucent decorations stay legible.        */
   /* ============================================================ */
   .overlay {
     position: fixed;
     inset: 0;
     width: 100vw;
     height: 100dvh;
-    background: var(--bg-0);
+    background: #07090c;
     z-index: 800;
     overflow: hidden;
     display: flex;
     align-items: center;
     justify-content: center;
     isolation: isolate;
+
+    /* Force a dark palette inside the overlay so light theme
+       doesn't flip the title/artist into dark text against a
+       bright blurred cover. */
+    --bg-0: #0e0e10;
+    --bg-1: #16161a;
+    --bg-2: #1d1d22;
+    --bg-3: #27272d;
+    --fg-0: #f4f4f6;
+    --fg-1: #c8c8d0;
+    --fg-2: #a4a4ae;
+    --fg-3: #6c6c76;
+    color-scheme: dark;
   }
 
   /* ============================================================ */
@@ -416,9 +436,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 100%;
-    text-shadow:
-      0 2px 14px rgba(0, 0, 0, 0.55),
-      0 1px 2px rgba(0, 0, 0, 0.6);
+    text-shadow: 0 1px 12px rgba(0, 0, 0, 0.5);
   }
   .artist {
     font-size: clamp(13px, 1.9dvh, 14px);
@@ -429,7 +447,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 100%;
-    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.5);
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
   }
   .album {
     font-size: clamp(9px, 1.2dvh, 10px);
@@ -442,7 +460,7 @@
     max-width: 100%;
     text-transform: uppercase;
     letter-spacing: 0.16em;
-    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
   }
 
   /* ============================================================ */
@@ -539,9 +557,9 @@
   }
 
   /* ============================================================ */
-  /* Controls — minimalist frosted-glass discs. The play button   */
-  /* is a true frosted disc with a stronger inner highlight; the  */
-  /* secondary buttons are just the icons with a hover hit area.  */
+  /* Controls — flat, icon-first. Reference: Apple Music / Spotify */
+  /* style — no glass discs, just icons in a row. The play icon   */
+  /* is bigger and brighter than prev/next; no surrounding pill.  */
   /* ============================================================ */
   .controls {
     display: flex;
@@ -549,19 +567,16 @@
     justify-content: center;
   }
   .controls.primary {
-    gap: 28px;
+    gap: 36px;
   }
   .controls.secondary {
-    gap: 16px;
-    margin-top: 4px;
+    gap: 20px;
+    margin-top: 6px;
   }
 
-  /* Default ctrl — minimalist: no fill, just an icon. The hit
-     area is a big invisible disc that lights up on hover with a
-     subtle frosted background. Removes the "cluster of pills"
-     feel of the previous version. */
+  /* Icon-only button. Hit area is generous, but visually it is
+     just the icon — no background, no border, no shadow. */
   .ctrl {
-    position: relative;
     background: transparent;
     border: none;
     color: var(--fg-1);
@@ -572,69 +587,56 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: background var(--dur-fast) var(--ease-out),
-      color var(--dur-fast) var(--ease-out),
-      transform var(--dur-fast) var(--ease-out);
+    padding: 0;
+    transition: color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out),
+      opacity var(--dur-fast) var(--ease-out);
+    opacity: 0.85;
   }
   .ctrl:hover {
-    background: rgba(255, 255, 255, 0.08);
     color: var(--fg-0);
+    opacity: 1;
   }
   .ctrl:active {
     transform: scale(0.92);
   }
   .ctrl:focus-visible {
     outline: none;
-    background: rgba(255, 255, 255, 0.1);
     color: var(--fg-0);
     box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.16);
   }
 
-  /* Play button — the only one that's truly a button. A frosted
-     disc with a strong rim and a glow that lifts it off the
-     background. Slight inset highlight on the top edge. */
+  /* Play button — same flat treatment, just a larger icon and
+     fully white. The size of the icon is what makes it the
+     primary action; no disc, no glow. */
   .ctrl.play {
-    width: 64px;
-    height: 64px;
-    background: rgba(255, 255, 255, 0.14);
-    border: 1px solid rgba(255, 255, 255, 0.22);
+    width: 56px;
+    height: 56px;
     color: var(--fg-0);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    box-shadow:
-      0 12px 32px -10px rgba(0, 0, 0, 0.6),
-      0 4px 14px rgba(0, 0, 0, 0.35),
-      inset 0 1px 0 rgba(255, 255, 255, 0.32),
-      inset 0 -1px 0 rgba(0, 0, 0, 0.12);
+    opacity: 1;
   }
   .ctrl.play:hover {
-    background: rgba(255, 255, 255, 0.22);
-    border-color: rgba(255, 255, 255, 0.32);
-    transform: scale(1.04);
-    box-shadow:
-      0 16px 40px -10px rgba(0, 0, 0, 0.65),
-      0 6px 18px rgba(0, 0, 0, 0.4),
-      inset 0 1px 0 rgba(255, 255, 255, 0.4),
-      inset 0 -1px 0 rgba(0, 0, 0, 0.12);
+    transform: scale(1.06);
   }
   .ctrl.play:active {
     transform: scale(0.96);
   }
 
-  /* Small actions (favorite, lyrics) — same minimalist treatment
-     as the prev/next buttons, just smaller. */
+  /* Small actions (favorite, lyrics) — same icon-only style at
+     smaller scale. */
   .ctrl.small {
-    width: 34px;
-    height: 34px;
+    width: 32px;
+    height: 32px;
     color: var(--fg-2);
+    opacity: 0.8;
   }
   .ctrl.small:hover {
-    background: rgba(255, 255, 255, 0.08);
     color: var(--fg-0);
+    opacity: 1;
   }
   .ctrl.small.active {
-    background: rgba(255, 255, 255, 0.1);
     color: var(--fg-0);
+    opacity: 1;
   }
   .empty {
     color: var(--fg-2);

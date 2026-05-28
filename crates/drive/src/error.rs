@@ -16,6 +16,14 @@ pub enum DriveError {
     #[error("OAuth flow failed: {0}")]
     OAuth(String),
 
+    /// Google explicitly refused authorization (the consent screen
+    /// returned `error=access_denied`, `admin_policy_enforced` or
+    /// `unauthorized_client`, or the API answered HTTP 403). The
+    /// caller should route the UI to the dedicated error screen
+    /// instead of bubbling up a generic OAuth failure.
+    #[error("Drive access denied: {reason}")]
+    AccessDenied { reason: String },
+
     /// The stored refresh token was rejected by Google. The caller
     /// should present the wizard again to acquire a fresh one.
     #[error("authentication required: {0}")]

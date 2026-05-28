@@ -39,14 +39,18 @@ pub use oauth::{OAuthClient, OAuthSession};
 pub use sync::{load_state, save_state, SyncState, STATE_FILENAME};
 pub use tokens::{StoredTokens, TokenStore};
 
-/// Drive scopes Qobee asks for. We request `drive.file` so favorites /
-/// sync state can be written back to the connected folder later;
-/// listing + reading is covered by the same scope when the user
-/// picks a folder via the file picker (file picker grants
-/// per-folder access). For broader-than-folder reads we'd need
-/// `drive.readonly`, which the user can toggle via PR4 if we ship
-/// it.
-pub const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
+/// Drive scopes Qobee asks for. Minimal read-only access — we only
+/// need to list folders and stream bytes; nothing is ever written
+/// back to the user's Drive at this scope. R5.4 in the
+/// `native-media-integration-and-ux` spec pins this list exactly:
+///
+/// * `drive.readonly` — read file content and metadata.
+/// * `drive.metadata.readonly` — read folder structure metadata.
+///
+/// Tokens minted with the previous broader `drive.file` scope are
+/// invalidated automatically: refresh attempts return `NeedsReauth`
+/// and the wizard is replayed (R5.6).
+pub const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.metadata.readonly";
 
 /// Drive REST API base URL.
 pub const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";

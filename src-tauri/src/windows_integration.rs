@@ -62,6 +62,15 @@ pub enum AppCommand {
     ScanFolder { path: PathBuf },
     /// Bring the app to the foreground; navigate to a known view.
     Navigate { view: NavigateTarget },
+    /// Toggle play/pause on the current queue. Used by jumplist /
+    /// tray quick-actions (R7.1, R7.2) and the macOS Dock context
+    /// menu (R7.6); takes no payload — the player engine resolves
+    /// "current" from its own state.
+    PlayPause,
+    /// Advance to the next track in the current queue.
+    Next,
+    /// Step back to the previous track in the current queue.
+    Previous,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -154,6 +163,18 @@ pub fn parse_args(args: &[String]) -> Vec<AppCommand> {
                 out.push(AppCommand::Navigate {
                     view: NavigateTarget::Settings,
                 });
+                i += 1;
+            }
+            "--play-pause" | "--toggle-play-pause" => {
+                out.push(AppCommand::PlayPause);
+                i += 1;
+            }
+            "--next" | "--next-track" => {
+                out.push(AppCommand::Next);
+                i += 1;
+            }
+            "--previous" | "--prev" | "--previous-track" => {
+                out.push(AppCommand::Previous);
                 i += 1;
             }
             "--minimized" | "--start-minimized" => {
@@ -566,6 +587,231 @@ mod imp {
         }
         Ok(())
     }
+
+    /// Populate the Windows taskbar / Start jumplist with the
+    /// transport quick-actions promised by R7.2: Play/Pause, Next,
+    /// Previous. Each item launches `qobee.exe --<verb>` so the
+    /// secondary-instance plugin forwards it through
+    /// `parse_args` → `commands_integration::dispatch`, hitting the
+    /// same `PlayerHandle` methods as the in-app buttons.
+    ///
+    /// The whole call chain is fail-soft (R7.2 design note): any
+    /// `windows_core::Error` from the WinRT API is logged at
+    /// `warn` level and the function returns `Ok(())`, so the
+    /// caller never has to special-case the "no jumplist" path.
+    /// `JumpList::IsSupported` returns `false` on Windows 7 and
+    /// inside some sandboxed AppContainer scenarios; we honour it.
+    pub fn setup_jumplist() -> anyhow::Result<()> {
+        use windows::core::HSTRING;
+        use windows::UI::StartScreen::{JumpList, JumpListItem};
+        match JumpList::IsSupported() {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::info!(
+                    target: "qobee::win",
+                    "JumpList not supported on this host; skipping setup"
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "qobee::win",
+                    error = %e,
+                    "JumpList::IsSupported failed; skipping setup"
+                );
+                return Ok(());
+            }
+        }
+        let list = match JumpList::LoadCurrentAsync().and_then(|op| op.get()) {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(
+                    target: "qobee::win",
+                    error = %e,
+                    "JumpList::LoadCurrentAsync failed; skipping setup"
+                );
+                return Ok(());
+            }
+        };
+        let items = match list.Items() {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    target: "qobee::win",
+                    error = %e,
+                    "JumpList::Items failed; skipping setup"
+                );
+                return Ok(());
+            }
+        };
+        // Idempotent: clear any items we may have populated on a
+        // previous launch so the order stays stable across version
+        // bumps and label tweaks.
+        let _ = items.Clear();
+        let group = HSTRING::from("Lecture");
+        for (args, label) in &[
+            ("--play-pause", "Play / Pause"),
+            ("--next", "Lire la suivante"),
+            ("--previous", "Lire la précédente"),
+        ] {
+            let item = match JumpListItem::CreateWithArguments(
+                &HSTRING::from(*args),
+                &HSTRING::from(*label),
+            ) {
+                Ok(it) => it,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "qobee::win",
+                        args = %args,
+                        error = %e,
+                        "JumpListItem::CreateWithArguments failed; skipping item"
+                    );
+                    continue;
+                }
+            };
+            if let Err(e) = item.SetGroupName(&group) {
+                tracing::debug!(
+                    target: "qobee::win",
+                    args = %args,
+                    error = %e,
+                    "JumpListItem::SetGroupName failed; continuing"
+                );
+            }
+            if let Err(e) = items.Append(&item) {
+                tracing::warn!(
+                    target: "qobee::win",
+                    args = %args,
+                    error = %e,
+                    "JumpList items.Append failed; skipping item"
+                );
+            }
+        }
+        if let Err(e) = list.SaveAsync().and_then(|op| op.get()) {
+            tracing::warn!(
+                target: "qobee::win",
+                error = %e,
+                "JumpList::SaveAsync failed; jumplist may be stale"
+            );
+        }
+        Ok(())
+    }
+
+    /// Make sure a Start Menu shortcut for the running executable
+    /// exists with our `AppUserModelID` set in its property store.
+    ///
+    /// Why we need it: Windows looks up SMTC ("Now Playing"
+    /// flyout), the taskbar tooltip and the right-click jumplist
+    /// header by reverse-mapping the AUMID we set on the process to
+    /// a registered shortcut. Without a `.lnk` carrying
+    /// `System.AppUserModel.ID = app.qobee.player`, the SMTC
+    /// flyout shows "Unknown app" (visible in dev builds) and the
+    /// taskbar context menu doesn't display the app name.
+    ///
+    /// The shortcut lives under the user's Programs folder
+    /// (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Qobee.lnk`)
+    /// so we never touch HKLM and an uninstaller can wipe it
+    /// without admin rights. Idempotent: if the shortcut already
+    /// points at the same target with the same AUMID we return
+    /// early; otherwise we (re-)write it.
+    ///
+    /// Fail-soft: any COM/IO error is logged at warn level and the
+    /// function returns `Ok(())` — a missing shortcut is annoying
+    /// but never blocks playback.
+    pub fn ensure_start_menu_shortcut(exe: &Path, aumid: &str) -> anyhow::Result<()> {
+        use std::ffi::OsStr;
+        use windows::core::{Interface, GUID, PCWSTR};
+        use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+        use windows::Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, CLSCTX_INPROC_SERVER,
+            COINIT_APARTMENTTHREADED,
+        };
+        use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
+        use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+        use windows::Win32::Foundation::PROPERTYKEY;
+
+        let programs = match dirs::data_dir() {
+            Some(d) => d.join(r"Microsoft\Windows\Start Menu\Programs"),
+            None => {
+                tracing::warn!(
+                    target: "qobee::win",
+                    "could not resolve %APPDATA%; skipping Start Menu shortcut"
+                );
+                return Ok(());
+            }
+        };
+        if let Err(e) = std::fs::create_dir_all(&programs) {
+            tracing::warn!(
+                target: "qobee::win",
+                path = %programs.display(),
+                error = %e,
+                "could not create Programs folder; skipping shortcut"
+            );
+            return Ok(());
+        }
+        let lnk = programs.join("Qobee.lnk");
+
+        // System.AppUserModel.ID — fmtid {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, pid 5.
+        // Hand-built so we don't have to pull a separate windows-feature for
+        // PSGetPropertyKeyFromName.
+        const PKEY_APP_USER_MODEL_ID: PROPERTYKEY = PROPERTYKEY {
+            fmtid: GUID::from_u128(0x9F4C2855_9F79_4B39_A8D0_E1D42DE1D5F3),
+            pid: 5,
+        };
+
+        // SAFETY: this whole helper is single-threaded; we initialize
+        // COM apartment-threaded, drive the shell COM objects, then
+        // CoUninitialize on the way out.
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let result: anyhow::Result<()> = (|| {
+                let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+
+                let exe_w = encode_wide(exe.as_os_str());
+                link.SetPath(PCWSTR(exe_w.as_ptr()))?;
+                if let Some(parent) = exe.parent() {
+                    let parent_w = encode_wide(parent.as_os_str());
+                    link.SetWorkingDirectory(PCWSTR(parent_w.as_ptr()))?;
+                }
+                let desc_w = encode_wide(OsStr::new("Qobee Music Player"));
+                link.SetDescription(PCWSTR(desc_w.as_ptr()))?;
+                // The exe carries the icon resource at index 0.
+                link.SetIconLocation(PCWSTR(exe_w.as_ptr()), 0)?;
+
+                // Tag the shortcut with our AUMID so SMTC and
+                // friends can map our process back to it.
+                let store: IPropertyStore = link.cast()?;
+                let pv = PROPVARIANT::from(aumid);
+                store.SetValue(&PKEY_APP_USER_MODEL_ID, &pv)?;
+                store.Commit()?;
+
+                // Persist to disk.
+                let persist: IPersistFile = link.cast()?;
+                let lnk_w = encode_wide(lnk.as_os_str());
+                persist.Save(PCWSTR(lnk_w.as_ptr()), true)?;
+                Ok(())
+            })();
+            CoUninitialize();
+            if let Err(e) = result {
+                tracing::warn!(
+                    target: "qobee::win",
+                    error = %e,
+                    "creating Start Menu shortcut failed; SMTC may show 'Unknown app'"
+                );
+            } else {
+                tracing::info!(
+                    target: "qobee::win",
+                    path = %lnk.display(),
+                    "Start Menu shortcut ensured for AUMID lookup"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn encode_wide(s: &std::ffi::OsStr) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        s.encode_wide().chain(std::iter::once(0)).collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -575,8 +821,8 @@ mod imp {
 
 #[cfg(target_os = "windows")]
 pub use imp::{
-    is_autostart_enabled, register_integration, set_app_user_model_id, set_autostart,
-    unregister_integration,
+    ensure_start_menu_shortcut, is_autostart_enabled, register_integration, set_app_user_model_id,
+    set_autostart, setup_jumplist, unregister_integration,
 };
 
 #[cfg(not(target_os = "windows"))]
@@ -614,6 +860,16 @@ pub fn unregister_integration(
     _folders: bool,
     _protocol: bool,
 ) -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn setup_jumplist() -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn ensure_start_menu_shortcut(_exe: &std::path::Path, _aumid: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
@@ -674,6 +930,36 @@ mod tests {
             vec![AppCommand::Navigate {
                 view: NavigateTarget::Settings
             }]
+        );
+    }
+
+    #[test]
+    fn parse_transport_flags() {
+        // R7.2 jumplist verbs and macOS Dock items dispatch through
+        // the same parser; make sure each one yields a single
+        // dedicated `AppCommand`.
+        assert_eq!(
+            parse_args(&["qobee.exe".into(), "--play-pause".into()]),
+            vec![AppCommand::PlayPause]
+        );
+        assert_eq!(
+            parse_args(&["qobee.exe".into(), "--next".into()]),
+            vec![AppCommand::Next]
+        );
+        assert_eq!(
+            parse_args(&["qobee.exe".into(), "--previous".into()]),
+            vec![AppCommand::Previous]
+        );
+        // Aliases — `--prev` and `--toggle-play-pause` keep us
+        // forward-compatible with anything an external caller might
+        // send.
+        assert_eq!(
+            parse_args(&["qobee.exe".into(), "--prev".into()]),
+            vec![AppCommand::Previous]
+        );
+        assert_eq!(
+            parse_args(&["qobee.exe".into(), "--toggle-play-pause".into()]),
+            vec![AppCommand::PlayPause]
         );
     }
 

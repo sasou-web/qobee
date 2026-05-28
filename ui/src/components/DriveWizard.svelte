@@ -29,6 +29,33 @@
     type DriveListItem,
   } from "../lib/api";
   import Icon from "./Icon.svelte";
+  import DriveErrorScreen from "./DriveErrorScreen.svelte";
+
+  /**
+   * Shape of the typed error payload rejected by every Drive
+   * Tauri command. Mirrors `commands_drive::DriveCommandError`.
+   * Anything that doesn't match this shape is treated as a
+   * stringified generic error (the wizard's existing error path).
+   */
+  type DriveCommandError =
+    | { kind: "access_denied"; reason: string }
+    | { kind: "needs_reauth"; message: string }
+    | { kind: "error"; message: string };
+
+  function asDriveCommandError(e: unknown): DriveCommandError | null {
+    if (typeof e !== "object" || e === null) return null;
+    const obj = e as Record<string, unknown>;
+    if (obj.kind === "access_denied" && typeof obj.reason === "string") {
+      return { kind: "access_denied", reason: obj.reason };
+    }
+    if (obj.kind === "needs_reauth" && typeof obj.message === "string") {
+      return { kind: "needs_reauth", message: obj.message };
+    }
+    if (obj.kind === "error" && typeof obj.message === "string") {
+      return { kind: "error", message: obj.message };
+    }
+    return null;
+  }
 
   interface Props {
     open: boolean;
@@ -49,6 +76,12 @@
   let busy = $state(false);
   let errorMessage = $state<string | null>(null);
   let connectedEmail = $state<string | null>(null);
+  /** Reason from `DriveCommandError::AccessDenied`. When set, the
+   *  `DriveErrorScreen` overlay is rendered on top of the wizard
+   *  body so the user gets the FR explanation + "Réessayer" /
+   *  doc link affordance instead of the raw Google error page
+   *  (R5.1, R5.2). */
+  let accessDeniedReason = $state<string | null>(null);
 
   // PR3: folder picker + indexing state.
   let createdSourceId = $state<number | null>(null);
@@ -80,6 +113,7 @@
     pickedFolder = null;
     indexingProgress = { visited: 0, indexed: 0, current: "" };
     indexResult = null;
+    accessDeniedReason = null;
   }
 
   async function close(): Promise<void> {
@@ -106,14 +140,14 @@
     }
     busy = true;
     errorMessage = null;
+    accessDeniedReason = null;
     try {
       const r = await driveOAuthStart(clientId.trim(), clientSecret.trim());
       sessionId = r.session_id;
       authUrl = r.auth_url;
       step = "auth";
     } catch (e) {
-      errorMessage = String(e);
-      step = "error";
+      handleDriveCommandError(e);
     } finally {
       busy = false;
     }
@@ -133,11 +167,57 @@
       // populated picker.
       void loadFolder("");
     } catch (e) {
-      errorMessage = String(e);
-      step = "error";
+      handleDriveCommandError(e);
     } finally {
       busy = false;
     }
+  }
+
+  /**
+   * Triage a rejection from any `drive_oauth_*` command:
+   *
+   * - `kind === "access_denied"` → render `DriveErrorScreen` on
+   *   top of the wizard with the FR explanation + Réessayer
+   *   button (R5.1, R5.2). The wizard step is reset to `"setup"`
+   *   so retrying drops back into the form with the same client
+   *   id / secret already filled in.
+   * - `kind === "needs_reauth"` → silently replay the wizard:
+   *   no error UI, just go back to the start of the OAuth flow
+   *   (R5.6). The session is dropped because the previous
+   *   refresh token is dead anyway.
+   * - any other shape → keep the existing generic error step.
+   */
+  function handleDriveCommandError(e: unknown): void {
+    const typed = asDriveCommandError(e);
+    if (typed?.kind === "access_denied") {
+      sessionId = null;
+      step = "setup";
+      accessDeniedReason = typed.reason || "";
+      errorMessage = null;
+      return;
+    }
+    if (typed?.kind === "needs_reauth") {
+      // Silent re-auth: drop the dead session, return to the
+      // setup form and clear any stale error. We deliberately
+      // don't auto-restart `startAuth` here — the user still has
+      // the form open with valid credentials and a single click
+      // on "Authorize in browser" replays the flow.
+      sessionId = null;
+      step = "setup";
+      errorMessage = null;
+      accessDeniedReason = null;
+      return;
+    }
+    // Generic fallback (typed === null OR kind === "error").
+    errorMessage = typed?.kind === "error" ? typed.message : String(e);
+    step = "error";
+  }
+
+  /** Re-run the OAuth flow from step 1. Wired into the
+   *  `DriveErrorScreen`'s "Réessayer" button. */
+  function retryOAuth(): void {
+    accessDeniedReason = null;
+    void startAuth();
   }
 
   async function loadFolder(folderId: string): Promise<void> {
@@ -437,6 +517,21 @@
       {/if}
     </div>
   </div>
+{/if}
+
+<!--
+  R5.1/R5.2 — when Google rejects the user (HTTP 403 or
+  `error=access_denied`), the wizard re-routes to this dedicated
+  screen instead of the generic `step === "error"` panel. Renders
+  on top of the wizard so dismissing or retrying drops back into
+  the same flow.
+-->
+{#if open && accessDeniedReason !== null}
+  <DriveErrorScreen
+    reason={accessDeniedReason}
+    onretry={retryOAuth}
+    onclose={close}
+  />
 {/if}
 
 <style>

@@ -260,6 +260,14 @@ export async function playAlbumFromTrack(
   await invoke("play_album_from_track", { albumId, trackId });
 }
 
+/** Start an album from its first track. Backs the R3 `Play_Button`
+ *  on album cards / album detail headers; the UI carries only the
+ *  album id and shouldn't have to look up the first track id with
+ *  an extra round-trip. */
+export async function playAlbum(albumId: number): Promise<void> {
+  await invoke("play_album", { albumId });
+}
+
 export async function pause(): Promise<void> {
   await invoke("pause");
 }
@@ -399,6 +407,12 @@ export async function playPlaylistFromTrack(
   trackId: number
 ): Promise<void> {
   await invoke("play_playlist_from_track", { playlistId, trackId });
+}
+
+/** Start a playlist from its first track. Companion to
+ *  [`playAlbum`] for the R3 `Play_Button` on playlist cards. */
+export async function playPlaylist(playlistId: number): Promise<void> {
+  await invoke("play_playlist", { playlistId });
 }
 
 export async function playTracks(
@@ -645,6 +659,18 @@ export async function getDeviceMixFormat(
  */
 export async function openWindowsSoundSettings(): Promise<void> {
   await invoke("open_windows_sound_settings");
+}
+
+/**
+ * Open an external URL in the user's default browser. Used by the
+ * Google Drive error screen (R5.2) to take the user to the
+ * `docs/google-cloud-setup.md` walkthrough when an authorization
+ * fails, and by Settings → Drive for the "How to configure"
+ * affordance. The backend validates the URL starts with
+ * `http(s)://` so this can't be turned into a generic file opener.
+ */
+export async function shellOpen(url: string): Promise<void> {
+  await invoke("shell_open", { url });
 }
 
 /** Subscribe to the dedicated `player:bit-perfect` Tauri topic. */
@@ -1028,4 +1054,63 @@ export async function setWindowsIntegration(
   return await invoke<WindowsIntegrationStatus>("set_windows_integration", {
     update,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Window_Manager preferences (R7 — task 10.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Snapshot of the three Window_Manager preferences persisted in
+ * the SQLite `settings` table:
+ *
+ * - `close_behavior` (R7.3): how closing the main window should
+ *   behave — quit the process, hide it to the system tray, or
+ *   keep it running invisibly in the background.
+ * - `tray_enabled` (R7.1): whether to show a tray icon with
+ *   transport controls. Tray creation/destruction at runtime is
+ *   task 10.2's job; this flag only stores the user choice.
+ * - `notify_on_track_change` (R7.7): whether to fire a native OS
+ *   notification on every track change. The Tauri-side fan-out
+ *   (`dispatch_player_event`) already reads this key on every
+ *   track change with a 5-second throttle.
+ */
+export type CloseBehavior =
+  | "quit"
+  | "minimize_to_tray"
+  | "keep_running_in_background";
+
+export interface WindowSettings {
+  close_behavior: CloseBehavior;
+  tray_enabled: boolean;
+  notify_on_track_change: boolean;
+}
+
+/** Read the persisted Window_Manager preferences (R7.3, R7.7,
+ *  R7.8). Defaults are applied server-side when rows are missing
+ *  on a fresh install (`quit` / `false` / `true`). */
+export async function getWindowSettings(): Promise<WindowSettings> {
+  return invoke<WindowSettings>("get_window_settings");
+}
+
+/** Persist `windows.close_behavior`. Backend rejects values
+ *  outside the [`CloseBehavior`] union with a typed error string. */
+export async function setCloseBehavior(
+  value: CloseBehavior,
+): Promise<WindowSettings> {
+  return invoke<WindowSettings>("set_close_behavior", { value });
+}
+
+/** Persist `windows.tray_enabled`. */
+export async function setTrayEnabled(value: boolean): Promise<WindowSettings> {
+  return invoke<WindowSettings>("set_tray_enabled", { value });
+}
+
+/** Persist `windows.notify_on_track_change`. The fan-out task
+ *  reads this on every `TrackChanged` event to gate the OS
+ *  notification (R7.7). */
+export async function setNotifyOnTrackChange(
+  value: boolean,
+): Promise<WindowSettings> {
+  return invoke<WindowSettings>("set_notify_on_track_change", { value });
 }

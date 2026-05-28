@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -84,6 +84,11 @@ tauri-build = { version = "2.4", features = [] }
 # crates/core; see audio-quality-improvements task 6).
 proptest = "1.5"
 tracing-test = "0.2"
+
+# Tokio runtime — only the `sync` (broadcast channel) and `rt` features
+# are needed by `qobee-core` to expose `PlayerHandle::subscribe_broadcast`.
+# `src-tauri` already pulls a full tokio through `tauri::async_runtime`.
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
 
 # Internal crates
 qobee-engine = { path = "crates/engine" }

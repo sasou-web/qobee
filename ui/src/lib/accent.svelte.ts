@@ -56,6 +56,33 @@ function lighten(s: Swatch, t: number): Swatch {
   };
 }
 
+/** Relative luminance of a swatch (Rec. 709), 0..1. */
+function luminance(s: Swatch): number {
+  return (0.2126 * s.r + 0.7152 * s.g + 0.0722 * s.b) / 255;
+}
+
+/**
+ * Make sure the swatch is bright enough to read against the dark UI.
+ * A near-black album cover (e.g. moody hip-hop artwork) used to push
+ * the accent into the `rgb(20, 20, 25)` range, which made the
+ * accent-tinted PlayButton on AlbumDetail look like a black disc with
+ * a faint glow halo.
+ *
+ * If the picked swatch is below `MIN_LUM`, we lighten it towards
+ * white until it crosses the threshold. The hue is preserved, only
+ * the brightness is lifted.
+ */
+function ensureLegible(s: Swatch): Swatch {
+  const MIN_LUM = 0.42;
+  let cur = s;
+  let guard = 0;
+  while (luminance(cur) < MIN_LUM && guard < 10) {
+    cur = lighten(cur, 0.25);
+    guard++;
+  }
+  return cur;
+}
+
 class AccentStore {
   /** When true, the accent follows the currently playing cover. When
    *  false, we revert to the user's configured accent on the next
@@ -105,11 +132,12 @@ class AccentStore {
     this.busy = true;
     try {
       const palette = await extractPalette(url, 5);
-      const pick = pickVibrant(palette);
-      if (!pick) {
+      const raw = pickVibrant(palette);
+      if (!raw) {
         this.reset();
         return;
       }
+      const pick = ensureLegible(raw);
       this.current = pick;
       const root = this.root;
       if (!root) return;
