@@ -1,0 +1,38 @@
+#!/bin/sh
+#
+# Qobee pre-push hook — runs the same gates as CI (rustfmt + clippy)
+# before a push leaves your machine, so the "passes locally, fails in
+# CI" class of failures never reaches GitHub again.
+#
+# Enable once per clone:
+#     git config core.hooksPath .githooks
+# (or run scripts/setup-hooks.ps1 / scripts/setup-hooks.sh)
+#
+# Skip in a pinch with:  git push --no-verify
+#
+# The hook is intentionally Rust-only: it mirrors the two CI steps
+# most sensitive to toolchain drift. The frontend `npm run check`
+# is fast but rarely the cause of CI breakage, so it's left out to
+# keep the hook snappy; add it here if you want full parity.
+
+set -e
+
+echo "[pre-push] cargo fmt --all --check ..."
+if ! cargo fmt --all -- --check; then
+    echo ""
+    echo "[pre-push] FAILED: code is not formatted." >&2
+    echo "[pre-push] Run 'cargo fmt --all' and commit the result." >&2
+    echo "[pre-push] (bypass with 'git push --no-verify' if you must)" >&2
+    exit 1
+fi
+
+echo "[pre-push] cargo clippy --workspace --all-targets -D warnings ..."
+if ! cargo clippy --workspace --all-targets --no-deps -- -D warnings; then
+    echo ""
+    echo "[pre-push] FAILED: clippy raised warnings/errors." >&2
+    echo "[pre-push] Fix them, or bypass with 'git push --no-verify'." >&2
+    exit 1
+fi
+
+echo "[pre-push] OK — fmt + clippy clean."
+exit 0

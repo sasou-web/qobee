@@ -1,0 +1,15 @@
+# Pin the exact Rust toolchain so local builds and CI use the same
+# rustc / rustfmt / clippy. This prevents the "passes locally, fails
+# in CI" class of failures we hit on the 0.5.1 release, where a newer
+# rustfmt reformatted code and a newer clippy (1.96) raised lints that
+# the local 1.95 toolchain never saw.
+#
+# rustup automatically honours this file inside the workspace. The CI
+# workflows pin the same version explicitly (they use
+# `dtolnay/rust-toolchain@<version>` rather than `@stable`) so both
+# sides stay in lock-step. Bump this version and the workflows
+# together when you intentionally move to a newer Rust.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

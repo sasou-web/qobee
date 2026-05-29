@@ -52,7 +52,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        # Pinned to match rust-toolchain.toml so release builds use
+        # the same toolchain as CI and local dev. Bump together.
+        uses: dtolnay/rust-toolchain@1.96.0
         with:
           targets: ${{ matrix.rust-targets }}
 

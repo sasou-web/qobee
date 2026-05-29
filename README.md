@@ -299,10 +299,25 @@ Events emitted to the UI:
 
 Prerequisites:
 
-- Rust stable (≥ 1.85)
+- Rust stable (≥ 1.85). The exact toolchain is pinned in
+  `rust-toolchain.toml` (currently 1.96.0); rustup installs and
+  selects it automatically inside the workspace, so your local
+  `rustfmt` / `clippy` match CI. CI pins the same version, so the
+  "passes locally, fails in CI" drift can't happen.
 - Node.js (≥ 20)
 - On Windows, the **WebView2 runtime** (preinstalled on Windows 11; on
   Windows 10 install from Microsoft if missing).
+
+One-time setup — enable the git pre-push hook so `cargo fmt --check`
+and `cargo clippy -D warnings` run before every push (the two gates
+most prone to toolchain drift):
+
+```powershell
+./scripts/setup-hooks.ps1   # macOS/Linux: ./scripts/setup-hooks.sh
+```
+
+Bypass a single push with `git push --no-verify` if you really need
+to.
 
 Steps:
 
