@@ -302,10 +302,7 @@ pub fn run() {
             {
                 match app.get_webview_window("main") {
                     Some(window) => {
-                        match crate::media::smtc::SmtcBridge::init(
-                            &window,
-                            app.handle().clone(),
-                        ) {
+                        match crate::media::smtc::SmtcBridge::init(&window, app.handle().clone()) {
                             Ok(bridge) => {
                                 app.manage(Arc::new(bridge));
                             }
@@ -768,7 +765,10 @@ fn dispatch_player_event(
 /// on.
 fn notify_on_track_change_enabled(app_handle: &tauri::AppHandle) -> bool {
     let state = app_handle.state::<AppState>();
-    match state.library().get_setting("windows.notify_on_track_change") {
+    match state
+        .library()
+        .get_setting("windows.notify_on_track_change")
+    {
         Ok(Some(v)) => v != "false",
         Ok(None) => true,
         Err(e) => {

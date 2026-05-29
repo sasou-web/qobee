@@ -527,7 +527,10 @@ pub fn list_favorites(state: State<'_, AppState>) -> Result<Vec<Track>, String> 
 /// Set a track's star rating (1..=5). `rating == 0` clears it.
 #[tauri::command]
 pub fn set_rating(track_id: i64, rating: u8, state: State<'_, AppState>) -> Result<(), String> {
-    state.library().set_rating(track_id, rating).map_err(map_err)
+    state
+        .library()
+        .set_rating(track_id, rating)
+        .map_err(map_err)
 }
 
 /// A track's star rating (0 = unrated).
@@ -698,7 +701,11 @@ pub fn save_session(state: State<'_, AppState>) -> Result<(), String> {
 /// once by the frontend at startup when "resume on launch" is on.
 #[tauri::command]
 pub fn restore_session(state: State<'_, AppState>) -> Result<bool, String> {
-    let raw = match state.library().get_setting("session.state").map_err(map_err)? {
+    let raw = match state
+        .library()
+        .get_setting("session.state")
+        .map_err(map_err)?
+    {
         Some(s) => s,
         None => return Ok(false),
     };
@@ -1283,10 +1290,7 @@ pub fn get_lyrics(track_id: i64, state: State<'_, AppState>) -> Result<Lyrics, S
         album: &track.album,
         duration_seconds: track.duration_seconds,
     };
-    Ok(crate::lyrics::read_for_track(
-        lookup,
-        cache_dir.as_deref(),
-    ))
+    Ok(crate::lyrics::read_for_track(lookup, cache_dir.as_deref()))
 }
 
 // ---------------------------------------------------------------------------

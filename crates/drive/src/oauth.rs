@@ -307,11 +307,9 @@ fn handle_redirect(stream: &mut TcpStream, expected_state: &str) -> DriveResult<
     // tab is the only thing the user sees right after the consent
     // screen and Qobee is a French-speaking app.
     let body = match parsed.outcome {
-        RedirectOutcome::Code(_) => {
-            "<html><body><h1>Qobee est connecté.</h1>\
+        RedirectOutcome::Code(_) => "<html><body><h1>Qobee est connecté.</h1>\
              <p>Tu peux fermer cet onglet.</p></body></html>"
-                .to_string()
-        }
+            .to_string(),
         RedirectOutcome::AccessDenied(ref reason) => format!(
             "<html><body><h1>Qobee — accès refusé</h1>\
              <pre>{reason}</pre>\
@@ -332,9 +330,7 @@ fn handle_redirect(stream: &mut TcpStream, expected_state: &str) -> DriveResult<
     let _ = stream.flush();
 
     match parsed.outcome {
-        RedirectOutcome::AccessDenied(reason) => {
-            Err(DriveError::AccessDenied { reason })
-        }
+        RedirectOutcome::AccessDenied(reason) => Err(DriveError::AccessDenied { reason }),
         RedirectOutcome::Error(err) => {
             Err(DriveError::OAuth(format!("OAuth provider error: {err}")))
         }
@@ -417,8 +413,7 @@ fn parse_redirect_query(path: &str) -> DriveResult<ParsedRedirect> {
             RedirectOutcome::Error(reason)
         }
     } else {
-        let code = got_code
-            .ok_or_else(|| DriveError::OAuth("no `code` in redirect".into()))?;
+        let code = got_code.ok_or_else(|| DriveError::OAuth("no `code` in redirect".into()))?;
         RedirectOutcome::Code(code)
     };
 
@@ -548,8 +543,7 @@ mod tests {
 
     #[test]
     fn redirect_keeps_unknown_errors_generic() {
-        let parsed =
-            parse_redirect_query("/qobee/oauth/callback?error=server_error").unwrap();
+        let parsed = parse_redirect_query("/qobee/oauth/callback?error=server_error").unwrap();
         assert!(matches!(parsed.outcome, RedirectOutcome::Error(_)));
     }
 

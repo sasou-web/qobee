@@ -400,7 +400,9 @@ unsafe fn set_string(dict: &AnyObject, key: &str, value: &str) {
 /// Helper: insert a `f64` value boxed as `NSNumber`.
 unsafe fn set_number_f64(dict: &AnyObject, key: &str, value: f64) {
     let Some(k) = ns_string(key) else { return };
-    let Some(n) = ns_number_double(value) else { return };
+    let Some(n) = ns_number_double(value) else {
+        return;
+    };
     let _: () = msg_send![dict, setObject: &*n, forKey: &*k];
 }
 
@@ -442,15 +444,13 @@ fn register_remote_commands(app: &AppHandle) -> Result<()> {
         if !seek_cmd.is_null() {
             let _: () = msg_send![seek_cmd, setEnabled: true];
             let app_for_seek = app.clone();
-            let seek_block = RcBlock::new(
-                move |event: NonNull<AnyObject>| -> isize {
-                    let position_seconds: f64 = msg_send![event.as_ptr(), positionTime];
-                    if let Some(player) = with_player(&app_for_seek) {
-                        let _ = player.seek(position_seconds);
-                    }
-                    MP_REMOTE_HANDLER_SUCCESS
-                },
-            );
+            let seek_block = RcBlock::new(move |event: NonNull<AnyObject>| -> isize {
+                let position_seconds: f64 = msg_send![event.as_ptr(), positionTime];
+                if let Some(player) = with_player(&app_for_seek) {
+                    let _ = player.seek(position_seconds);
+                }
+                MP_REMOTE_HANDLER_SUCCESS
+            });
             let _: *mut AnyObject = msg_send![seek_cmd, addTargetWithHandler: &*seek_block];
             // `addTargetWithHandler:` copies the block into its
             // internal storage; releasing our local copy here is
@@ -483,10 +483,7 @@ impl RemoteCmd {
                 let _ = player.pause();
             }
             RemoteCmd::TogglePlayPause => {
-                if matches!(
-                    player.state().status,
-                    qobee_engine::PlaybackStatus::Playing
-                ) {
+                if matches!(player.state().status, qobee_engine::PlaybackStatus::Playing) {
                     let _ = player.pause();
                 } else {
                     let _ = player.resume();
@@ -620,10 +617,7 @@ fn dispatch_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, id: &str) {
         MENU_ID_PLAY_PAUSE => {
             if let Some(state) = app.try_state::<AppState>() {
                 let player = state.player();
-                if matches!(
-                    player.state().status,
-                    qobee_engine::PlaybackStatus::Playing
-                ) {
+                if matches!(player.state().status, qobee_engine::PlaybackStatus::Playing) {
                     let _ = player.pause();
                 } else {
                     let _ = player.resume();

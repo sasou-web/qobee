@@ -178,8 +178,10 @@ impl SmtcBridge {
         // Resolve `ISystemMediaTransportControlsInterop` via the
         // standard WinRT activation-factory route, then ask it for
         // the per-window `SystemMediaTransportControls` instance.
-        let interop: ISystemMediaTransportControlsInterop =
-            windows::core::factory::<SystemMediaTransportControls, ISystemMediaTransportControlsInterop>()?;
+        let interop: ISystemMediaTransportControlsInterop = windows::core::factory::<
+            SystemMediaTransportControls,
+            ISystemMediaTransportControlsInterop,
+        >()?;
         // SAFETY: `interop` was just resolved successfully and the
         // HWND was just obtained from a live `tauri::WebviewWindow`,
         // so it points at a top-level window owned by this process
@@ -203,17 +205,20 @@ impl SmtcBridge {
 
         // Wire ButtonPressed → PlayerHandle.
         let app_buttons = app.clone();
-        let button_handler = TypedEventHandler::new(
-            move |_sender: windows::core::Ref<SystemMediaTransportControls>,
-                  args: windows::core::Ref<SystemMediaTransportControlsButtonPressedEventArgs>| {
-                if let Some(args) = args.as_ref() {
-                    if let Ok(button) = args.Button() {
-                        dispatch_button(&app_buttons, button);
+        let button_handler =
+            TypedEventHandler::new(
+                move |_sender: windows::core::Ref<SystemMediaTransportControls>,
+                      args: windows::core::Ref<
+                    SystemMediaTransportControlsButtonPressedEventArgs,
+                >| {
+                    if let Some(args) = args.as_ref() {
+                        if let Ok(button) = args.Button() {
+                            dispatch_button(&app_buttons, button);
+                        }
                     }
-                }
-                Ok(())
-            },
-        );
+                    Ok(())
+                },
+            );
         controls.ButtonPressed(&button_handler)?;
 
         // Wire PlaybackPositionChangeRequested → PlayerHandle::seek.

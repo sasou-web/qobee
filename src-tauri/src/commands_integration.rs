@@ -387,9 +387,7 @@ pub fn dispatch(app: &AppHandle, state: &AppState, command: AppCommand) -> anyho
             let player = state.player();
             let snap = player.state();
             if matches!(snap.status, qobee_engine::PlaybackStatus::Playing) {
-                player
-                    .pause()
-                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                player.pause().map_err(|e| anyhow::anyhow!(e.to_string()))?;
             } else {
                 player
                     .resume()

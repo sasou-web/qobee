@@ -1942,8 +1942,7 @@ pub(crate) fn run_decoder_thread(
                                 n_ch,
                             );
 
-                            let xf_frames =
-                                ((xf_secs * chain_sample_rate as f64) as usize).max(1);
+                            let xf_frames = ((xf_secs * chain_sample_rate as f64) as usize).max(1);
                             let block = 1024usize;
                             let mut done = 0usize;
                             let mut out_buf: Vec<f32> = Vec::with_capacity(block * n_ch);
@@ -2023,8 +2022,7 @@ pub(crate) fn run_decoder_thread(
                                 is_dsd: shared.is_dsd_active(),
                                 error: None,
                             };
-                            new_state.bit_perfect =
-                                build_bit_perfect_health(&shared, &new_state);
+                            new_state.bit_perfect = build_bit_perfect_health(&shared, &new_state);
                             let _ =
                                 event_tx.try_send(EngineEvent::StateChanged { state: new_state });
 

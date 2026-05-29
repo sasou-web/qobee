@@ -28,7 +28,7 @@
 //!   mode is rewritten so the next launch doesn't fail the same way.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -1051,11 +1051,7 @@ impl PlayerHandle {
     /// countdown to show).
     pub fn sleep_timer_remaining_secs(&self) -> Option<u64> {
         let slot = self.inner.sleep_deadline.lock();
-        slot.map(|deadline| {
-            deadline
-                .saturating_duration_since(Instant::now())
-                .as_secs()
-        })
+        slot.map(|deadline| deadline.saturating_duration_since(Instant::now()).as_secs())
     }
 
     /// Whether the "stop at end of current track" sleep mode is
@@ -1699,10 +1695,7 @@ fn classify_engine_error(message: &str) -> PlayerErrorKind {
         || lower.contains("introuvable")
     {
         PlayerErrorKind::FileNotFound
-    } else if lower.contains("decode")
-        || lower.contains("symphonia")
-        || lower.contains("codec")
-    {
+    } else if lower.contains("decode") || lower.contains("symphonia") || lower.contains("codec") {
         PlayerErrorKind::DecodeFailed
     } else if lower.contains("device")
         || lower.contains("wasapi")

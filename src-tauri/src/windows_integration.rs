@@ -720,6 +720,7 @@ mod imp {
     pub fn ensure_start_menu_shortcut(exe: &Path, aumid: &str) -> anyhow::Result<()> {
         use std::ffi::OsStr;
         use windows::core::{Interface, GUID, PCWSTR};
+        use windows::Win32::Foundation::PROPERTYKEY;
         use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
         use windows::Win32::System::Com::{
             CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, CLSCTX_INPROC_SERVER,
@@ -727,7 +728,6 @@ mod imp {
         };
         use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
         use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
-        use windows::Win32::Foundation::PROPERTYKEY;
 
         let programs = match dirs::data_dir() {
             Some(d) => d.join(r"Microsoft\Windows\Start Menu\Programs"),

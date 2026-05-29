@@ -489,7 +489,10 @@ impl MockSmtcBridge {
     }
 
     fn snapshot(&self) -> BridgeState {
-        self.state.lock().expect("smtc bridge mutex poisoned").clone()
+        self.state
+            .lock()
+            .expect("smtc bridge mutex poisoned")
+            .clone()
     }
 }
 
@@ -544,7 +547,7 @@ fn any_track_meta() -> impl Strategy<Value = TrackMeta> {
         // Cover bytes are skipped from BridgeState entirely (the
         // bridges fall back to a placeholder PNG per R8.6); leaving
         // it `None` keeps the proptest shrinker fast.
-    cover_bytes: None,
+        cover_bytes: None,
     })
 }
 
@@ -697,7 +700,12 @@ fn reducer_track_changed_resets_position_and_keeps_status() {
         position_ms: 5_000,
         duration_ms: 10_000,
     };
-    apply_to_state(&mut s, &PlayerEvent::TrackChanged { track: track(2, 30_000) });
+    apply_to_state(
+        &mut s,
+        &PlayerEvent::TrackChanged {
+            track: track(2, 30_000),
+        },
+    );
     assert_eq!(s.status, BridgeStatus::Playing);
     assert_eq!(s.current_track_id, Some(2));
     assert_eq!(s.position_ms, 0);

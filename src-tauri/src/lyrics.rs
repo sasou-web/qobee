@@ -351,10 +351,9 @@ fn fetch_lrclib(title: &str, artist: &str, album: &str, duration_s: f64) -> Opti
         .build()
         .ok()?;
 
-    let mut req = client.get("https://lrclib.net/api/get").query(&[
-        ("track_name", title),
-        ("artist_name", artist),
-    ]);
+    let mut req = client
+        .get("https://lrclib.net/api/get")
+        .query(&[("track_name", title), ("artist_name", artist)]);
     if !album.is_empty() {
         req = req.query(&[("album_name", album)]);
     }

@@ -194,11 +194,8 @@ impl DecodeStream {
             for ch in self.pending_planar.iter_mut() {
                 ch.resize(chunk, 0.0);
             }
-            let input_slices: Vec<&[f32]> = self
-                .pending_planar
-                .iter()
-                .map(|ch| &ch[..chunk])
-                .collect();
+            let input_slices: Vec<&[f32]> =
+                self.pending_planar.iter().map(|ch| &ch[..chunk]).collect();
             if let Ok((_in_f, out_f)) =
                 r.process_into_buffer(&input_slices, &mut self.output_buffer, None)
             {
@@ -226,9 +223,7 @@ impl DecodeStream {
     /// decoded past the fade window; the caller must push them
     /// (through the DSP chain) before reading further from the
     /// decoder so no audio is dropped.
-    pub(crate) fn into_parts(
-        mut self,
-    ) -> StreamParts {
+    pub(crate) fn into_parts(mut self) -> StreamParts {
         let leftover = self.ready.split_off(self.ready_head);
         (
             self.decoder,
