@@ -192,7 +192,7 @@ unsafe fn apply_event_on_main(ev: &PlayerEvent) {
         // running under a stripped test harness. Nothing to do.
         return;
     };
-    let center: &AnyObject = &*center;
+    let center: &AnyObject = &center;
 
     match ev {
         PlayerEvent::Started {
@@ -296,7 +296,7 @@ unsafe fn build_now_playing_info(
     rate: f64,
 ) -> Option<Retained<AnyObject>> {
     let dict = mutable_dictionary()?;
-    let dict_ref: &AnyObject = &*dict;
+    let dict_ref: &AnyObject = &dict;
 
     set_string(dict_ref, KEY_TITLE, &track.title);
     set_string(dict_ref, KEY_ARTIST, &track.artist);
@@ -338,10 +338,10 @@ unsafe fn update_progress_in_place(center: &AnyObject, position_ms: u64, rate: f
         }
     };
 
-    set_number_f64(&*dict, KEY_ELAPSED_PLAYBACK_TIME, elapsed_seconds);
-    set_number_f64(&*dict, KEY_PLAYBACK_RATE, rate);
+    set_number_f64(&dict, KEY_ELAPSED_PLAYBACK_TIME, elapsed_seconds);
+    set_number_f64(&dict, KEY_PLAYBACK_RATE, rate);
 
-    set_now_playing_info(center, Some(&*dict));
+    set_now_playing_info(center, Some(&dict));
 }
 
 /// Build a fresh empty `NSMutableDictionary`. Returns `None` if the
