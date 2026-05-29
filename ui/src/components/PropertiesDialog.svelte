@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fade, scale } from "svelte/transition";
-  import { coverUrl } from "../lib/api";
+  import { coverUrl, getPlayCount, getRating, setRating } from "../lib/api";
   import {
     propertiesDialog,
     type PropertiesTab,
@@ -12,6 +12,7 @@
     type Swatch,
   } from "../lib/palette";
   import Cover from "./Cover.svelte";
+  import Icon from "./Icon.svelte";
 
   type Tab = { id: PropertiesTab; label: string };
   const TABS: Tab[] = [
@@ -19,6 +20,46 @@
     { id: "artists", label: "Artists" },
     { id: "artwork", label: "Artwork" },
   ];
+
+  // Rating + play count for the track currently shown (when the
+  // payload carries a `trackId`). Loaded lazily when the dialog
+  // opens; the stars write straight back to the backend.
+  let rating = $state(0);
+  let playCount = $state<number | null>(null);
+  let ratingForId = $state<number | null>(null);
+
+  $effect(() => {
+    const s = propertiesDialog.state;
+    const id = s.open ? s.payload?.trackId : undefined;
+    if (id === undefined || id === null) {
+      rating = 0;
+      playCount = null;
+      ratingForId = null;
+      return;
+    }
+    if (ratingForId === id) return;
+    ratingForId = id;
+    void getRating(id).then((r) => {
+      if (ratingForId === id) rating = r;
+    }).catch(() => {});
+    void getPlayCount(id).then((c) => {
+      if (ratingForId === id) playCount = c;
+    }).catch(() => {});
+  });
+
+  async function applyRating(value: number): Promise<void> {
+    const id = propertiesDialog.state.payload?.trackId;
+    if (id === undefined || id === null) return;
+    // Click the current rating again to clear it.
+    const next = rating === value ? 0 : value;
+    rating = next;
+    try {
+      await setRating(id, next);
+    } catch {
+      // best-effort; reload from backend on failure
+      void getRating(id).then((r) => (rating = r)).catch(() => {});
+    }
+  }
 
   // Cache the palette per cover key so re-opening the same dialog
   // doesn't re-decode the image. Cleared on close to keep memory
@@ -128,6 +169,31 @@
 
       <div class="body" role="tabpanel">
         {#if tab === "details"}
+          {#if p.trackId !== undefined}
+            <div class="rating-row">
+              <div class="stars" role="radiogroup" aria-label="Note">
+                {#each [1, 2, 3, 4, 5] as n (n)}
+                  <button
+                    class="star"
+                    class:on={n <= rating}
+                    onclick={() => applyRating(n)}
+                    role="radio"
+                    aria-checked={n === rating}
+                    aria-label={`${n} étoile${n > 1 ? "s" : ""}`}
+                    title={`${n}/5`}
+                  >
+                    <Icon name={n <= rating ? "star-filled" : "star"} size={18} />
+                  </button>
+                {/each}
+              </div>
+              {#if playCount !== null}
+                <span class="plays" title="Nombre de lectures">
+                  {playCount} lecture{playCount === 1 ? "" : "s"}
+                </span>
+              {/if}
+            </div>
+          {/if}
+
           {#if p.audioTraits.length > 0}
             <h3>Audio</h3>
             <dl class="fields">
@@ -352,6 +418,41 @@
   .body {
     padding: 16px 18px 18px;
     overflow-y: auto;
+  }
+  .rating-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 2px 0 14px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .stars {
+    display: inline-flex;
+    gap: 2px;
+  }
+  .star {
+    background: transparent;
+    border: none;
+    padding: 2px;
+    cursor: pointer;
+    color: var(--fg-3);
+    display: inline-flex;
+    transition: color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out);
+  }
+  .star:hover {
+    color: var(--accent);
+    transform: scale(1.12);
+  }
+  .star.on {
+    color: var(--accent);
+  }
+  .plays {
+    color: var(--fg-2);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
   }
   h3 {
     margin: 0 0 8px;

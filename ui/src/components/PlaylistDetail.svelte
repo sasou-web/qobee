@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { save } from "@tauri-apps/plugin-dialog";
   import {
+    exportPlaylistM3u,
     getPlaylist,
     playPlaylistFromTrack,
     removeFromPlaylist,
@@ -7,6 +9,7 @@
     type Track,
   } from "../lib/api";
   import { app } from "../lib/stores.svelte";
+  import { toasts } from "../lib/toasts.svelte";
   import { formatDuration, formatQuality } from "../lib/format";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
@@ -35,6 +38,22 @@
     void app.selectedPlaylistId;
     void load();
   });
+
+  async function handleExport(): Promise<void> {
+    if (!detail) return;
+    try {
+      const safeName = detail.playlist.name.replace(/[^\w\- ]+/g, "").trim() || "playlist";
+      const path = await save({
+        defaultPath: `${safeName}.m3u8`,
+        filters: [{ name: "Playlist", extensions: ["m3u8", "m3u"] }],
+      });
+      if (!path) return; // user cancelled
+      await exportPlaylistM3u(detail.playlist.id, path);
+      toasts.success("Playlist exportée.");
+    } catch (e) {
+      app.lastError = String(e);
+    }
+  }
 
   async function handlePlay(track: Track): Promise<void> {
     if (app.selectedPlaylistId === null) return;
@@ -70,6 +89,11 @@
       <div class="kind">Playlist</div>
       <h1>{detail.playlist.name}</h1>
       <div class="sub">{detail.playlist.track_count} tracks</div>
+      {#if detail.tracks.length > 0}
+        <button class="export" onclick={handleExport}>
+          <Icon name="playlist" size={13} /> Exporter en M3U
+        </button>
+      {/if}
     </div>
   </header>
 
@@ -161,6 +185,26 @@
   .sub {
     color: var(--fg-1);
     font-size: 13px;
+  }
+  .export {
+    margin-top: 8px;
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--fg-1);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
+  }
+  .export:hover {
+    background: var(--bg-3);
+    color: var(--fg-0);
   }
   .state {
     color: var(--fg-2);

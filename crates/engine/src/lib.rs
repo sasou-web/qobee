@@ -31,6 +31,7 @@ pub mod backend_cpal_shared;
 pub mod backend_symphonia;
 #[cfg(target_os = "windows")]
 pub mod backend_wasapi_exclusive;
+pub mod crossfade;
 pub mod diagnostic;
 pub mod dsd;
 pub mod dsp;
@@ -130,4 +131,9 @@ pub trait AudioEngine: Send + Sync {
 
     /// Drop any previously prepared next track.
     fn clear_pending_next(&self) -> EngineResult<()>;
+
+    /// Set the crossfade window in milliseconds (`0` = off). Backends
+    /// that don't support crossfade ignore it (default no-op); the
+    /// transition then falls back to the gapless / EOT path.
+    fn set_crossfade_ms(&self, _ms: u32) {}
 }

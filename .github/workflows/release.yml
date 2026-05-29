@@ -1,14 +1,26 @@
 name: Release
 
 # Build platform installers every time a tag matching v*.*.* is
-# pushed, and attach the resulting binaries to a draft GitHub
-# Release. Two parallel jobs:
+# pushed, sign them for the auto-updater, and attach the resulting
+# binaries plus an updater manifest (`latest.json`) to a GitHub
+# Release. Two parallel jobs feed the same release:
 #
-#   * Windows  → MSI + NSIS exe
-#   * macOS    → universal .dmg + .app bundle
+#   * Windows  → MSI + NSIS exe (+ .sig)
+#   * macOS    → universal .dmg + .app.tar.gz (+ .sig)
 #
-# Both jobs upload their artifacts to the same draft release. The
-# maintainer flips the release from draft to public manually.
+# `tauri-apps/tauri-action` handles the bundle build, signs each
+# updater artifact with `TAURI_SIGNING_PRIVATE_KEY`, and publishes
+# `latest.json` next to the assets. The app's updater endpoint
+# (`releases/latest/download/latest.json` in tauri.conf.json) reads
+# that manifest, so shipped builds update themselves in place.
+#
+# Required repository secrets:
+#   * TAURI_SIGNING_PRIVATE_KEY           — minisign private key
+#                                           (contents of
+#                                           src-tauri/.tauri/qobee_updater.key)
+#   * TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — its password ("" if the
+#                                           key was generated without
+#                                           one)
 
 on:
   push:
@@ -20,9 +32,20 @@ permissions:
   contents: write
 
 jobs:
-  windows:
-    name: Windows installer
-    runs-on: windows-latest
+  release:
+    name: ${{ matrix.platform }} bundle
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: "--bundles msi,nsis"
+            rust-targets: ""
+          - platform: macos-latest
+            args: "--target universal-apple-darwin --bundles dmg,app"
+            rust-targets: "x86_64-apple-darwin,aarch64-apple-darwin"
+
+    runs-on: ${{ matrix.platform }}
 
     steps:
       - name: Checkout
@@ -30,6 +53,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
 
       - name: Cache cargo registry & target
         uses: Swatinem/rust-cache@v2
@@ -37,6 +62,7 @@ jobs:
           workspaces: |
             .
             ./src-tauri
+          key: ${{ matrix.platform }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -49,149 +75,26 @@ jobs:
         working-directory: ui
         run: npm ci
 
-      - name: Build frontend
-        working-directory: ui
-        run: npm run build
-
-      - name: Build Tauri bundle
-        shell: pwsh
-        run: |
-          # The Tauri CLI walks subfolders for `tauri.conf.json`, so we
-          # must run it from the workspace root (where both `ui/` and
-          # `src-tauri/` are subfolders), not from `ui/` (which has no
-          # subfolders containing the conf).
-          ./ui/node_modules/.bin/tauri.cmd build --bundles msi,nsis
-
-      - name: Collect installers
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          # In a Cargo workspace the bundle output lives at the
-          # workspace root (./target/release/bundle), not under the
-          # `src-tauri/` sub-crate. We probe both to be robust to
-          # future Tauri / cargo layout changes.
-          $candidates = @(
-            "target/release/bundle",
-            "src-tauri/target/release/bundle"
-          )
-          foreach ($base in $candidates) {
-            if (Test-Path $base) {
-              Write-Host "Collecting from $base"
-              Get-ChildItem -Path $base -Recurse -Include *.msi, *.exe |
-                ForEach-Object { Copy-Item $_.FullName -Destination artifacts -Force }
-            }
-          }
-          $found = Get-ChildItem artifacts -ErrorAction SilentlyContinue
-          if (-not $found) {
-            Write-Error "No installers found under any of: $($candidates -join ', ')"
-            exit 1
-          }
-          Write-Host "Collected:"
-          $found | Format-Table Name, Length
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Build, sign and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing. The private key + its password are
+          # repository secrets; the matching public key is pinned in
+          # tauri.conf.json so shipped builds verify what we sign.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          name: qobee-windows-installers
-          path: artifacts/*
-          if-no-files-found: error
-
-      - name: Draft GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          draft: true
-          files: artifacts/*
-          generate_release_notes: true
-
-  macos:
-    name: macOS bundle (universal)
-    runs-on: macos-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # Both Apple Silicon and Intel architectures so a single .dmg
-      # works on every Mac shipped since 2020. Tauri's `--target
-      # universal-apple-darwin` flag handles the lipo step for us.
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin,aarch64-apple-darwin
-
-      - name: Cache cargo registry & target
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            ./src-tauri
-          # Separate cache key from the Windows job so the two
-          # don't fight over `target/`.
-          key: macos
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: ui/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: ui
-        run: npm ci
-
-      - name: Build frontend
-        working-directory: ui
-        run: npm run build
-
-      - name: Build Tauri bundle (universal .dmg + .app)
-        run: |
-          # Same caveat as the Windows job: invoke the Tauri CLI from
-          # the workspace root, not from `ui/`. We restrict the
-          # bundle targets so the macOS run doesn't try to build a
-          # Windows installer (`msi` would just be skipped on this
-          # platform but the explicit list keeps logs clean).
-          ./ui/node_modules/.bin/tauri build \
-            --target universal-apple-darwin \
-            --bundles dmg,app
-
-      - name: Collect bundles
-        run: |
-          mkdir -p artifacts
-          # Tauri lays bundle output under
-          # target/<triple>/release/bundle when --target is set.
-          BUNDLE_BASE="target/universal-apple-darwin/release/bundle"
-          if [ ! -d "$BUNDLE_BASE" ]; then
-            echo "::error::No bundle directory at $BUNDLE_BASE"
-            exit 1
-          fi
-          # .dmg lives in $BUNDLE_BASE/dmg/, .app under $BUNDLE_BASE/macos/.
-          # We zip the .app so it survives upload (a .app bundle is a
-          # directory; uploading a directory would lose its
-          # executable bits).
-          if compgen -G "$BUNDLE_BASE/dmg/*.dmg" > /dev/null; then
-            cp "$BUNDLE_BASE"/dmg/*.dmg artifacts/
-          fi
-          if compgen -G "$BUNDLE_BASE/macos/*.app" > /dev/null; then
-            for app in "$BUNDLE_BASE"/macos/*.app; do
-              name="$(basename "$app" .app)"
-              ditto -c -k --keepParent "$app" "artifacts/${name}.app.zip"
-            done
-          fi
-          ls -lh artifacts
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: qobee-macos-bundles
-          path: artifacts/*
-          if-no-files-found: error
-
-      - name: Draft GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          draft: true
-          files: artifacts/*
-          generate_release_notes: true
+          # The Tauri CLI walks subfolders for `tauri.conf.json`, so
+          # the project root (where `ui/` and `src-tauri/` are
+          # siblings) is the correct working dir — the action's
+          # default.
+          tagName: ${{ github.ref_name }}
+          releaseName: "Qobee ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+          # Emit `latest.json` next to the assets so the updater
+          # endpoint can find it (this is the action's default, set
+          # explicitly here for clarity).
+          uploadUpdaterJson: true
+          args: ${{ matrix.args }}

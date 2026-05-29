@@ -13,6 +13,8 @@
   import { installKeyboardShortcuts } from "./lib/keyboardShortcuts";
   import { installFolderDrop } from "./lib/dropToScan";
   import { queuePopover } from "./lib/queuePopover.svelte";
+  import { checkForUpdates } from "./lib/updater";
+  import { restoreSession, saveSession } from "./lib/api";
   import {
     setMediaMetadata,
     setMediaPlaybackState,
@@ -167,6 +169,21 @@
       } else {
         await discordPresence.setEnabled(false);
       }
+
+      // Silently check GitHub for a newer release once the app is
+      // up and running. Stays quiet when already current or offline;
+      // surfaces a toast + auto-installs when an update is found.
+      void checkForUpdates({ silent: true });
+
+      // Restore the previous session (queue + position), paused, so
+      // the user picks up where they left off without audio starting
+      // unprompted. Best-effort; a fresh install simply has nothing
+      // to restore.
+      try {
+        await restoreSession();
+      } catch {
+        // ignored
+      }
     })();
 
     // R7 — reveal the window once Svelte has mounted and the first
@@ -184,12 +201,21 @@
       });
     });
 
+    // Persist the session (queue + position) every 10 s so a crash
+    // or a forced quit still leaves a recent resume point. Cheap: a
+    // single settings-row write, skipped when the queue is empty.
+    const sessionSaver = window.setInterval(() => {
+      void saveSession().catch(() => {});
+    }, 10000);
+
     return () => {
       window.removeEventListener("contextmenu", onContext);
       cleanupKeys();
       if (cleanupDrop) cleanupDrop();
       if (cleanupDeepLink) cleanupDeepLink();
       if (cleanupPlayerEvent) cleanupPlayerEvent();
+      window.clearInterval(sessionSaver);
+      void saveSession().catch(() => {});
     };
   });
 

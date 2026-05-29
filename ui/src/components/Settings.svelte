@@ -24,6 +24,8 @@
     setTrayEnabled,
     getReplayGainMode,
     setReplayGainMode,
+    getCrossfadeMs,
+    setCrossfadeMs,
     type CloseBehavior,
     type ReplayGainMode,
     getUserOutputMode,
@@ -83,7 +85,7 @@
 
   const CATEGORIES: CategoryDef[] = [
     { id: "library", label: "Library", icon: "library", keywords: "folder root drive scan source remote google" },
-    { id: "playback", label: "Playback", icon: "music", keywords: "device volume replaygain output exclusive shared" },
+    { id: "playback", label: "Playback", icon: "music", keywords: "device volume replaygain output exclusive shared crossfade fade" },
     { id: "audio", label: "Audio", icon: "volume", keywords: "bit perfect dsp convolver resampler null test" },
     { id: "windows", label: "Windows integration", icon: "shield", keywords: "smtc taskbar jumplist aumid" },
     { id: "window", label: "Window", icon: "expand", keywords: "close tray notify minimize background" },
@@ -117,6 +119,7 @@
   let replayGainMode = $state<ReplayGainMode>("off");
   let outputMode = $state<OutputMode>("auto");
   let outputModeError = $state<string | null>(null);
+  let crossfadeMs = $state<number>(0);
   let discordStatus = $state<DiscordStatus>("disabled");
   let discordPoll: number | null = null;
 
@@ -150,8 +153,9 @@
       getUserOutputMode(),
       listLibrarySources(),
       getWindowSettings(),
+      getCrossfadeMs(),
     ]);
-    const [rs, ds, sel, st, rg, om, ss, ws] = results;
+    const [rs, ds, sel, st, rg, om, ss, ws, xf] = results;
 
     if (rs.status === "fulfilled") roots = rs.value;
     else app.lastError = `Library roots: ${String(rs.reason)}`;
@@ -164,6 +168,7 @@
     if (ss.status === "fulfilled") sources = ss.value;
     if (ws.status === "fulfilled") windowSettings = ws.value;
     else windowError = String(ws.reason);
+    if (xf.status === "fulfilled") crossfadeMs = xf.value;
   }
 
   $effect(() => {
@@ -309,6 +314,18 @@
     } catch (err) {
       app.lastError = String(err);
     }
+  }
+
+  // Crossfade is debounced so dragging the slider doesn't spam the
+  // backend (each call persists a settings row + touches the engine).
+  let crossfadeDebounce: ReturnType<typeof setTimeout> | null = null;
+  function handleCrossfadeChange(e: Event): void {
+    const ms = Number((e.target as HTMLInputElement).value);
+    crossfadeMs = ms;
+    if (crossfadeDebounce) clearTimeout(crossfadeDebounce);
+    crossfadeDebounce = setTimeout(() => {
+      void setCrossfadeMs(ms).catch((err) => (app.lastError = String(err)));
+    }, 200);
   }
 
   async function handleOutputModeChange(e: Event): Promise<void> {
@@ -735,6 +752,22 @@
           <option value="track">Track gain</option>
           <option value="album">Album gain</option>
         </select>
+      </div>
+
+      <div class="row">
+        <label for="crossfade">Crossfade</label>
+        <input
+          id="crossfade"
+          type="range"
+          min="0"
+          max="12000"
+          step="500"
+          value={crossfadeMs}
+          oninput={handleCrossfadeChange}
+        />
+        <span class="value">
+          {crossfadeMs === 0 ? "Off" : `${(crossfadeMs / 1000).toFixed(1)} s`}
+        </span>
       </div>
 
       <div class="row">

@@ -47,7 +47,17 @@
 
   let nowFavorite = $state(false);
   let lastResolvedId = "";
-  let showLyrics = $state(false);
+  // Lyrics display mode:
+  //  - "off": show the cover (default).
+  //  - "panel": small lyrics box inside the hero square.
+  //  - "karaoke": full-stage synced karaoke layout.
+  let lyricsMode = $state<"off" | "panel" | "karaoke">("off");
+  let showLyrics = $derived(lyricsMode !== "off");
+
+  function cycleLyrics(): void {
+    lyricsMode =
+      lyricsMode === "off" ? "panel" : lyricsMode === "panel" ? "karaoke" : "off";
+  }
 
   $effect(() => {
     const id = track?.id;
@@ -134,28 +144,40 @@
   </button>
 
   {#if track}
-    <div class="stage">
-      <!-- Hero zone: either the artwork or the lyrics panel. The
-           swap is animated so the user keeps a sense of place. -->
-      <div class="hero">
-        {#if showLyrics}
-          <div class="lyrics-frame" in:fly={{ y: 12, duration: 240 }}>
-            <LyricsPanel trackId={track.id} />
-          </div>
-        {:else}
-          <div class="cover-frame" in:fade={{ duration: 200 }}>
-            <Cover coverKey={track.cover_key} size={520} title={track.title} />
-          </div>
-        {/if}
-      </div>
+    <div class="stage" class:karaoke={lyricsMode === "karaoke"}>
+      {#if lyricsMode === "karaoke"}
+        <!-- Full-stage karaoke: the synced lyrics fill the viewport,
+             with a compact track header pinned at the top. -->
+        <div class="karaoke-header">
+          <h1 class="k-title" title={track.title}>{track.title}</h1>
+          <p class="k-artist" title={track.artist}>{track.artist}</p>
+        </div>
+        <div class="karaoke-body" in:fade={{ duration: 220 }}>
+          <LyricsPanel trackId={track.id} variant="stage" />
+        </div>
+      {:else}
+        <!-- Hero zone: either the artwork or the lyrics panel. The
+             swap is animated so the user keeps a sense of place. -->
+        <div class="hero">
+          {#if lyricsMode === "panel"}
+            <div class="lyrics-frame" in:fly={{ y: 12, duration: 240 }}>
+              <LyricsPanel trackId={track.id} />
+            </div>
+          {:else}
+            <div class="cover-frame" in:fade={{ duration: 200 }}>
+              <Cover coverKey={track.cover_key} size={520} title={track.title} />
+            </div>
+          {/if}
+        </div>
 
-      <div class="text">
-        <h1 class="title" title={track.title}>{track.title}</h1>
-        <p class="artist" title={track.artist}>{track.artist}</p>
-        {#if track.album}
-          <p class="album" title={track.album}>{track.album}</p>
-        {/if}
-      </div>
+        <div class="text">
+          <h1 class="title" title={track.title}>{track.title}</h1>
+          <p class="artist" title={track.artist}>{track.artist}</p>
+          {#if track.album}
+            <p class="album" title={track.album}>{track.album}</p>
+          {/if}
+        </div>
+      {/if}
 
       <!-- Premium progress bar: thicker rail, soft accent glow at
            the played edge, bigger thumb on hover. -->
@@ -232,9 +254,13 @@
         <button
           class="ctrl small"
           class:active={showLyrics}
-          onclick={() => (showLyrics = !showLyrics)}
-          aria-label={showLyrics ? "Hide lyrics" : "Show lyrics"}
-          title={showLyrics ? "Hide lyrics" : "Show lyrics"}
+          onclick={cycleLyrics}
+          aria-label="Toggle lyrics"
+          title={lyricsMode === "off"
+            ? "Paroles"
+            : lyricsMode === "panel"
+              ? "Paroles plein écran (karaoké)"
+              : "Masquer les paroles"}
         >
           <Icon name="quote" size={14} />
         </button>
@@ -305,6 +331,69 @@
     max-height: 100dvh;
     padding: clamp(20px, 4dvh, 40px) 24px;
     box-sizing: border-box;
+  }
+
+  /* ============================================================ */
+  /* Karaoke mode — the synced lyrics take the whole stage. The    */
+  /* progress bar + controls stay pinned at the bottom; a compact  */
+  /* track header sits at the top. Width opens up to ~900px so     */
+  /* long lines breathe instead of wrapping awkwardly.             */
+  /* ============================================================ */
+  .stage.karaoke {
+    width: min(900px, 94vw);
+    justify-content: space-between;
+    gap: clamp(10px, 1.6dvh, 18px);
+  }
+  .karaoke-header {
+    flex: 0 0 auto;
+    text-align: center;
+    width: 100%;
+    padding-top: clamp(8px, 2dvh, 24px);
+  }
+  .k-title {
+    font-size: clamp(16px, 2.4dvh, 22px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--fg-0);
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+    text-shadow: 0 1px 12px rgba(0, 0, 0, 0.5);
+  }
+  .k-artist {
+    font-size: clamp(11px, 1.6dvh, 13px);
+    font-weight: 500;
+    color: var(--fg-2);
+    margin: 4px 0 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
+  }
+  .karaoke-body {
+    flex: 1 1 auto;
+    min-height: 0; /* let the inner list scroll instead of overflowing */
+    width: 100%;
+    display: flex;
+    /* Soft top/bottom fade so lines melt into the background as they
+       scroll past the active region. */
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      #000 18%,
+      #000 82%,
+      transparent 100%
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      #000 18%,
+      #000 82%,
+      transparent 100%
+    );
   }
 
   /* Exit button — glass pill, top-right, never overlaps the cover.

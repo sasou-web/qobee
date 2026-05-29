@@ -2,31 +2,60 @@
 //!
 //! The tray is built once at startup and updated whenever the
 //! player state changes so the menu reflects the current track and
-//! play/pause label. Hidden behind a setting (`Show tray icon`)
-//! and disabled entirely on non-Windows for now (the menu items use
-//! Windows-flavoured wording but the API is cross-platform; we just
-//! haven't designed a mac/Linux story yet).
+//! play/pause label. Hidden behind a setting (`Show tray icon`).
+//!
+//! **Windows only.** On macOS a `TrayIconBuilder` creates an
+//! `NSStatusItem` — the icon that shows up in the top menu bar —
+//! which Qobee deliberately avoids: the app already projects onto
+//! the native Now Playing surface (`MPNowPlayingInfoCenter`) and the
+//! macOS menu bar / Dock, so a redundant status-bar logo only adds
+//! clutter. The menu wording here is Windows-flavoured anyway. The
+//! public functions stay callable on every platform (so shared call
+//! sites in `lib.rs` need no `cfg` gates) but their bodies are
+//! no-ops outside Windows.
 
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter as _, Manager, Runtime};
+use tauri::tray::TrayIcon;
+use tauri::{AppHandle, Runtime};
 
+// Windows-only imports — the tray menu construction and click
+// dispatch only compile into the Windows build. Keeping them gated
+// avoids `unused_import` warnings on macOS / Linux under the
+// `-D warnings` CI gate.
+#[cfg(target_os = "windows")]
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+#[cfg(target_os = "windows")]
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+#[cfg(target_os = "windows")]
+use tauri::{Emitter as _, Manager};
+
+#[cfg(target_os = "windows")]
 use crate::state::AppState;
 
 /// Menu item ids the click handler dispatches on.
+#[cfg(target_os = "windows")]
 const ID_SHOW: &str = "tray-show";
+#[cfg(target_os = "windows")]
 const ID_PLAY_PAUSE: &str = "tray-play-pause";
+#[cfg(target_os = "windows")]
 const ID_NEXT: &str = "tray-next";
+#[cfg(target_os = "windows")]
 const ID_PREV: &str = "tray-prev";
+#[cfg(target_os = "windows")]
 const ID_LIBRARY: &str = "tray-library";
+#[cfg(target_os = "windows")]
 const ID_SETTINGS: &str = "tray-settings";
+#[cfg(target_os = "windows")]
 const ID_QUIT: &str = "tray-quit";
 
 /// State the tray needs to keep mutable across rebuilds.
+///
+/// On non-Windows the slot simply stays `None` for the whole
+/// process lifetime — [`ensure_tray`] never populates it.
 pub struct TrayState<R: Runtime> {
+    #[allow(dead_code)] // read only on Windows; field kept cross-platform
     icon: Mutex<Option<TrayIcon<R>>>,
 }
 
@@ -40,7 +69,28 @@ impl<R: Runtime> Default for TrayState<R> {
 
 /// Build (or rebuild) the tray icon. Called once at startup; can
 /// also be called when settings change to toggle the icon on/off.
+///
+/// macOS / Linux: this is a no-op (see the module doc for why).
 pub fn ensure_tray<R: Runtime>(
+    app: &AppHandle<R>,
+    state: Arc<TrayState<R>>,
+    enabled: bool,
+) -> tauri::Result<()> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, state, enabled);
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        ensure_tray_windows(app, state, enabled)
+    }
+}
+
+/// Windows-only tray implementation.
+#[cfg(target_os = "windows")]
+fn ensure_tray_windows<R: Runtime>(
     app: &AppHandle<R>,
     state: Arc<TrayState<R>>,
     enabled: bool,
@@ -98,20 +148,30 @@ pub fn ensure_tray<R: Runtime>(
 }
 
 /// Update the now-playing label in the tray menu. Called from the
-/// player event pump whenever the current track changes.
+/// player event pump whenever the current track changes. No-op on
+/// non-Windows.
 pub fn set_now_playing<R: Runtime>(
     app: &AppHandle<R>,
     state: Arc<TrayState<R>>,
     label: &str,
 ) -> tauri::Result<()> {
-    let slot = state.icon.lock();
-    let Some(tray) = slot.as_ref() else {
-        return Ok(());
-    };
-    let menu = build_menu(app, label)?;
-    tray.set_menu(Some(menu))?;
-    tray.set_tooltip(Some(format!("Qobee — {label}")))?;
-    Ok(())
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, state, label);
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let slot = state.icon.lock();
+        let Some(tray) = slot.as_ref() else {
+            return Ok(());
+        };
+        let menu = build_menu(app, label)?;
+        tray.set_menu(Some(menu))?;
+        tray.set_tooltip(Some(format!("Qobee — {label}")))?;
+        Ok(())
+    }
 }
 
 /// Hot-toggle the tray icon at runtime: create it if `enabled` and
@@ -119,7 +179,8 @@ pub fn set_now_playing<R: Runtime>(
 ///
 /// Wired to the `set_tray_enabled` Tauri command added in task 10.1
 /// so the user can flip the toggle in Settings → Window without
-/// restarting the app (R7.1, R7.3 design §Window_Manager).
+/// restarting the app (R7.1, R7.3 design §Window_Manager). No-op on
+/// non-Windows.
 pub fn set_tray_enabled<R: Runtime>(
     app: &AppHandle<R>,
     state: Arc<TrayState<R>>,
@@ -128,6 +189,7 @@ pub fn set_tray_enabled<R: Runtime>(
     ensure_tray(app, state, enabled)
 }
 
+#[cfg(target_os = "windows")]
 fn build_menu<R: Runtime>(app: &AppHandle<R>, now_playing_label: &str) -> tauri::Result<Menu<R>> {
     let np_text = if now_playing_label.is_empty() {
         "Nothing playing".to_string()
@@ -169,6 +231,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, now_playing_label: &str) -> tauri:
     )
 }
 
+#[cfg(target_os = "windows")]
 fn dispatch_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
     match id {
         ID_SHOW => focus_main(app),
@@ -216,6 +279,7 @@ fn dispatch_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn focus_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();

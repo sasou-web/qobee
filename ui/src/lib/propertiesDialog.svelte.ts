@@ -34,6 +34,9 @@ export interface PropertiesPayload {
    *  distinct group. */
   audioTraits: PropertiesField[];
   artists: ArtistEntry[];
+  /** When set, the dialog shows an interactive star rating and the
+   *  play count for this track. Albums omit it. */
+  trackId?: number;
 }
 
 export type PropertiesTab = "details" | "artists" | "artwork";

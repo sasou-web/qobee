@@ -62,6 +62,13 @@ impl AppState {
         if let Ok(Some(rg)) = library.get_setting("audio.replaygain_mode") {
             handle.set_replaygain_mode(qobee_core::ReplayGainMode::from_setting(&rg));
         }
+        // Restore the persisted crossfade window (ms). Missing or
+        // unparseable → off.
+        if let Ok(Some(xf)) = library.get_setting("playback.crossfade_ms") {
+            if let Ok(ms) = xf.parse::<u32>() {
+                handle.set_crossfade_ms(ms.min(12_000));
+            }
+        }
         if let Ok(Some(mode_str)) = library.get_setting("audio.output_mode") {
             let mode = match mode_str.as_str() {
                 "exclusive" => qobee_engine::OutputMode::Exclusive,

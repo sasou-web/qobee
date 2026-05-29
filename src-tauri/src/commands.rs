@@ -521,6 +521,220 @@ pub fn list_favorites(state: State<'_, AppState>) -> Result<Vec<Track>, String> 
 }
 
 // ---------------------------------------------------------------------------
+// Ratings & play counts
+// ---------------------------------------------------------------------------
+
+/// Set a track's star rating (1..=5). `rating == 0` clears it.
+#[tauri::command]
+pub fn set_rating(track_id: i64, rating: u8, state: State<'_, AppState>) -> Result<(), String> {
+    state.library().set_rating(track_id, rating).map_err(map_err)
+}
+
+/// A track's star rating (0 = unrated).
+#[tauri::command]
+pub fn get_rating(track_id: i64, state: State<'_, AppState>) -> Result<u8, String> {
+    state.library().get_rating(track_id).map_err(map_err)
+}
+
+/// Number of recorded plays for a track.
+#[tauri::command]
+pub fn get_play_count(track_id: i64, state: State<'_, AppState>) -> Result<i64, String> {
+    state.library().play_count(track_id).map_err(map_err)
+}
+
+// ---------------------------------------------------------------------------
+// Sleep timer
+// ---------------------------------------------------------------------------
+
+/// Snapshot of the sleep-timer state for the UI.
+#[derive(serde::Serialize)]
+pub struct SleepTimerState {
+    /// Remaining whole seconds before a wall-clock timer fires, or
+    /// `null` when no wall-clock timer is armed.
+    pub remaining_secs: Option<u64>,
+    /// Whether the "stop at end of current track" mode is armed.
+    pub stop_after_track: bool,
+}
+
+/// Arm a sleep timer that pauses playback after `minutes`. `0`
+/// disarms any pending wall-clock timer.
+#[tauri::command]
+pub fn set_sleep_timer(minutes: u32, state: State<'_, AppState>) -> Result<(), String> {
+    state.player().set_sleep_timer(minutes);
+    Ok(())
+}
+
+/// Arm (or disarm) the "stop at end of current track" sleep mode.
+#[tauri::command]
+pub fn set_sleep_after_track(on: bool, state: State<'_, AppState>) -> Result<(), String> {
+    state.player().set_sleep_after_track(on);
+    Ok(())
+}
+
+/// Current sleep-timer state for the UI.
+#[tauri::command]
+pub fn get_sleep_timer(state: State<'_, AppState>) -> Result<SleepTimerState, String> {
+    let player = state.player();
+    Ok(SleepTimerState {
+        remaining_secs: player.sleep_timer_remaining_secs(),
+        stop_after_track: player.sleep_after_track(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Playlist import / export (M3U / M3U8)
+// ---------------------------------------------------------------------------
+
+/// Export a playlist to an `.m3u8` file at `path`. Writes an
+/// extended M3U (`#EXTM3U` + `#EXTINF` per track) with absolute
+/// local file paths. Remote (`drv://…`) tracks are written as their
+/// URI so a re-import into Qobee still resolves them.
+#[tauri::command]
+pub fn export_playlist_m3u(
+    playlist_id: i64,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let lib = state.library();
+    let detail = lib
+        .get_playlist(playlist_id)
+        .map_err(map_err)?
+        .ok_or_else(|| "playlist not found".to_string())?;
+
+    let mut out = String::from("#EXTM3U\n");
+    for t in &detail.tracks {
+        let secs = t.duration_seconds.round() as i64;
+        let artist = if t.artist.is_empty() { "" } else { &t.artist };
+        out.push_str(&format!("#EXTINF:{secs},{artist} - {}\n", t.title));
+        out.push_str(&t.path);
+        out.push('\n');
+    }
+
+    std::fs::write(&path, out).map_err(|e| format!("could not write playlist: {e}"))?;
+    Ok(())
+}
+
+/// Import an `.m3u` / `.m3u8` file at `path` into a new playlist.
+/// Each entry is resolved against the library by its stored path;
+/// entries not present in the library are skipped (the import is
+/// best-effort and reports how many resolved). Returns the created
+/// playlist.
+#[tauri::command]
+pub fn import_playlist_m3u(
+    path: String,
+    name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Playlist, String> {
+    let lib = state.library();
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("could not read playlist: {e}"))?;
+
+    // Resolve every non-comment, non-empty line against the library.
+    let mut track_ids: Vec<i64> = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Ok(Some(id)) = lib.find_track_id_by_path(line) {
+            track_ids.push(id);
+        }
+    }
+
+    // Name the playlist after the file stem unless one was given.
+    let playlist_name = name.unwrap_or_else(|| {
+        std::path::Path::new(&path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Imported playlist".to_string())
+    });
+
+    let playlist = lib.create_playlist(&playlist_name).map_err(map_err)?;
+    if !track_ids.is_empty() {
+        lib.add_to_playlist(playlist.id, &track_ids)
+            .map_err(map_err)?;
+    }
+    Ok(playlist)
+}
+
+// ---------------------------------------------------------------------------
+// Session persistence (restore queue + position on next launch)
+// ---------------------------------------------------------------------------
+
+/// Persisted session blob stored as JSON in the settings table under
+/// `session.state`.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+pub struct SessionState {
+    pub track_ids: Vec<i64>,
+    pub cursor: usize,
+    pub position_seconds: f64,
+}
+
+/// Persist the current queue + cursor + position so the next launch
+/// can restore it. Called periodically and on track change by the
+/// frontend. Cheap: a single settings-row write.
+#[tauri::command]
+pub fn save_session(state: State<'_, AppState>) -> Result<(), String> {
+    let player = state.player();
+    let snap = player.queue_snapshot();
+    // Nothing worth persisting if the queue is empty.
+    if snap.items.is_empty() {
+        return Ok(());
+    }
+    let blob = SessionState {
+        track_ids: snap.items,
+        cursor: snap.cursor.unwrap_or(0),
+        position_seconds: player.state().position_seconds,
+    };
+    let json = serde_json::to_string(&blob).map_err(map_err)?;
+    state
+        .library()
+        .set_setting("session.state", &json)
+        .map_err(map_err)
+}
+
+/// Restore the persisted session (queue + cursor + position), leaving
+/// playback paused. Returns `true` when a track was restored. Called
+/// once by the frontend at startup when "resume on launch" is on.
+#[tauri::command]
+pub fn restore_session(state: State<'_, AppState>) -> Result<bool, String> {
+    let raw = match state.library().get_setting("session.state").map_err(map_err)? {
+        Some(s) => s,
+        None => return Ok(false),
+    };
+    let blob: SessionState = match serde_json::from_str(&raw) {
+        Ok(b) => b,
+        Err(_) => return Ok(false), // corrupt / legacy blob → ignore
+    };
+    state
+        .player()
+        .restore_session(blob.track_ids, blob.cursor, blob.position_seconds)
+        .map_err(map_err)
+}
+
+// ---------------------------------------------------------------------------
+// Crossfade
+// ---------------------------------------------------------------------------
+
+/// Set the crossfade window in milliseconds (`0` = off, max 12 000).
+/// Persisted under `playback.crossfade_ms` and applied to the engine.
+#[tauri::command]
+pub fn set_crossfade_ms(ms: u32, state: State<'_, AppState>) -> Result<(), String> {
+    let clamped = ms.min(12_000);
+    state.player().set_crossfade_ms(clamped);
+    state
+        .library()
+        .set_setting("playback.crossfade_ms", &clamped.to_string())
+        .map_err(map_err)
+}
+
+/// Current crossfade window in milliseconds.
+#[tauri::command]
+pub fn get_crossfade_ms(state: State<'_, AppState>) -> Result<u32, String> {
+    Ok(state.player().crossfade_ms())
+}
+
+// ---------------------------------------------------------------------------
 // Settings (key/value preferences persisted in the SQLite DB)
 // ---------------------------------------------------------------------------
 

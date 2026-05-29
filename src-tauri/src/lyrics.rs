@@ -450,11 +450,11 @@ fn slug_segment(text: &str) -> String {
         if ch.is_ascii_alphanumeric() {
             out.push(ch.to_ascii_lowercase());
             prev_dash = false;
-        } else if ch.is_whitespace() || matches!(ch, '-' | '_' | '.' | '/' | '\\' | '&') {
-            if !prev_dash {
-                out.push('-');
-                prev_dash = true;
-            }
+        } else if (ch.is_whitespace() || matches!(ch, '-' | '_' | '.' | '/' | '\\' | '&'))
+            && !prev_dash
+        {
+            out.push('-');
+            prev_dash = true;
         }
         // Diacritics + other punctuation are dropped silently. The
         // mapping isn't perfect (e.g. "Beyoncé" → "beyonc"), which

@@ -117,6 +117,7 @@ function showTrackProperties(track: Track): void {
     details,
     audioTraits,
     artists: trackArtists(track),
+    trackId: track.id,
   });
 }
 

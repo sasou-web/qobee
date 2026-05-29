@@ -110,6 +110,8 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(app_state.clone())
         .manage(tray_state.clone())
@@ -166,6 +168,18 @@ pub fn run() {
             commands::is_favorite,
             commands::list_favorite_track_ids,
             commands::list_favorites,
+            commands::set_rating,
+            commands::get_rating,
+            commands::get_play_count,
+            commands::set_sleep_timer,
+            commands::set_sleep_after_track,
+            commands::get_sleep_timer,
+            commands::export_playlist_m3u,
+            commands::import_playlist_m3u,
+            commands::save_session,
+            commands::restore_session,
+            commands::set_crossfade_ms,
+            commands::get_crossfade_ms,
             commands::get_queue,
             commands::queue_remove_at,
             commands::queue_move,

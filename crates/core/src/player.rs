@@ -28,7 +28,7 @@
 //!   mode is rewritten so the next launch doesn't fail the same way.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -134,6 +134,11 @@ struct PlayerInner {
     /// ReplayGain mode encoded as `u8` (0=Off, 1=Track, 2=Album) so
     /// every read is a relaxed atomic. Mirrors the Tauri setting.
     replaygain_mode: AtomicU8,
+    /// Crossfade window in milliseconds (`0` = off). Mirrors the
+    /// `playback.crossfade_ms` setting; read by `prefetch_next_if_any`
+    /// to widen the pre-fetch lead time so the incoming track is
+    /// ready before the fade window opens.
+    crossfade_ms: AtomicU32,
     event_tx: Sender<PlayerEvent>,
     event_rx: Receiver<PlayerEvent>,
     /// R8 transport bus: every player-side transition (`Started`,
@@ -142,6 +147,16 @@ struct PlayerInner {
     /// `tokio::sync::broadcast` channel. Sits next to the legacy
     /// crossbeam `event_tx` so existing consumers keep working.
     broadcast_tx: broadcast::Sender<PlayerEvent>,
+    /// Sleep timer: wall-clock instant at which playback should be
+    /// paused, or `None` when no timer is armed. A background
+    /// monitor thread polls this and pauses the engine when the
+    /// deadline passes. Set via [`PlayerHandle::set_sleep_timer`].
+    sleep_deadline: Mutex<Option<Instant>>,
+    /// When `true`, the armed sleep timer fires at the *end of the
+    /// current track* rather than at a wall-clock deadline. The
+    /// `EndOfTrack` handler checks this latch and stops instead of
+    /// advancing.
+    sleep_stop_after_track: AtomicBool,
 }
 
 impl PlayerInner {
@@ -422,11 +437,14 @@ impl Player {
             prefetched_track: Mutex::new(None),
             endless: AtomicBool::new(true),
             replaygain_mode: AtomicU8::new(0),
+            crossfade_ms: AtomicU32::new(0),
             cached_volume: Mutex::new(None),
             cached_eq_gains_db: Mutex::new(None),
             event_tx,
             event_rx,
             broadcast_tx,
+            sleep_deadline: Mutex::new(None),
+            sleep_stop_after_track: AtomicBool::new(false),
         });
 
         // Pump events from the Shared engine. When the user toggles
@@ -438,6 +456,38 @@ impl Player {
         let pump = thread::Builder::new()
             .name("qobee-core-pump-shared".into())
             .spawn(move || pump_engine_events(pump_inner, engine_events))
+            .map_err(|e| PlayerError::Engine(EngineError::Internal(e.to_string())))?;
+
+        // Sleep-timer monitor. A cheap 1 s poll that pauses the
+        // engine once the armed wall-clock deadline passes. Kept as
+        // its own detached thread so it never blocks the event pump;
+        // it holds a clone of the inner handle and exits when the
+        // last `Player` is dropped (the `Arc` upgrade fails).
+        let sleep_inner = Arc::downgrade(&inner);
+        thread::Builder::new()
+            .name("qobee-core-sleep-timer".into())
+            .spawn(move || loop {
+                thread::sleep(Duration::from_millis(1000));
+                let Some(inner) = sleep_inner.upgrade() else {
+                    break; // player dropped
+                };
+                let fire = {
+                    let mut slot = inner.sleep_deadline.lock();
+                    match *slot {
+                        Some(deadline) if Instant::now() >= deadline => {
+                            *slot = None; // one-shot
+                            true
+                        }
+                        _ => false,
+                    }
+                };
+                if fire {
+                    tracing::info!(target: "qobee::core", "sleep timer elapsed; pausing playback");
+                    if let Err(e) = inner.engine().pause() {
+                        tracing::warn!(target: "qobee::core", error = %e, "sleep-timer pause failed");
+                    }
+                }
+            })
             .map_err(|e| PlayerError::Engine(EngineError::Internal(e.to_string())))?;
 
         Ok(Player { inner, _pump: pump })
@@ -653,6 +703,53 @@ impl PlayerHandle {
     /// render the "Now Playing / Queue" screen.
     pub fn queue_snapshot(&self) -> QueueSnapshot {
         self.inner.queue.snapshot()
+    }
+
+    /// Restore a previously persisted session: rebuild the queue from
+    /// `track_ids`, position the cursor at `cursor`, load the current
+    /// track and seek to `position_seconds`, but leave it **paused**
+    /// so playback doesn't start unprompted on launch. Best-effort:
+    /// any track id no longer in the library is dropped, and if the
+    /// resulting queue is empty the call is a no-op. Returns `true`
+    /// when a track was restored.
+    pub fn restore_session(
+        &self,
+        track_ids: Vec<TrackId>,
+        cursor: usize,
+        position_seconds: f64,
+    ) -> PlayerResult<bool> {
+        // Filter out ids that no longer resolve to a library row so a
+        // stale session (after a rescan / file move) restores cleanly.
+        let valid: Vec<TrackId> = track_ids
+            .into_iter()
+            .filter(|id| matches!(self.inner.library.get_track(*id), Ok(Some(_))))
+            .collect();
+        if valid.is_empty() {
+            return Ok(false);
+        }
+        let start = cursor.min(valid.len() - 1);
+        self.inner.queue.replace(valid, Some(start));
+        let cur = match self.inner.queue.current() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+        let path = self.inner.resolve_path(cur)?;
+        // Load the track but do NOT play: `start_track` always calls
+        // `play()`, so we replicate the bookkeeping here and leave the
+        // engine paused. The engine's `Load` lands in the `Paused`
+        // state by default, which is exactly what we want.
+        *self.inner.current_track_id.lock() = Some(cur);
+        self.inner
+            .engine()
+            .set_current_track_id(Some(cur.to_string()));
+        self.inner.engine().load(&path)?;
+        if position_seconds > 1.0 {
+            // Seek to the saved offset. The engine handles a seek on a
+            // freshly-loaded paused stream by draining + reseeking the
+            // decoder; the first play() resumes from there.
+            let _ = self.inner.engine().seek(position_seconds);
+        }
+        Ok(true)
     }
 
     /// Remove the queue entry at `idx`. If the entry is the currently
@@ -902,6 +999,69 @@ impl PlayerHandle {
 
     pub fn set_endless(&self, on: bool) {
         self.inner.endless.store(on, Ordering::Relaxed);
+    }
+
+    // ---- Crossfade ----
+
+    /// Set the crossfade window in milliseconds (`0` = off). Updates
+    /// both the orchestrator's pre-fetch lead time and the engine's
+    /// fade window. Takes effect on the next track transition.
+    pub fn set_crossfade_ms(&self, ms: u32) {
+        self.inner.crossfade_ms.store(ms, Ordering::Relaxed);
+        self.inner.engine().set_crossfade_ms(ms);
+    }
+
+    /// Current crossfade window in milliseconds (`0` = off).
+    pub fn crossfade_ms(&self) -> u32 {
+        self.inner.crossfade_ms.load(Ordering::Relaxed)
+    }
+
+    // ---- Sleep timer ----
+
+    /// Arm a sleep timer that pauses playback after `minutes`. A
+    /// value of `0` disarms any pending timer. The timer is a
+    /// wall-clock deadline checked by a 1 s monitor thread, so it
+    /// fires within ~1 s of the requested instant.
+    pub fn set_sleep_timer(&self, minutes: u32) {
+        self.inner
+            .sleep_stop_after_track
+            .store(false, Ordering::Relaxed);
+        let mut slot = self.inner.sleep_deadline.lock();
+        if minutes == 0 {
+            *slot = None;
+        } else {
+            *slot = Some(Instant::now() + Duration::from_secs(minutes as u64 * 60));
+        }
+    }
+
+    /// Arm a sleep timer that stops playback at the end of the
+    /// current track instead of after a fixed delay.
+    pub fn set_sleep_after_track(&self, on: bool) {
+        if on {
+            *self.inner.sleep_deadline.lock() = None;
+        }
+        self.inner
+            .sleep_stop_after_track
+            .store(on, Ordering::Relaxed);
+    }
+
+    /// Remaining whole seconds before the wall-clock sleep timer
+    /// fires, or `None` when no wall-clock timer is armed. The
+    /// "stop after this track" mode reports `None` (there is no
+    /// countdown to show).
+    pub fn sleep_timer_remaining_secs(&self) -> Option<u64> {
+        let slot = self.inner.sleep_deadline.lock();
+        slot.map(|deadline| {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .as_secs()
+        })
+    }
+
+    /// Whether the "stop at end of current track" sleep mode is
+    /// armed.
+    pub fn sleep_after_track(&self) -> bool {
+        self.inner.sleep_stop_after_track.load(Ordering::Relaxed)
     }
 
     pub fn previous(&self) -> PlayerResult<()> {
@@ -1264,8 +1424,13 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                 // Pre-fetch the next track when we're within 5s of the
                 // end of the current one, so the gap on EndOfTrack is
                 // dominated by the engine's load() and not by disk I/O.
+                // When crossfade is on, widen the lead time so the
+                // incoming track is decoded and ready *before* the
+                // fade window opens (crossfade + 2 s margin).
                 let dur = inner.engine().state().duration_seconds;
-                if dur > 0.0 && position_seconds >= dur - 5.0 {
+                let xf_secs = inner.crossfade_ms.load(Ordering::Relaxed) as f64 / 1000.0;
+                let lead = 5.0_f64.max(xf_secs + 2.0);
+                if dur > 0.0 && position_seconds >= dur - lead {
                     inner.prefetch_next_if_any();
                 }
 
@@ -1293,6 +1458,22 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                 PlayerEvent::Position { position_seconds }
             }
             EngineEvent::EndOfTrack => {
+                // Sleep timer: "stop at end of current track" mode.
+                // When armed, halt instead of advancing and disarm
+                // the latch so the next manual play works normally.
+                if inner.sleep_stop_after_track.swap(false, Ordering::Relaxed) {
+                    tracing::info!(
+                        target: "qobee::core",
+                        "sleep timer (end of track) elapsed; stopping playback"
+                    );
+                    let _ = inner.engine().stop();
+                    *inner.current_track_id.lock() = None;
+                    last_tick_at = None;
+                    last_tick_position_ms = u64::MAX;
+                    inner.broadcast(PlayerEvent::Stopped);
+                    let _ = inner.event_tx.try_send(PlayerEvent::EndOfTrack);
+                    continue;
+                }
                 match inner.advance() {
                     Ok(true) => {}
                     Ok(false) => {

@@ -467,6 +467,102 @@ export async function listFavorites(): Promise<Track[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Ratings & play counts
+// ---------------------------------------------------------------------------
+
+/** Set a track's star rating (1–5). Pass 0 to clear it. */
+export async function setRating(trackId: number, rating: number): Promise<void> {
+  await invoke("set_rating", { trackId, rating });
+}
+
+/** A track's star rating (0 = unrated). */
+export async function getRating(trackId: number): Promise<number> {
+  return invoke<number>("get_rating", { trackId });
+}
+
+/** Number of recorded plays for a track. */
+export async function getPlayCount(trackId: number): Promise<number> {
+  return invoke<number>("get_play_count", { trackId });
+}
+
+// ---------------------------------------------------------------------------
+// Sleep timer
+// ---------------------------------------------------------------------------
+
+export interface SleepTimerState {
+  /** Remaining whole seconds before a wall-clock timer fires, or
+   *  null when no wall-clock timer is armed. */
+  remaining_secs: number | null;
+  /** Whether the "stop at end of current track" mode is armed. */
+  stop_after_track: boolean;
+}
+
+/** Arm a sleep timer that pauses playback after `minutes`. Pass 0 to
+ *  disarm any pending wall-clock timer. */
+export async function setSleepTimer(minutes: number): Promise<void> {
+  await invoke("set_sleep_timer", { minutes });
+}
+
+/** Arm or disarm the "stop at end of current track" sleep mode. */
+export async function setSleepAfterTrack(on: boolean): Promise<void> {
+  await invoke("set_sleep_after_track", { on });
+}
+
+/** Current sleep-timer state for the UI. */
+export async function getSleepTimer(): Promise<SleepTimerState> {
+  return invoke<SleepTimerState>("get_sleep_timer");
+}
+
+// ---------------------------------------------------------------------------
+// Playlist import / export (M3U / M3U8)
+// ---------------------------------------------------------------------------
+
+/** Export a playlist to an `.m3u8` file at `path`. */
+export async function exportPlaylistM3u(
+  playlistId: number,
+  path: string
+): Promise<void> {
+  await invoke("export_playlist_m3u", { playlistId, path });
+}
+
+/** Import an `.m3u` / `.m3u8` file at `path` into a new playlist. */
+export async function importPlaylistM3u(
+  path: string,
+  name?: string
+): Promise<Playlist> {
+  return invoke<Playlist>("import_playlist_m3u", { path, name: name ?? null });
+}
+
+// ---------------------------------------------------------------------------
+// Session persistence (resume queue + position on next launch)
+// ---------------------------------------------------------------------------
+
+/** Persist the current queue + cursor + position. */
+export async function saveSession(): Promise<void> {
+  await invoke("save_session");
+}
+
+/** Restore the persisted session (paused). Returns true if a track
+ *  was restored. */
+export async function restoreSession(): Promise<boolean> {
+  return invoke<boolean>("restore_session");
+}
+
+// ---------------------------------------------------------------------------
+// Crossfade
+// ---------------------------------------------------------------------------
+
+/** Set the crossfade window in milliseconds (0 = off, max 12000). */
+export async function setCrossfadeMs(ms: number): Promise<void> {
+  await invoke("set_crossfade_ms", { ms });
+}
+
+/** Current crossfade window in milliseconds. */
+export async function getCrossfadeMs(): Promise<number> {
+  return invoke<number>("get_crossfade_ms");
+}
+
+// ---------------------------------------------------------------------------
 // Queue inspection
 // ---------------------------------------------------------------------------
 

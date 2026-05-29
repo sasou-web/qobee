@@ -1,6 +1,12 @@
 <script lang="ts">
-  import { createPlaylist, deletePlaylist } from "../lib/api";
+  import { open } from "@tauri-apps/plugin-dialog";
+  import {
+    createPlaylist,
+    deletePlaylist,
+    importPlaylistM3u,
+  } from "../lib/api";
   import { app } from "../lib/stores.svelte";
+  import { toasts } from "../lib/toasts.svelte";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import NamePromptDialog from "./NamePromptDialog.svelte";
@@ -22,6 +28,22 @@
     }
   }
 
+  async function handleImport(): Promise<void> {
+    try {
+      const path = await open({
+        multiple: false,
+        filters: [{ name: "Playlist", extensions: ["m3u8", "m3u"] }],
+      });
+      if (!path || typeof path !== "string") return;
+      const created = await importPlaylistM3u(path);
+      await app.refreshPlaylists();
+      toasts.success(`Playlist « ${created.name} » importée.`);
+      app.selectPlaylist(created.id);
+    } catch (e) {
+      app.lastError = String(e);
+    }
+  }
+
   async function handleDelete(id: number, name: string): Promise<void> {
     if (!window.confirm(`Delete playlist "${name}"?`)) return;
     try {
@@ -36,10 +58,16 @@
 <section>
   <header class="header">
     <h1>Playlists</h1>
-    <button class="new" onclick={openNewDialog}>
-      <Icon name="plus" size={14} />
-      <span>New playlist</span>
-    </button>
+    <div class="header-actions">
+      <button class="new ghost" onclick={handleImport}>
+        <Icon name="folder-plus" size={14} />
+        <span>Importer M3U</span>
+      </button>
+      <button class="new" onclick={openNewDialog}>
+        <Icon name="plus" size={14} />
+        <span>New playlist</span>
+      </button>
+    </div>
   </header>
 
   {#if app.playlists.length === 0}
@@ -118,6 +146,13 @@
     background: var(--bg-2);
     border-color: var(--accent-soft);
     color: var(--accent);
+  }
+  .header-actions {
+    display: inline-flex;
+    gap: 8px;
+  }
+  .new.ghost {
+    color: var(--fg-1);
   }
   .empty {
     color: var(--fg-2);

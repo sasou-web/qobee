@@ -34,5 +34,13 @@ Thumbs.db
 .env
 .env.local
 
+# Tauri updater signing keys — the PRIVATE key must never be
+# committed. It lives only on the maintainer's box and in the
+# `TAURI_SIGNING_PRIVATE_KEY` CI secret. The matching PUBLIC key is
+# embedded in `tauri.conf.json` (safe to commit) so shipped binaries
+# can verify update signatures.
+src-tauri/.tauri/
+*.key
+
 # Qobee runtime data (created by app at runtime, never committed)
 qobee-data/

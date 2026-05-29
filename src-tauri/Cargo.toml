@@ -28,6 +28,15 @@ tauri-plugin-deep-link = "2.2"
 # Pinned to 2.3 (latest published series at time of writing); upgrade
 # in lock-step with the rest of the Tauri 2 plugin family.
 tauri-plugin-notification = "2.3"
+# Auto-update from GitHub Releases. The updater downloads the
+# platform artifact referenced by `latest.json` (published next to
+# the release assets), verifies its minisign signature against the
+# public key pinned in `tauri.conf.json`, and installs it in place
+# so the user never re-downloads the app by hand. `tauri-plugin-process`
+# exposes `relaunch()` so we can restart into the freshly installed
+# version once the user accepts.
+tauri-plugin-updater = "2.9"
+tauri-plugin-process = "2.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

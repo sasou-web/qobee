@@ -394,6 +394,26 @@ impl Library {
         db.list_favorite_track_ids()
     }
 
+    // ---- Ratings & play counts ----
+
+    /// Set a track's star rating (1..=5). `rating == 0` clears it.
+    pub fn set_rating(&self, track_id: i64, rating: u8) -> LibraryResult<()> {
+        let mut db = self.inner.db.lock();
+        db.set_rating(track_id, rating, now_secs())
+    }
+
+    /// A track's star rating, or `0` when unrated.
+    pub fn get_rating(&self, track_id: i64) -> LibraryResult<u8> {
+        let db = self.inner.db.lock();
+        db.get_rating(track_id)
+    }
+
+    /// Number of recorded plays for a track.
+    pub fn play_count(&self, track_id: i64) -> LibraryResult<i64> {
+        let db = self.inner.db.lock();
+        db.play_count(track_id)
+    }
+
     // ---- Stats / maintenance ----
 
     pub fn library_stats(&self) -> LibraryResult<LibraryStats> {

@@ -35,6 +35,9 @@
     | "compress"
     | "quote"
     | "minimize-2"
+    | "moon"
+    | "star"
+    | "star-filled"
     | "plus";
 
   interface Props {
@@ -231,5 +234,17 @@
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
     <line x1="12" y1="5" x2="12" y2="19" />
     <line x1="5" y1="12" x2="19" y2="12" />
+  </svg>
+{:else if name === "moon"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.6 6.6 0 0 0 9.8 9.8z" />
+  </svg>
+{:else if name === "star"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <polygon points="12 2.6 15 9 22 9.6 16.8 14.2 18.4 21 12 17.4 5.6 21 7.2 14.2 2 9.6 9 9" />
+  </svg>
+{:else if name === "star-filled"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" aria-hidden="true">
+    <polygon points="12 2.6 15 9 22 9.6 16.8 14.2 18.4 21 12 17.4 5.6 21 7.2 14.2 2 9.6 9 9" />
   </svg>
 {/if}

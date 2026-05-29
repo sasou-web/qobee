@@ -92,6 +92,17 @@ CREATE TABLE IF NOT EXISTS favorite_tracks (
 
 CREATE INDEX IF NOT EXISTS idx_favorite_tracks_added ON favorite_tracks(added_at DESC);
 
+-- Per-track star rating (1–5). Absence of a row means "unrated".
+-- Kept in its own table (rather than a column on `tracks`) so the
+-- rating survives a library rescan that rewrites track rows, and so
+-- the busy `tracks` INSERT/SELECT sites stay untouched.
+CREATE TABLE IF NOT EXISTS track_ratings (
+    track_id    INTEGER PRIMARY KEY,
+    rating      INTEGER NOT NULL,          -- 1..=5
+    rated_at    INTEGER NOT NULL,
+    FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE
+);
+
 -- Library sources: registry for both local folders (existing) and
 -- future remote backends (Google Drive, WebDAV, etc.). Local roots
 -- listed in `library_roots` are mirrored here on first run via a
@@ -1251,6 +1262,51 @@ impl Database {
             .query_map([], |row| row.get::<_, i64>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    // ---- Ratings & play counts ----
+
+    /// Set the star rating (1..=5) for a track. `rating == 0` clears
+    /// it (removes the row). Out-of-range values are clamped.
+    pub fn set_rating(&mut self, track_id: i64, rating: u8, now: i64) -> LibraryResult<()> {
+        if rating == 0 {
+            self.conn.execute(
+                "DELETE FROM track_ratings WHERE track_id = ?1",
+                params![track_id],
+            )?;
+            return Ok(());
+        }
+        let r = rating.clamp(1, 5);
+        self.conn.execute(
+            "INSERT INTO track_ratings (track_id, rating, rated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(track_id) DO UPDATE SET rating = excluded.rating, rated_at = excluded.rated_at",
+            params![track_id, r as i64, now],
+        )?;
+        Ok(())
+    }
+
+    /// Star rating for a track, or `0` when unrated.
+    pub fn get_rating(&self, track_id: i64) -> LibraryResult<u8> {
+        let r: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT rating FROM track_ratings WHERE track_id = ?1",
+                params![track_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(r.unwrap_or(0).clamp(0, 5) as u8)
+    }
+
+    /// Number of times a track has been played, derived from
+    /// `play_history` (every `record_play` inserts one row).
+    pub fn play_count(&self, track_id: i64) -> LibraryResult<i64> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM play_history WHERE track_id = ?1",
+            params![track_id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
     }
 
     /// Return every Drive file id that's currently a favorite for

@@ -6,6 +6,90 @@ follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-05-29
+
+A feature release focused on playback quality-of-life and
+distribution: automatic updates from GitHub, smoother track
+transitions (crossfade + anti-click fades), a fullscreen karaoke
+lyrics mode, a sleep timer, star ratings, M3U import/export and
+session resume. The audio engine also recovers gracefully when the
+output device changes mid-playback, and macOS no longer plants an
+icon in the menu bar.
+
+### Added
+
+- **Anti-click micro-fade on play/pause**. Pausing now ramps the
+  output down to silence over ~12 ms *before* the device stream is
+  stopped, and resuming (and every fresh track start) ramps it back
+  up, so the DAC never sees an abrupt amplitude step — the source of
+  the click/pop some setups produce on pause. Implemented as a second
+  smoothed gain in the CPAL Shared audio callback driven by a
+  `fade_target` atomic; the WASAPI Exclusive bit-perfect path is left
+  untouched. Gapless and crossfade transitions reuse the same stream,
+  so they fade-through cleanly without re-triggering the ramp.
+- **Crossfade between tracks**. A new Settings → Playback slider
+  (0–12 s, off by default) fades the outgoing track into the next with
+  an equal-power (constant-energy) curve so perceived loudness stays
+  flat across the blend. The mix runs on the decoder thread (not the
+  realtime audio callback) by driving two decode+resample pipelines
+  (`DecodeStream`) and blending their output before the shared DSP
+  chain. When off, the existing gapless path is used unchanged.
+  Crossfade requires the two tracks to share sample rate + channel
+  count (same constraint as gapless), else it falls back to the
+  standard transition; the orchestrator widens its next-track
+  pre-fetch lead to `crossfade + 2 s`. Persisted under
+  `playback.crossfade_ms`.
+- **Synced lyrics — fullscreen karaoke mode**. The Now Playing view's
+  lyrics button now cycles cover → side panel → fullscreen karaoke. In
+  karaoke mode the synced lines fill the stage with a large centred
+  active line, dimmed neighbours and a soft top/bottom fade, the sung
+  line auto-scrolling to centre.
+- **Sleep timer**. A moon button in the player bar arms a 15/30/45/60/
+  90-minute timer or "stop at end of current track". A wall-clock timer
+  pauses playback when it elapses; the button shows the remaining
+  minutes and can be cancelled. Backed by `set_sleep_timer` /
+  `set_sleep_after_track` / `get_sleep_timer`.
+- **Star ratings + play counts**. Tracks can be rated 1–5 stars from
+  the Properties dialog (click the current rating again to clear it),
+  which also shows how many times the track has been played. Ratings
+  live in a dedicated `track_ratings` table so they survive a rescan;
+  play counts are derived from the existing play history.
+- **Playlist import / export (M3U / M3U8)**. Export any playlist to an
+  extended-M3U file from its header, and import an `.m3u` / `.m3u8`
+  file into a new playlist from the Playlists screen (entries are
+  resolved against the library by path; unknown entries are skipped).
+- **Resume on launch**. The queue, cursor and playback position are
+  persisted every 10 seconds and on exit, then restored **paused** on
+  the next launch so you pick up exactly where you left off without
+  audio starting unprompted.
+- **Automatic updates from GitHub Releases**. The Tauri updater checks
+  `releases/latest` on launch, verifies a minisign signature against
+  the public key pinned in `tauri.conf.json`, installs in place and
+  relaunches — no manual re-download. A single toast announces the new
+  version; the check is silent when already current or offline. CI
+  signs the Windows + macOS artifacts (`TAURI_SIGNING_PRIVATE_KEY`
+  secret) and publishes `latest.json` via `tauri-apps/tauri-action`.
+
+### Fixed
+
+- **Lyrics no longer overflow the screen**. The lyrics panel used a
+  viewport-relative padding and a fixed max-width that fought its
+  container in the fullscreen view, spilling lines past the edges.
+  Lines now wrap, the list scrolls within its own box, and the panel
+  sizes to its parent in both the compact and karaoke layouts.
+- **macOS: no more menu-bar (status-bar) icon**. The system tray was
+  created on every platform, which on macOS surfaces an `NSStatusItem`
+  in the top menu bar. The tray is now gated to Windows; macOS already
+  integrates through the native Now Playing surface, menu bar and Dock.
+- **Audio survives an output-device change** (e.g. taking a call). When
+  a voice/video call app switches the OS default output or a Bluetooth
+  headset drops, the engine now catches the `DeviceNotAvailable` error,
+  rebuilds the stream on the current default device, seeks back to the
+  exact position and restores the play/pause state — instead of dying
+  with a hard error.
+
+[0.5.1]: https://github.com/qobee/qobee/releases/tag/v0.5.1
+
 ## [0.5.0] - 2026-05-28
 
 A major release that lands the **Native Media Integration & UX**

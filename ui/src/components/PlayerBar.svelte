@@ -24,6 +24,7 @@
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import PlayButton from "./PlayButton.svelte";
+  import SleepTimer from "./SleepTimer.svelte";
   import { openTrackMenu } from "../lib/trackMenu";
   import { queuePopover } from "../lib/queuePopover.svelte";
   import { nowPlayingFullscreen } from "../lib/nowPlayingFullscreen.svelte";
@@ -389,6 +390,8 @@
       >
         <Icon name="queue" size={15} />
       </button>
+
+      <SleepTimer />
 
       <div class="volume" onwheel={handleVolumeWheel} role="group" aria-label="Volume">
         <Icon name="volume" size={13} />

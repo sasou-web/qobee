@@ -31,8 +31,8 @@ use crate::PlayerEvent;
 /// `Send + Sync`.
 ///
 /// Implementations should swallow their own internal errors (log
-/// + continue) so a transient OS failure never poisons the bus for
-/// the other sinks.
+/// then continue) so a transient OS failure never poisons the bus
+/// for the other sinks.
 ///
 /// [`handle_event`]: MediaBridge::handle_event
 pub trait MediaBridge: Send + Sync {
