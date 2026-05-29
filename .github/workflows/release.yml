@@ -96,5 +96,5 @@ jobs:
           # Emit `latest.json` next to the assets so the updater
           # endpoint can find it (this is the action's default, set
           # explicitly here for clarity).
-          uploadUpdaterJson: true
+          includeUpdaterJson: true
           args: ${{ matrix.args }}
