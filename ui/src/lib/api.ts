@@ -165,6 +165,15 @@ export interface OutputDevice {
   channels: number;
 }
 
+/// Source → destination channel layout recorded when the engine had to
+/// upmix a narrower source (e.g. stereo) onto a device configured for a
+/// wider channel layout (R9.5). Mirrors `qobee_engine::types::UpmixInfo`;
+/// serde serializes the Rust field names as-is (snake_case).
+export interface UpmixInfo {
+  src_channels: number;
+  dst_channels: number;
+}
+
 export interface PlayerState {
   status: PlaybackStatus;
   current_track_id: string | null;
@@ -183,6 +192,17 @@ export interface PlayerState {
   /// Aggregated bit-perfect health snapshot (R5). Populated
   /// whenever a device is currently open; absent while idle.
   bit_perfect?: BitPerfectHealth | null;
+  /// Active upmix layout (R9.5). Present when no native stereo
+  /// configuration was available and the engine had to upmix the
+  /// source onto a wider device layout; null/absent when the device
+  /// played the source's channel layout natively (no upmix).
+  /// `#[serde(default)]` on the Rust side keeps older IPC payloads
+  /// that predate the field deserialising as None.
+  upmix?: UpmixInfo | null;
+  /// `true` when the current file exceeded the MP3 frame-repair
+  /// threshold (R11.3) and is likely degraded. Reset to false on the
+  /// next Load. Defaults to false when absent (`#[serde(default)]`).
+  degraded?: boolean;
   error: string | null;
 }
 
@@ -388,11 +408,16 @@ export async function renamePlaylist(
   await invoke("rename_playlist", { playlistId, name });
 }
 
+/**
+ * Adds tracks to a playlist and resolves with the number of tracks
+ * actually persisted. Callers use this count to confirm persistence
+ * (e.g. only show a success toast when > 0). See R3.2/R3.3.
+ */
 export async function addToPlaylist(
   playlistId: number,
   trackIds: number[]
-): Promise<void> {
-  await invoke("add_to_playlist", { playlistId, trackIds });
+): Promise<number> {
+  return invoke<number>("add_to_playlist", { playlistId, trackIds });
 }
 
 export async function removeFromPlaylist(
@@ -583,8 +608,35 @@ export async function queueMove(from: number, to: number): Promise<void> {
   await invoke("queue_move", { from, to });
 }
 
+/** Empty the "up next" queue (R3.7). The currently playing track is
+ *  not stopped — queue and playback stay decoupled. */
+export async function clearQueue(): Promise<void> {
+  await invoke("clear_queue");
+}
+
 export async function queueJumpTo(idx: number): Promise<void> {
   await invoke("queue_jump_to", { idx });
+}
+
+/** Current cumulative audio-callback underrun count (R10.3 / R10.4).
+ *  Destined for a future diagnostics panel; returns `0` at rest and on
+ *  backends without a ring buffer. */
+export async function getUnderrunCount(): Promise<number> {
+  return invoke<number>("get_underrun_count");
+}
+
+/** Quit the whole app, bypassing the close-to-tray hook (R7.2). Wired
+ *  to the "Quitter complètement" button of the Tray_Notice. */
+export async function quitApp(): Promise<void> {
+  await invoke("quit_app");
+}
+
+/** Purge every uploaded Discord cover link (`discord.cover_url::*`),
+ *  reset the upload count and drop the in-memory cache. Returns the
+ *  number of links removed so the caller can confirm it in a toast
+ *  (R8.4, R8.5). */
+export async function clearUploadedCoverLinks(): Promise<number> {
+  return invoke<number>("clear_uploaded_cover_links");
 }
 
 export async function getTracks(trackIds: number[]): Promise<Track[]> {
@@ -635,6 +687,26 @@ export async function onScanFinished(
   cb: (result: ScanResult) => void
 ): Promise<UnlistenFn> {
   return listen<ScanResult>("library:scan-finished", (e) => cb(e.payload));
+}
+
+/** Emitted once a rescan has resolved at least one root and begun.
+ *  Carries the number of roots being scanned (R6.1). */
+export async function onScanStarted(
+  cb: (payload: { roots: number }) => void
+): Promise<UnlistenFn> {
+  return listen<{ roots: number }>("library:scan-started", (e) =>
+    cb(e.payload)
+  );
+}
+
+/** Emitted when a rescan fails globally (no root configured, task
+ *  panic, …). Carries a descriptive message (R6.3). */
+export async function onScanError(
+  cb: (message: string) => void
+): Promise<UnlistenFn> {
+  return listen<{ message: string }>("library:scan-error", (e) =>
+    cb(e.payload.message)
+  );
 }
 
 // ---------------------------------------------------------------------------

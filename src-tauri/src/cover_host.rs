@@ -147,6 +147,16 @@ impl CoverHost {
         }
     }
 
+    /// Drop the in-memory mirror of the persisted URL cache. Called
+    /// after the user explicitly purges the uploaded cover links
+    /// (R8.4) so a URL removed from the `settings` table is not
+    /// re-served from memory for the rest of the session. The
+    /// persisted rows are deleted separately by the command via
+    /// `clear_settings_by_prefix`.
+    pub fn clear_link_cache(&self) {
+        self.inner.cache.lock().clear();
+    }
+
     /// Enqueue an async upload. Idempotent: dropping the job when the
     /// queue is full is fine — the next track change will retry.
     /// Refuses silently when uploads are disabled (RGPD-friendly

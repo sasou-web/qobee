@@ -44,3 +44,8 @@ src-tauri/.tauri/
 
 # Qobee runtime data (created by app at runtime, never committed)
 qobee-data/
+
+# Local manual QA / test artifacts (screenshots, captured state, logs)
+# — not part of the shipped source.
+test chatgpt/
+*.bak

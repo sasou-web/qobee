@@ -1,0 +1,24 @@
+/* Classe partagee par Album_Header et Artist_Header (R1.1, R1.2).
+   Centralise la troncature 1 ligne + ellipsis sur desktop et la
+   bascule multi-ligne / disposition verticale sous le seuil
+   responsive de 768px. Aucune position absolue : le titre reste
+   dans le flux flex (gap), donc 0px de chevauchement. */
+.detail-title {
+  max-width: 100%;                 /* R1.1 contraint au conteneur parent */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;         /* R1.1 troncature 1 ligne + ellipsis */
+}
+
+@media (max-width: 768px) {        /* R1.2 */
+  .detail-title {
+    white-space: normal;           /* multi-ligne plutot que troncature */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .detail-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

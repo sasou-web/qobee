@@ -27,6 +27,8 @@
   } from "../lib/api";
   import { app } from "../lib/stores.svelte";
   import { nowPlayingFullscreen } from "../lib/nowPlayingFullscreen.svelte";
+  import { toasts } from "../lib/toasts.svelte";
+  import { PLAYER_LABELS } from "../lib/labels";
   import { formatDuration } from "../lib/format";
   import AnimatedAmbientBackground from "./AnimatedAmbientBackground.svelte";
   import Cover from "./Cover.svelte";
@@ -93,9 +95,11 @@
       if (nowFavorite) {
         await removeFavorite(track.id);
         nowFavorite = false;
+        toasts.info("Retiré des favoris");
       } else {
         await addFavorite(track.id);
         nowFavorite = true;
+        toasts.success("Ajouté aux favoris");
       }
     } catch (e) {
       app.lastError = String(e);
@@ -116,6 +120,14 @@
   function close(): void {
     nowPlayingFullscreen.hide();
   }
+
+  // R4.5 — "Up next" / queue action from the immersive view. Leave the
+  // overlay and navigate to the dedicated queue view so the user can
+  // manage what plays next.
+  function openQueue(): void {
+    nowPlayingFullscreen.hide();
+    app.setView("queue");
+  }
 </script>
 
 <div
@@ -133,14 +145,19 @@
     {isPlaying}
   />
 
-  <!-- Fullscreen exit button — top-right, glass pill. -->
+  <!-- Fullscreen exit button — top-right, glass pill. Pulled further
+       in from the corner (top/right ≥ 24px + horizontal offset) so it
+       doesn't sit under the Windows close button (R4.3). Carries an
+       explicit FR label + a visible "Esc" hint (R4.2). -->
   <button
     class="exit-btn"
     onclick={close}
-    aria-label="Close Now Playing"
-    title="Close (Esc)"
+    aria-label={PLAYER_LABELS.exitImmersive.label}
+    title={`${PLAYER_LABELS.exitImmersive.label} (${PLAYER_LABELS.exitImmersive.shortcut})`}
   >
     <Icon name="compress" size={14} />
+    <span class="exit-label">{PLAYER_LABELS.exitImmersive.label}</span>
+    <kbd class="exit-kbd">{PLAYER_LABELS.exitImmersive.shortcut}</kbd>
   </button>
 
   {#if track}
@@ -236,15 +253,16 @@
         </button>
       </div>
 
-      <!-- Secondary actions: favorite + lyrics toggle, never on
+      <!-- Secondary actions: favorite + queue + lyrics toggle, never on
            top of the artwork. -->
       <div class="controls secondary">
         <button
           class="ctrl small"
           class:active={nowFavorite}
           onclick={toggleFavorite}
-          aria-label={nowFavorite ? "Remove from favorites" : "Add to favorites"}
-          title={nowFavorite ? "Remove from favorites" : "Add to favorites"}
+          aria-pressed={nowFavorite}
+          aria-label={nowFavorite ? PLAYER_LABELS.unfavorite.label : PLAYER_LABELS.favorite.label}
+          title={nowFavorite ? PLAYER_LABELS.unfavorite.label : PLAYER_LABELS.favorite.label}
         >
           <Icon
             name={nowFavorite ? "heart-filled" : "heart"}
@@ -253,8 +271,17 @@
         </button>
         <button
           class="ctrl small"
+          onclick={openQueue}
+          aria-label={PLAYER_LABELS.queue.label}
+          title={PLAYER_LABELS.queue.label}
+        >
+          <Icon name="queue" size={15} />
+        </button>
+        <button
+          class="ctrl small"
           class:active={showLyrics}
           onclick={cycleLyrics}
+          aria-pressed={showLyrics}
           aria-label="Toggle lyrics"
           title={lyricsMode === "off"
             ? "Paroles"
@@ -379,19 +406,20 @@
     width: 100%;
     display: flex;
     /* Soft top/bottom fade so lines melt into the background as they
-       scroll past the active region. */
+       scroll past the active region. Kept shallow (8%) so the first
+       and last visible lines stay readable rather than dissolving. */
     -webkit-mask-image: linear-gradient(
       to bottom,
       transparent 0%,
-      #000 18%,
-      #000 82%,
+      #000 8%,
+      #000 92%,
       transparent 100%
     );
     mask-image: linear-gradient(
       to bottom,
       transparent 0%,
-      #000 18%,
-      #000 82%,
+      #000 8%,
+      #000 92%,
       transparent 100%
     );
   }
@@ -401,11 +429,12 @@
      ring so the focus state looks at home on the translucent pill. */
   .exit-btn {
     position: absolute;
-    top: max(env(safe-area-inset-top), 16px);
-    right: 16px;
+    top: max(env(safe-area-inset-top), 24px);
+    right: 40px;
     z-index: 5;
-    width: 32px;
     height: 32px;
+    padding: 0 12px;
+    gap: 8px;
     border-radius: 999px;
     background: linear-gradient(
       180deg,
@@ -420,6 +449,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    font-size: 12px;
+    font-weight: 500;
     box-shadow:
       0 4px 14px rgba(0, 0, 0, 0.32),
       inset 0 1px 0 rgba(255, 255, 255, 0.16);
@@ -428,6 +459,21 @@
       transform var(--dur-fast) var(--ease-out),
       color var(--dur-fast) var(--ease-out),
       box-shadow var(--dur-fast) var(--ease-out);
+  }
+  .exit-label {
+    white-space: nowrap;
+    letter-spacing: 0.01em;
+  }
+  .exit-kbd {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    line-height: 1;
+    padding: 3px 6px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    color: var(--fg-0);
+    box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.25);
   }
   .exit-btn:hover {
     background: linear-gradient(
@@ -568,6 +614,15 @@
     cursor: pointer;
     outline: none;
     --pct: 0%;
+  }
+  /* Keyboard focus indicator for the seek slider (R2.2). The base
+     rule drops the native outline for mouse use; on keyboard focus
+     we draw an accent ring around the rail so the control stays
+     visibly focused. */
+  .progress:focus-visible {
+    outline: 2px solid var(--accent, #8ab4ff);
+    outline-offset: 4px;
+    border-radius: 999px;
   }
   .rail {
     position: absolute;

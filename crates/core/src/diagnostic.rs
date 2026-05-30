@@ -158,11 +158,15 @@ pub fn run_null_test(player: &PlayerHandle) -> NullTestReport {
 
     let mode = match player.current_output_mode() {
         OutputMode::Exclusive => EffectiveOutputMode::Exclusive,
+        OutputMode::Asio => EffectiveOutputMode::Asio,
         _ => EffectiveOutputMode::Shared,
     };
     let captured_via = match mode {
         EffectiveOutputMode::Shared => NullTestSource::Loopback,
-        EffectiveOutputMode::Exclusive => NullTestSource::PreRender,
+        // Exclusive and ASIO both bypass the OS mixer, so a loopback
+        // capture would record silence; use the decoder-side
+        // pre-render sink instead.
+        EffectiveOutputMode::Exclusive | EffectiveOutputMode::Asio => NullTestSource::PreRender,
     };
 
     let dir = diagnostic_dir();

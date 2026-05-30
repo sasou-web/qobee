@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { emitTo } from "@tauri-apps/api/event";
   import {
     nextTrack,
     prevTrack,
@@ -11,6 +12,7 @@
   } from "../lib/api";
   import { app } from "../lib/stores.svelte";
   import { formatDuration } from "../lib/format";
+  import { PLAYER_LABELS } from "../lib/labels";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import PlayButton from "./PlayButton.svelte";
@@ -64,6 +66,20 @@
     }
   }
 
+  // Open the dedicated queue view (R3.5). The MiniPlayer runs in its
+  // own webview window, so `app.setView` here would only mutate the
+  // mini's local store. Instead we restore the main window and ask it
+  // to navigate via the same `deep-link:navigate` bus the tray uses;
+  // App.svelte's listener routes "queue" to `app.setView("queue")`.
+  async function openQueue(): Promise<void> {
+    try {
+      await toggleMiniPlayer(false);
+      await emitTo("main", "deep-link:navigate", "queue");
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
   function onProgressClick(e: MouseEvent): void {
     const target = e.currentTarget as HTMLElement;
     const rect = target.getBoundingClientRect();
@@ -96,8 +112,17 @@
     <div class="spacer" data-tauri-drag-region></div>
     <button
       class="wctrl"
+      onclick={openQueue}
+      title={PLAYER_LABELS.queue.label}
+      aria-label={PLAYER_LABELS.queue.label}
+    >
+      <Icon name="queue" size={16} />
+    </button>
+    <button
+      class="wctrl"
       class:active={alwaysOnTop}
       onclick={toggleAlwaysOnTop}
+      aria-pressed={alwaysOnTop}
       title={alwaysOnTop ? "Disable always on top" : "Always on top"}
       aria-label="Always on top"
     >
@@ -151,8 +176,8 @@
           <button
             class="ghost"
             onclick={() => void prevTrack()}
-            aria-label="Previous"
-            title="Previous"
+            aria-label={PLAYER_LABELS.previous.label}
+            title={PLAYER_LABELS.previous.label}
           >
             <Icon name="prev" size={18} />
           </button>
@@ -164,8 +189,8 @@
           <button
             class="ghost"
             onclick={() => void nextTrack()}
-            aria-label="Next"
-            title="Next"
+            aria-label={PLAYER_LABELS.next.label}
+            title={PLAYER_LABELS.next.label}
           >
             <Icon name="next" size={18} />
           </button>

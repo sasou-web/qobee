@@ -64,18 +64,17 @@
     contain: layout paint;
   }
 
-  /* The blurred cover copies. Inset covers the diagonal of the
-     rotated rectangle (~16% slack at our max angle).
-     Blur 90px is the sweet spot: enough to fully erase artwork
-     structure (no recognizable shapes), but not so much that all
-     hues collapse into a single tint. Saturate + brightness lift
-     the colors so the field reads as a vivid mood lighting. */
+  /* The blurred cover copies. A generous negative inset gives the
+     pan room to roam without ever revealing the dark backdrop at the
+     edges. Blur 120px fully dissolves the artwork into pure colour
+     fields (Cider-style — no recognizable shapes, just drifting hues);
+     saturate + brightness keep the colours vivid as mood lighting. */
   .cover {
     position: absolute;
-    inset: -16%;
+    inset: -28%;
     background-size: cover;
     background-position: center;
-    filter: blur(90px) saturate(200%) brightness(1) contrast(108%);
+    filter: blur(120px) saturate(190%) brightness(1.02) contrast(105%);
     will-change: transform, opacity, filter;
     transform-origin: 50% 50%;
     transition:
@@ -88,21 +87,20 @@
     opacity: 1;
   }
 
-  /* First copy — pans and rotates clockwise on a 22s timer. */
+  /* First copy — wanders the corners, zoomed in, on a 38s timer. */
   .cover-a {
-    animation: ambient-spin-a 22s ease-in-out infinite alternate;
+    animation: ambient-drift-a 38s ease-in-out infinite;
   }
 
-  /* Second copy — mirrored, rotates counter-clockwise on a 28s
-     timer. The mirror plus the opposite rotation means the two
-     color fields constantly cross each other. */
+  /* Second copy — mirrored, drifts on a different 52s path so the two
+     colour fields constantly cross and the hues mix continuously. */
   .cover-b {
     transform: scaleX(-1);
     opacity: 0;
-    animation: ambient-spin-b 28s ease-in-out infinite alternate;
+    animation: ambient-drift-b 52s ease-in-out infinite;
   }
   .ambient.has-art .cover-b {
-    opacity: 0.7;
+    opacity: 0.65;
   }
 
   /* Color boost — a radial that punches saturation in the center
@@ -159,28 +157,46 @@
       );
   }
 
-  /* First copy — pan + zoom + rotation clockwise. The scale is
-     kept modest so the cover stays "atmospheric" rather than
-     pushed against the screen; the rotation (±20°) is what
-     makes the color field actually spin. */
-  @keyframes ambient-spin-a {
+  /* First copy — slow wander across the four corners at a higher
+     zoom (scale 1.35–1.55), pure left/right + up/down panning with
+     only a hint of rotation. Multi-stop path so it never settles and
+     never retraces the same line, the way Cider's immersive field
+     keeps roaming. */
+  @keyframes ambient-drift-a {
     0% {
-      transform: translate3d(-3%, -2%, 0) scale(0.95) rotate(-12deg);
+      transform: translate3d(-9%, -7%, 0) scale(1.4) rotate(-3deg);
+    }
+    25% {
+      transform: translate3d(8%, -5%, 0) scale(1.5) rotate(2deg);
+    }
+    50% {
+      transform: translate3d(7%, 8%, 0) scale(1.38) rotate(4deg);
+    }
+    75% {
+      transform: translate3d(-7%, 6%, 0) scale(1.52) rotate(-1deg);
     }
     100% {
-      transform: translate3d(4%, 3%, 0) scale(1.1) rotate(20deg);
+      transform: translate3d(-9%, -7%, 0) scale(1.4) rotate(-3deg);
     }
   }
 
-  /* Second copy — mirrored, counter-rotates. */
-  @keyframes ambient-spin-b {
+  /* Second copy — mirrored, wanders on an offset path and a slower
+     timer so the two colour fields drift in and out of overlap. */
+  @keyframes ambient-drift-b {
     0% {
-      transform: scaleX(-1) translate3d(-2%, 3%, 0) scale(1.05)
-        rotate(15deg);
+      transform: scaleX(-1) translate3d(7%, 6%, 0) scale(1.5) rotate(3deg);
+    }
+    25% {
+      transform: scaleX(-1) translate3d(-8%, 7%, 0) scale(1.38) rotate(-2deg);
+    }
+    50% {
+      transform: scaleX(-1) translate3d(-6%, -8%, 0) scale(1.55) rotate(-4deg);
+    }
+    75% {
+      transform: scaleX(-1) translate3d(8%, -6%, 0) scale(1.4) rotate(1deg);
     }
     100% {
-      transform: scaleX(-1) translate3d(3%, -2%, 0) scale(0.92)
-        rotate(-22deg);
+      transform: scaleX(-1) translate3d(7%, 6%, 0) scale(1.5) rotate(3deg);
     }
   }
 

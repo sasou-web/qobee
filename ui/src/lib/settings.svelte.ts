@@ -44,6 +44,10 @@ export interface SettingsValues {
    *  art to a public service so Discord can display it. Off by
    *  default — must be opt-in to publish bytes off the device. */
   discordCoverUpload: boolean;
+  /** When true, the Sidebar shows the text label next to each icon
+   *  (expanded mode). Persisted so the layout survives reloads.
+   *  Off by default (icon-first). */
+  sidebarExpanded: boolean;
 }
 
 const DEFAULTS: SettingsValues = {
@@ -59,6 +63,7 @@ const DEFAULTS: SettingsValues = {
   discordRichPresence: true,
   discordClientId: "",
   discordCoverUpload: false,
+  sidebarExpanded: false,
 };
 
 const KEYS = {
@@ -74,6 +79,7 @@ const KEYS = {
   discordRichPresence: "integrations.discord_rich_presence",
   discordClientId: "integrations.discord_client_id",
   discordCoverUpload: "integrations.discord_cover_upload",
+  sidebarExpanded: "ui.sidebar_expanded",
 } as const;
 
 class SettingsStore {
@@ -82,7 +88,7 @@ class SettingsStore {
 
   async load(): Promise<void> {
     try {
-      const [theme, bgTheme, accent, follow, vol, mode, dev, eqg, eqe, drpc, dcid, dupload] =
+      const [theme, bgTheme, accent, follow, vol, mode, dev, eqg, eqe, drpc, dcid, dupload, sbexp] =
         await Promise.all([
           getSetting(KEYS.theme),
           getSetting(KEYS.bgTheme),
@@ -96,6 +102,7 @@ class SettingsStore {
           getSetting(KEYS.discordRichPresence),
           getSetting(KEYS.discordClientId),
           getSetting(KEYS.discordCoverUpload),
+          getSetting(KEYS.sidebarExpanded),
         ]);
       this.values = {
         theme: (theme as Theme) ?? DEFAULTS.theme,
@@ -117,6 +124,10 @@ class SettingsStore {
         // any bytes off the device.
         discordCoverUpload:
           dupload === null ? DEFAULTS.discordCoverUpload : dupload === "true",
+        // Default OFF (icon-first sidebar). Persisted bool parsed the
+        // same way as the other flags above.
+        sidebarExpanded:
+          sbexp === null ? DEFAULTS.sidebarExpanded : sbexp === "true",
       };
     } catch {
       // best-effort

@@ -22,6 +22,10 @@
 #![allow(dead_code)] // Phase A scaffolding â€” not every generator has a
                      // consumer yet; later phases will use them all.
 
+// Phase A pure-helper property tests (declared as submodules of
+// `properties` so they compile into the `properties` test binary).
+mod device_format_cache;
+
 use proptest::collection::vec;
 use proptest::prelude::*;
 use qobee_engine::{
@@ -356,6 +360,8 @@ pub fn any_bit_perfect_inputs() -> impl Strategy<Value = BitPerfectInputs> {
                 bit_perfect: None,
                 dsd_rate_label: None,
                 is_dsd: false,
+                upmix: None,
+                degraded: false,
                 error: None,
             };
             let settings = AudioSettings {
@@ -378,3 +384,15 @@ pub fn any_bit_perfect_inputs() -> impl Strategy<Value = BitPerfectInputs> {
         },
     )
 }
+
+// -----------------------------------------------------------------------------
+// Phase A — qobee-beta-feedback-improvements property modules
+// -----------------------------------------------------------------------------
+
+// Property 6: WASAPI output-format selection (native stereo preferred,
+// exact upmix flag). See `format_selection.rs`.
+mod format_selection;
+
+// Property 8: MP3 repaired-frame counting and degraded flag. See
+// `mp3_repair.rs`.
+mod mp3_repair;

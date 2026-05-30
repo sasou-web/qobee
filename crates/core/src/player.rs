@@ -39,6 +39,8 @@ use thiserror::Error;
 use tokio::sync::broadcast;
 
 #[cfg(target_os = "windows")]
+use qobee_engine::backend_asio::AsioEngine;
+#[cfg(target_os = "windows")]
 use qobee_engine::backend_wasapi_exclusive::WasapiExclusiveEngine;
 use qobee_engine::{
     backend_cpal_shared::{list_output_devices, CpalSharedEngine},
@@ -105,6 +107,12 @@ struct PlayerInner {
     /// stays fast for the 99 % of users who never touch it.
     #[cfg(target_os = "windows")]
     exclusive_engine: Mutex<Option<Arc<WasapiExclusiveEngine>>>,
+    /// ASIO engine (Windows-only, pro-audio). Built lazily the first
+    /// time the user selects ASIO. Construction fails cleanly with
+    /// `BackendUnavailable` on builds without the `engine-asio`
+    /// feature, in which case the orchestrator stays on Shared.
+    #[cfg(target_os = "windows")]
+    asio_engine: Mutex<Option<Arc<AsioEngine>>>,
     /// The currently active backend, behind a lock so we can swap it
     /// from a setting change without racing with calls in flight.
     /// Reads use `engine()` to grab a clone of the Arc cheaply.
@@ -230,6 +238,7 @@ impl PlayerInner {
     fn current_output_mode_inner(&self) -> OutputMode {
         match self.active_backend.load(Ordering::Acquire) {
             1 => OutputMode::Exclusive,
+            2 => OutputMode::Asio,
             _ => OutputMode::Shared,
         }
     }
@@ -429,6 +438,8 @@ impl Player {
             shared_engine: Arc::clone(&shared_engine),
             #[cfg(target_os = "windows")]
             exclusive_engine: Mutex::new(None),
+            #[cfg(target_os = "windows")]
+            asio_engine: Mutex::new(None),
             active_engine: Mutex::new(active_engine),
             active_backend: AtomicU8::new(0),
             library,
@@ -540,12 +551,13 @@ impl PlayerHandle {
         self.state().output_mode
     }
 
-    /// User-facing output mode (Auto / Shared / Exclusive). Mirrors
-    /// the persisted setting; only the *effective* mode is reported by
-    /// `state().output_mode`.
+    /// User-facing output mode (Auto / Shared / Exclusive / ASIO).
+    /// Mirrors the persisted setting; only the *effective* mode is
+    /// reported by `state().output_mode`.
     pub fn current_output_mode(&self) -> OutputMode {
         match self.inner.active_backend.load(Ordering::Acquire) {
             1 => OutputMode::Exclusive,
+            2 => OutputMode::Asio,
             _ => OutputMode::Shared,
         }
     }
@@ -788,6 +800,14 @@ impl PlayerHandle {
         Ok(())
     }
 
+    /// Empty the "up next" queue. The track currently routed to the
+    /// engine keeps playing — queue and playback are decoupled, so
+    /// clearing only purges the pending list and resets the cursor.
+    pub fn clear_queue(&self) -> PlayerResult<()> {
+        self.inner.queue.clear();
+        Ok(())
+    }
+
     /// Jump straight to the queue entry at `idx`, restarting playback
     /// there. Equivalent to clicking a row in the "up next" panel.
     pub fn queue_jump_to(&self, idx: usize) -> PlayerResult<()> {
@@ -891,11 +911,37 @@ impl PlayerHandle {
     pub fn set_output_mode(&self, mode: OutputMode) -> PlayerResult<()> {
         // Map user-facing OutputMode to active backend index.
         // Auto + Shared -> backend 0 (Shared). Exclusive -> backend 1.
+        // Asio -> backend 2.
         let want_exclusive = matches!(mode, OutputMode::Exclusive);
+        let want_asio = matches!(mode, OutputMode::Asio);
 
         #[cfg(target_os = "windows")]
         {
-            if want_exclusive {
+            if want_asio {
+                // ASIO can be unavailable (build without the
+                // `engine-asio` feature, or no driver). On failure we
+                // fall back to Shared and surface a soft warning rather
+                // than leaving the user stuck.
+                match self.activate_asio_backend() {
+                    Ok(()) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "qobee::core",
+                            error = %e,
+                            "ASIO unavailable; falling back to Shared"
+                        );
+                        let _ = self.inner.event_tx.send(PlayerEvent::Error {
+                            message:
+                                "Le mode ASIO est indisponible (pilote manquant ou build sans ASIO). \
+                                 Retour au mode partagé."
+                                    .to_string(),
+                        });
+                        self.activate_shared_backend();
+                        self.inner.engine().set_output_mode(OutputMode::Shared)?;
+                        return Ok(());
+                    }
+                }
+            } else if want_exclusive {
                 self.activate_exclusive_backend()?;
             } else {
                 self.activate_shared_backend();
@@ -911,6 +957,7 @@ impl PlayerHandle {
         #[cfg(not(target_os = "windows"))]
         {
             let _ = want_exclusive;
+            let _ = want_asio;
             self.inner.engine().set_output_mode(mode)?;
             Ok(())
         }
@@ -969,6 +1016,47 @@ impl PlayerHandle {
         Ok(())
     }
 
+    #[cfg(target_os = "windows")]
+    fn activate_asio_backend(&self) -> PlayerResult<()> {
+        if self.inner.active_backend.load(Ordering::Acquire) == 2 {
+            return Ok(());
+        }
+        // Lazy-init the ASIO engine. `AsioEngine::new` returns
+        // `BackendUnavailable` on builds without the `engine-asio`
+        // feature; the `?` propagates that to `set_output_mode`, which
+        // falls back to Shared with a soft warning.
+        let mut slot = self.inner.asio_engine.lock();
+        if slot.is_none() {
+            let eng = Arc::new(AsioEngine::new()?);
+            // Pump its events into the same player channel.
+            let pump_inner = Arc::clone(&self.inner);
+            let events = eng.subscribe_events();
+            std::thread::Builder::new()
+                .name("qobee-core-pump-asio".into())
+                .spawn(move || pump_engine_events(pump_inner, events))
+                .map_err(|e| PlayerError::Engine(EngineError::Internal(e.to_string())))?;
+            // Mirror persistent device + EQ settings, same as the
+            // Exclusive path.
+            let dev = self.inner.shared_engine.selected_device();
+            eng.set_output_device(dev);
+            let gains = self.inner.shared_engine.eq_gains_db();
+            eng.set_eq_gains_db(&gains);
+            *slot = Some(eng);
+        }
+        let eng = Arc::clone(slot.as_ref().unwrap());
+        drop(slot);
+
+        // Stop what's playing on the previously active engine.
+        let _ = self.inner.engine().stop();
+
+        let dyn_eng: Arc<dyn AudioEngine> = eng as Arc<dyn AudioEngine>;
+        *self.inner.active_engine.lock() = dyn_eng;
+        self.inner.active_backend.store(2, Ordering::Release);
+        *self.inner.current_track_id.lock() = None;
+        tracing::info!(target: "qobee::core", "switched to ASIO backend");
+        Ok(())
+    }
+
     pub fn next(&self) -> PlayerResult<()> {
         // Same auto-fill semantics as the engine's EndOfTrack handler:
         // when there's nothing left in the queue we pick a random
@@ -1014,6 +1102,15 @@ impl PlayerHandle {
     /// Current crossfade window in milliseconds (`0` = off).
     pub fn crossfade_ms(&self) -> u32 {
         self.inner.crossfade_ms.load(Ordering::Relaxed)
+    }
+
+    /// Cumulative count of audio-callback underruns since the active
+    /// stream started, read from the engine. Exposed through the
+    /// `get_underrun_count` Tauri command for a future diagnostics
+    /// panel (R10.3 / R10.4). Returns `0` for backends without a ring
+    /// buffer.
+    pub fn underrun_count(&self) -> u64 {
+        self.inner.engine().underrun_count()
     }
 
     // ---- Sleep timer ----
@@ -1579,11 +1676,21 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                     let active = inner.active_backend.load(Ordering::Acquire);
                     let looks_like_exclusive_fail = active == 1
                         && (message.contains("Exclusive") || message.contains("WASAPI"));
-                    if looks_like_exclusive_fail {
+                    let looks_like_asio_fail = active == 2
+                        && (message.contains("ASIO")
+                            || message.contains("Asio")
+                            || message.contains("asio"));
+                    if looks_like_exclusive_fail || looks_like_asio_fail {
+                        let failed_mode = if looks_like_asio_fail {
+                            "ASIO"
+                        } else {
+                            "Exclusive"
+                        };
                         tracing::warn!(
                             target: "qobee::core",
                             error = %message,
-                            "WASAPI Exclusive failed; falling back to Shared automatically"
+                            mode = failed_mode,
+                            "exclusive-class backend failed; falling back to Shared automatically"
                         );
                         // Swap to Shared on the active engine slot.
                         let shared: Arc<dyn AudioEngine> =
@@ -1592,8 +1699,8 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                         inner.active_backend.store(0, Ordering::Release);
 
                         // Persist the fallback so the next launch
-                        // doesn't try Exclusive again and fail in the
-                        // same way. The user can re-enable it from
+                        // doesn't try the failed mode again and fail in
+                        // the same way. The user can re-enable it from
                         // Settings if they fix their device config.
                         if let Err(e) = inner.library.set_setting("audio.output_mode", "shared") {
                             tracing::warn!(
@@ -1615,7 +1722,8 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                         // sync. We surface a soft warning rather than
                         // the raw HRESULT.
                         let fallback_msg = format!(
-                            "Exclusive output unavailable: {}. Switched to Shared.",
+                            "{} output unavailable: {}. Switched to Shared.",
+                            failed_mode,
                             shorten_error(&message)
                         );
                         let _ = inner.event_tx.try_send(PlayerEvent::Error {
@@ -1671,6 +1779,21 @@ fn pump_engine_events(inner: Arc<PlayerInner>, engine_events: Receiver<EngineEve
                 // the next PCM track rather than dropped.
                 PlayerEvent::Error {
                     message: "DSD playback: DSP read-only".to_string(),
+                }
+            }
+            EngineEvent::ExclusiveFallback { reason } => {
+                // R9.6 — WASAPI Exclusive failed format negotiation for
+                // the current device and the engine is dropping back to
+                // Shared. The actual backend swap + track restart is
+                // driven by the `Error` event the engine emits right
+                // after this one (handled above). Here we only surface a
+                // dedicated FR-localised toast explaining the switch and
+                // its reason so the user understands why playback moved
+                // off Exclusive. The UI toast wiring lives in task 19.x.
+                PlayerEvent::Error {
+                    message: format!(
+                        "Mode Exclusive indisponible pour ce périphérique — lecture en mode Shared. Raison : {reason}."
+                    ),
                 }
             }
         };

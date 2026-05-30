@@ -137,6 +137,16 @@ impl Queue {
         g.original.extend(tracks);
     }
 
+    /// Empty the queue and reset the cursor to `None`. The track the
+    /// engine is currently playing is **not** stopped (queue and
+    /// playback stay decoupled) — only the "up next" list is purged.
+    pub fn clear(&self) {
+        let mut g = self.inner.lock();
+        g.items.clear();
+        g.original.clear();
+        g.cursor = None;
+    }
+
     pub fn current(&self) -> Option<TrackId> {
         let g = self.inner.lock();
         g.cursor.and_then(|i| g.items.get(i).copied())
@@ -191,18 +201,20 @@ impl Queue {
         if from == to || from >= g.items.len() || to >= g.items.len() {
             return false;
         }
+        // Snapshot the id the cursor currently points at *before* we
+        // reorder `items`. Reading it afterwards would observe the
+        // already-shifted vector and latch the cursor onto the wrong
+        // track. Works uniformly whether the cursor sits on the moved
+        // item, elsewhere, or on a duplicate id.
+        let cur_id = g.cursor.and_then(|c| g.items.get(c).copied());
+
         let v = g.items.remove(from);
         g.items.insert(to, v);
 
-        // Update cursor: easiest to recompute by tracking which id
-        // the cursor points at and finding it again.
-        let cur_id = g.cursor.and_then(|c| {
-            if c == from {
-                Some(v)
-            } else {
-                g.items.get(c).copied()
-            }
-        });
+        // Re-find the cursor's id in the reordered queue. With
+        // duplicate ids `position` returns the first match, which is
+        // acceptable: the invariant is "the cursor still points at the
+        // same track id", not the same numeric index.
         if let Some(id) = cur_id {
             g.cursor = g.items.iter().position(|x| *x == id);
         }

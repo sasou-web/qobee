@@ -46,6 +46,13 @@ default = []
 # `EngineError::BackendUnavailable`; pulling this feature in does not add any
 # external dependency yet.
 engine-bass = []
+# ASIO output backend (Windows, pro-audio / audiophile). Enables cpal's
+# `asio` host, which requires the proprietary Steinberg ASIO SDK and
+# LLVM/bindgen at build time (point `CPAL_ASIO_DIR` at the SDK). When
+# this feature is off, `backend_asio::AsioEngine::new` returns
+# `EngineError::BackendUnavailable` and the orchestrator falls back to
+# Shared, so the default build needs none of the SDK toolchain.
+engine-asio = ["cpal/asio"]
 # Opt-in flag for the long-running resampler SNR property tests
 # (Properties 15 / 16). Off by default because each FFT pass through
 # 65 536 samples is a few seconds of CPU; CI only runs them on the
@@ -55,7 +62,11 @@ slow-tests = []
 [dev-dependencies]
 serde_json = { workspace = true }
 proptest = { workspace = true }
-tracing-test = { workspace = true }
+# `no-env-filter` makes `#[traced_test]` capture events on every target
+# regardless of `RUST_LOG`, so the task 15.3 MP3 example tests can
+# deterministically assert on (and against) the `qobee::engine`
+# aggregate `info` summary.
+tracing-test = { workspace = true, features = ["no-env-filter"] }
 # FFT helper used by the `Dither_Stage` property tests (Property 3,
 # `shaped_f_weighted` spectral bound). See task 17.
 realfft = "3"

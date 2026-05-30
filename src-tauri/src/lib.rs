@@ -139,6 +139,7 @@ pub fn run() {
             commands::get_output_mode,
             commands::set_output_mode,
             commands::get_user_output_mode,
+            commands::asio_available,
             commands::list_output_devices,
             commands::get_selected_output_device,
             commands::set_output_device,
@@ -183,7 +184,10 @@ pub fn run() {
             commands::get_queue,
             commands::queue_remove_at,
             commands::queue_move,
+            commands::clear_queue,
             commands::queue_jump_to,
+            commands::get_underrun_count,
+            commands::quit_app,
             commands::get_tracks,
             commands::get_setting,
             commands::set_setting,
@@ -244,6 +248,7 @@ pub fn run() {
             commands::discord_set_client_id,
             commands::discord_status,
             commands::discord_set_cover_upload_enabled,
+            commands::clear_uploaded_cover_links,
             commands::discord_update_track,
             commands::discord_set_paused,
             commands::discord_clear_presence,
@@ -570,6 +575,12 @@ pub fn run() {
                                 if let Some(w) = app_handle.get_webview_window("main") {
                                     let _ = w.hide();
                                 }
+                                // R7.1/R7.3 — first time we hide to a
+                                // notification-area surface, tell the
+                                // frontend so it can show the Tray_Notice
+                                // once. Never touches `close_behavior`
+                                // (R7.4).
+                                emit_first_close_notice_once(&app_handle);
                                 if let Err(e) = tray::ensure_tray(
                                     &app_handle,
                                     tray_state_for_close.clone(),
@@ -587,6 +598,12 @@ pub fn run() {
                                 if let Some(w) = app_handle.get_webview_window("main") {
                                     let _ = w.hide();
                                 }
+                                // R7.1/R7.3 — same one-shot notice as
+                                // MinimizeToTray: the app keeps running
+                                // hidden, so the user must learn it did
+                                // not really quit (R7.4: no change to
+                                // `close_behavior`).
+                                emit_first_close_notice_once(&app_handle);
                                 // Tray is intentionally NOT shown
                                 // here — the user opted into the
                                 // "no UI surface at all" mode.
@@ -831,6 +848,40 @@ fn read_close_behavior(app_handle: &tauri::AppHandle) -> CloseBehavior {
         CloseBehavior::MinimizeToTray
     } else {
         CloseBehavior::Quit
+    }
+}
+
+/// Emit the `tray:first-close-notice` event the first time the main
+/// window is hidden to a notification-area surface (R7.1), then latch
+/// the `windows.tray_notice_shown` setting to `"true"` so subsequent
+/// closes stay silent (R7.3). Idempotent: once the flag is set we
+/// never emit again. Never reads or writes `windows.close_behavior`
+/// (R7.4).
+fn emit_first_close_notice_once(app_handle: &tauri::AppHandle) {
+    let lib = app_handle.state::<AppState>();
+    let lib = lib.library();
+    let already = lib
+        .get_setting("windows.tray_notice_shown")
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    if already {
+        return;
+    }
+    if let Err(e) = app_handle.emit("tray:first-close-notice", ()) {
+        tracing::warn!(
+            target: "qobee::win",
+            error = %e,
+            "could not emit tray:first-close-notice"
+        );
+    }
+    if let Err(e) = lib.set_setting("windows.tray_notice_shown", "true") {
+        tracing::warn!(
+            target: "qobee::win",
+            error = %e,
+            "could not persist windows.tray_notice_shown"
+        );
     }
 }
 

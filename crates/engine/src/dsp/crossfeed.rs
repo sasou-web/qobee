@@ -51,7 +51,7 @@
 //! Re-enabling the stage from a bypassed state also performs a clean
 //! restart for the same reason.
 
-use std::f32::consts::PI;
+use std::f64::consts::PI;
 
 use crate::audio_settings::{AudioSettings, CrossfeedPreset};
 use crate::dsp::DspStage;
@@ -61,7 +61,7 @@ const GAIN_COMPENSATION: f32 = 0.707_945_78;
 
 /// Quality factor for the BS2B-style low-pass biquad. R6.3 specifies
 /// a maximally-flat (Butterworth) response; Q = 0.707.
-const LP_Q: f32 = 0.707;
+const LP_Q: f64 = 0.707;
 
 /// Ramp length applied to the LP cutoff frequency on a preset change.
 const LP_RAMP_MS: f32 = 50.0;
@@ -135,16 +135,23 @@ impl DelayLine {
 /// than shared with `eq.rs` because the EQ's `Biquad` exposes
 /// peaking-specific construction and the two will diverge as more
 /// stages need their own filter shapes.
+///
+/// Coefficients and the Direct Form I state are held in **f64**. The
+/// crossfeed cutoff (500–1500 Hz) is low relative to the sample rate,
+/// so the pole sits close to the unit circle and the recursion is
+/// sensitive to f32 rounding; the double-precision state keeps the
+/// response and noise floor clean. The `process` interface stays f32:
+/// input is widened on the way in and narrowed on the way out.
 struct BiquadLowpass {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
-    x1: f32,
-    x2: f32,
-    y1: f32,
-    y2: f32,
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a1: f64,
+    a2: f64,
+    x1: f64,
+    x2: f64,
+    y1: f64,
+    y2: f64,
 }
 
 impl BiquadLowpass {
@@ -165,11 +172,11 @@ impl BiquadLowpass {
     }
 
     fn set_cutoff(&mut self, sample_rate: u32, cutoff_hz: f32) {
-        let fs = sample_rate.max(1) as f32;
+        let fs = sample_rate.max(1) as f64;
         // Clamp the cutoff well below Nyquist to avoid numerical
         // explosions at the boundary; the design's range
         // [500, 1500] Hz is far from Nyquist at any reasonable rate.
-        let f = cutoff_hz.clamp(20.0, fs * 0.45);
+        let f = (cutoff_hz as f64).clamp(20.0, fs * 0.45);
         let w0 = 2.0 * PI * f / fs;
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
@@ -192,6 +199,7 @@ impl BiquadLowpass {
 
     #[inline]
     fn process(&mut self, x: f32) -> f32 {
+        let x = x as f64;
         let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
             - self.a1 * self.y1
             - self.a2 * self.y2;
@@ -199,7 +207,7 @@ impl BiquadLowpass {
         self.x1 = x;
         self.y2 = self.y1;
         self.y1 = y;
-        y
+        y as f32
     }
 
     fn reset(&mut self) {

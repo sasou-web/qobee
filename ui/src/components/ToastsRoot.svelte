@@ -1,13 +1,33 @@
 <script lang="ts">
   import { fly, fade } from "svelte/transition";
   import { toasts } from "../lib/toasts.svelte";
+  import { announce } from "../lib/a11y";
+
+  // Mirror every newly pushed toast into the shared ARIA live region
+  // (R2.9) so NVDA reads it out without moving focus. Toast ids are
+  // assigned monotonically by the store, so we only have to remember
+  // the highest id we've already announced and replay the tail when
+  // the stack grows. The visible `.root` below is itself a
+  // `role="status"` region for redundancy; `announce` additionally
+  // forces re-reading of repeated identical messages that an
+  // unchanged DOM node would otherwise be ignored by screen readers.
+  let lastAnnouncedId = $state(0);
+  $effect(() => {
+    for (const t of toasts.items) {
+      if (t.id > lastAnnouncedId) {
+        announce(t.message);
+        lastAnnouncedId = t.id;
+      }
+    }
+  });
 </script>
 
 <!-- Top-right stack of stacked, transient notifications. Each toast
      is a button so the user can dismiss it manually, but pointer
      events are also disabled on the container so the surrounding UI
-     remains clickable through the empty space between toasts. -->
-<div class="root" aria-live="polite" role="status">
+     remains clickable through the empty space between toasts. The
+     stack is an ARIA live region (R2.9) announced politely. -->
+<div class="root" role="status" aria-live="polite" aria-atomic="true">
   {#each toasts.items as t (t.id)}
     <button
       class="toast"

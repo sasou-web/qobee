@@ -195,7 +195,7 @@ export async function buildTrackMenu(
       onSelect: async () => {
         try {
           await addToQueue([track.id]);
-          toasts.info("Added to queue.");
+          toasts.info("Ajouté à la file");
         } catch (e) {
           app.lastError = String(e);
         }
@@ -306,9 +306,7 @@ export function buildAlbumMenu(album: Album): ContextMenuEntry[] {
         try {
           const ids = await trackIdsForAlbum(album.id);
           await addToQueue(ids);
-          toasts.info(
-            ids.length === 1 ? "Added 1 track to queue." : `Added ${ids.length} tracks to queue.`
-          );
+          toasts.info("Ajouté à la file");
         } catch (e) {
           app.lastError = String(e);
         }

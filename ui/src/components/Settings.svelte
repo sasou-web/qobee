@@ -5,6 +5,7 @@
     clearCoverCache,
     clearHistory,
     clearSettings,
+    clearUploadedCoverLinks,
     driveSync,
     getSelectedOutputDevice,
     getWindowSettings,
@@ -45,6 +46,7 @@
   import { toasts } from "../lib/toasts.svelte";
   import SettingsAudio from "./audio/SettingsAudio.svelte";
   import SettingsWindowsIntegration from "./SettingsWindowsIntegration.svelte";
+  import ShortcutsHelp from "./ShortcutsHelp.svelte";
   import DriveWizard from "./DriveWizard.svelte";
   import Icon from "./Icon.svelte";
   import { shellOpen } from "../lib/api";
@@ -65,6 +67,7 @@
     | "appearance"
     | "equalizer"
     | "integrations"
+    | "shortcuts"
     | "advanced";
 
   interface CategoryDef {
@@ -78,6 +81,7 @@
       | "expand"
       | "settings"
       | "shuffle"
+      | "quote"
       | "zap";
     /** Words used by the search filter, in addition to the label. */
     keywords: string;
@@ -92,6 +96,7 @@
     { id: "appearance", label: "Appearance", icon: "settings", keywords: "theme dark light accent color background follow cover" },
     { id: "equalizer", label: "Equalizer", icon: "shuffle", keywords: "eq band gain preset bass treble vocal flat" },
     { id: "integrations", label: "Integrations", icon: "zap", keywords: "discord rich presence cover upload" },
+    { id: "shortcuts", label: "Keyboard shortcuts", icon: "quote", keywords: "raccourcis clavier keyboard shortcuts hotkeys touches accessibility" },
     { id: "advanced", label: "Advanced", icon: "settings", keywords: "reset clear cover history database wipe" },
   ];
 
@@ -290,6 +295,11 @@
       app.lastError = "No library folder configured.";
       return;
     }
+    // R6.1: immediate feedback at trigger time. `app.beginScan()` sets
+    // `app.scanRunning = true`, which disables the Rescan button
+    // (`disabled={app.scanRunning}`) and guards against a concurrent
+    // rescan (R6.4).
+    toasts.info("Scan démarré…");
     app.beginScan();
     try {
       await scanAllRoots();
@@ -535,10 +545,42 @@
     }
   }
 
+  // ------- Integrations (R8 — task 23.1) -------
+
+  // Cover_Upload privacy. The toggle is OFF by default (opt-in, R8.1):
+  // `discordCoverUpload` defaults to `false` in the settings store, so
+  // the first time a user configures Discord here the cover upload is
+  // presented as an explicit, disabled option. Flipping it both
+  // persists the preference (`integrations.discord_cover_upload`, R8.6)
+  // and tells the backend cover-host worker to start/stop uploading
+  // (R8.2/R8.3 — disabling stops new uploads).
+  async function handleCoverUploadChange(e: Event): Promise<void> {
+    const v = (e.target as HTMLInputElement).checked;
+    await settings.set("discordCoverUpload", v);
+    await discordPresence.setCoverUploadEnabled(v);
+  }
+
+  // Explicit purge of every cover link already uploaded for Discord
+  // (R8.4). The backend deletes the `discord.cover_url::*` settings
+  // rows, resets `discord.cover_url_count` to 0 and clears the in-memory
+  // CoverHost cache, returning the number of links removed so we can
+  // confirm it in a toast (R8.5).
+  let clearingCoverLinks = $state(false);
+  async function handleClearCoverLinks(): Promise<void> {
+    clearingCoverLinks = true;
+    try {
+      const n = await clearUploadedCoverLinks();
+      toasts.success(`${n} lien(s) supprimé(s)`);
+    } catch (e) {
+      app.lastError = `Clear cover links: ${String(e)}`;
+    } finally {
+      clearingCoverLinks = false;
+    }
+  }
+
   // ------- Maintenance -------
 
-  async function handleClearHistory(): Promise<void> {
-    if (!window.confirm("Clear listening history? This cannot be undone.")) return;
+  async function handleClearHistory(): Promise<void> {    if (!window.confirm("Clear listening history? This cannot be undone.")) return;
     try {
       await clearHistory();
       await load();
@@ -999,20 +1041,31 @@
       </div>
 
       <div class="row toggle-row">
-        <span>Upload covers to display</span>
+        <span>
+          Upload covers for Discord presence
+          <small class="cover-hint">Off by default — covers are uploaded to an external host only if you opt in.</small>
+        </span>
         <label class="switch">
           <input
             type="checkbox"
             checked={settings.values.discordCoverUpload}
-            onchange={(e) =>
-              settings.set(
-                "discordCoverUpload",
-                (e.target as HTMLInputElement).checked,
-              )}
+            onchange={handleCoverUploadChange}
           />
           <span class="slider"></span>
         </label>
       </div>
+
+      <div class="block">
+        <div class="actions">
+          <button onclick={handleClearCoverLinks} disabled={clearingCoverLinks}>
+            {clearingCoverLinks ? "Clearing…" : "Clear uploaded cover links"}
+          </button>
+        </div>
+      </div>
+    {/if}
+
+    {#if activeCategory === "shortcuts"}
+      <ShortcutsHelp />
     {/if}
 
     {#if activeCategory === "advanced"}
@@ -1335,6 +1388,15 @@
     font-size: 13px;
     margin: 0;
     font-style: italic;
+  }
+  .cover-hint {
+    display: block;
+    margin-top: 2px;
+    color: var(--fg-2);
+    font-size: 11px;
+    font-weight: 400;
+    max-width: 42ch;
+    line-height: 1.4;
   }
   .roots {
     list-style: none;

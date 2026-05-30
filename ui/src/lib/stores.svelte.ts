@@ -14,8 +14,10 @@ import {
   onPlayerError,
   onPlayerPosition,
   onPlayerState,
+  onScanError,
   onScanFinished,
   onScanProgress,
+  onScanStarted,
   recentlyPlayedAlbums,
   recentlyPlayedArtists,
   recentlyPlayedTracks,
@@ -25,8 +27,10 @@ import {
   type PlayerState,
   type Playlist,
   type ScanProgress,
+  type ScanResult,
   type Track,
 } from "./api";
+import { toasts } from "./toasts.svelte";
 
 export type ViewKey =
   | "home"
@@ -40,6 +44,7 @@ export type ViewKey =
   | "playlists"
   | "playlist-detail"
   | "favorites"
+  | "queue"
   | "search"
   | "settings";
 
@@ -153,6 +158,16 @@ class AppStore {
     );
     this.unlisten.push(
       await onPlayerError((msg) => {
+        // R9.6 — the WASAPI Exclusive → Shared fallback surfaces as a
+        // legacy `player:error` carrying the FR reason republished by
+        // core (`EngineEvent::ExclusiveFallback`). It's an informational
+        // soft fallback, not a hard failure, so route it to a transient
+        // toast (announced via the ToastsRoot live region) instead of
+        // the sticky red error banner. Other errors keep the banner.
+        if (msg.startsWith("Mode Exclusive indisponible")) {
+          toasts.warn(msg);
+          return;
+        }
         this.lastError = msg;
       })
     );
@@ -162,9 +177,32 @@ class AppStore {
       })
     );
     this.unlisten.push(
-      await onScanFinished(async () => {
+      await onScanStarted(() => {
+        // Concurrency guard (R6.4): any rescan trigger — not only the
+        // Settings button — flips the "running" flag so a second
+        // concurrent rescan can't be launched. The "started" toast is
+        // raised at trigger time in Settings.handleRescanAll (R6.1) so
+        // the user gets immediate feedback; we don't duplicate it here.
+        this.scanRunning = true;
+      })
+    );
+    this.unlisten.push(
+      await onScanFinished(async (result: ScanResult) => {
         this.scanRunning = false;
+        // R6.2: report how many tracks changed. `files_indexed` is the
+        // closest "changed" count the scanner surfaces (added/updated);
+        // a finer add/remove/update breakdown isn't available.
+        const changed = result.files_indexed;
+        toasts.success(`Scan terminé · ${changed} titres modifiés`);
         await this.refreshAll();
+      })
+    );
+    this.unlisten.push(
+      await onScanError((message) => {
+        // R6.3: global rescan failure — release the guard and surface a
+        // descriptive French error toast.
+        this.scanRunning = false;
+        toasts.error(`Échec du scan : ${message}`);
       })
     );
   }

@@ -21,6 +21,8 @@
   import { onMount, onDestroy } from "svelte";
   import { createPlaylist } from "../lib/api";
   import { app } from "../lib/stores.svelte";
+  import { settings } from "../lib/settings.svelte";
+  import { SIDEBAR_LABELS } from "../lib/labels";
   import Icon from "./Icon.svelte";
   import NamePromptDialog from "./NamePromptDialog.svelte";
 
@@ -41,8 +43,13 @@
   let collapsed = $state(false);
   /** Width remembered for "expand back" — only updated when not collapsed. */
   let expandedWidth = $state(DEFAULT_WIDTH);
-  /** Effective width fed to CSS — collapsed → COLLAPSED_WIDTH. */
-  let effectiveWidth = $derived(collapsed ? COLLAPSED_WIDTH : expandedWidth);
+  /** Icon-only rendering. The persisted "Sidebar étendue" option
+   *  (R5.3/R5.4) wins over the transient drag-collapse: when the user
+   *  has opted into the expanded sidebar, labels stay visible next to
+   *  the icons regardless of the drag width. */
+  let iconOnly = $derived(collapsed && !settings.values.sidebarExpanded);
+  /** Effective width fed to CSS — icon-only → COLLAPSED_WIDTH. */
+  let effectiveWidth = $derived(iconOnly ? COLLAPSED_WIDTH : expandedWidth);
 
   let dragging = $state(false);
   /** Last pointer X seen, sampled at most once per animation frame. */
@@ -145,6 +152,19 @@
 
   let showNewPlaylistDialog = $state(false);
 
+  /** Toggle the persisted "Sidebar étendue" option (R5.3/R5.4). When
+   *  turned on we also make sure the column is wide enough to show the
+   *  labels (a previous drag-collapse shouldn't hide them). The choice
+   *  is persisted to the SQLite `settings` table via `settings.set`. */
+  function toggleExpanded(): void {
+    const next = !settings.values.sidebarExpanded;
+    if (next && collapsed) {
+      collapsed = false;
+      persist();
+    }
+    void settings.set("sidebarExpanded", next);
+  }
+
   function openNewPlaylistDialog(): void {
     showNewPlaylistDialog = true;
   }
@@ -162,8 +182,9 @@
 </script>
 
 <aside
-  class:collapsed
+  class:collapsed={iconOnly}
   class:dragging
+  class:expanded={settings.values.sidebarExpanded}
   aria-label="Navigation"
 >
   <!-- Top drag-cap covers the titlebar row so users can drag the
@@ -175,56 +196,72 @@
     <button
       class:active={app.selectedView === "home"}
       onclick={() => app.setView("home")}
-      title="Home"
+      title={SIDEBAR_LABELS.home.label}
+      aria-label={SIDEBAR_LABELS.home.label}
     >
       <span class="indicator"></span>
       <Icon name="home" />
-      <span class="label">Home</span>
+      <span class="label">{SIDEBAR_LABELS.home.label}</span>
     </button>
     <button
       class:active={app.selectedView === "search"}
       onclick={() => app.setView("search")}
-      title="Search"
+      title={SIDEBAR_LABELS.search.label}
+      aria-label={SIDEBAR_LABELS.search.label}
     >
       <span class="indicator"></span>
       <Icon name="search" />
-      <span class="label">Search</span>
+      <span class="label">{SIDEBAR_LABELS.search.label}</span>
     </button>
     <button
       class:active={app.selectedView === "albums" || app.selectedView === "album-detail"}
       onclick={() => app.setView("albums")}
-      title="Albums"
+      title={SIDEBAR_LABELS.albums.label}
+      aria-label={SIDEBAR_LABELS.albums.label}
     >
       <span class="indicator"></span>
       <Icon name="albums" />
-      <span class="label">Albums</span>
+      <span class="label">{SIDEBAR_LABELS.albums.label}</span>
     </button>
     <button
       class:active={app.selectedView === "artists" || app.selectedView === "artist-detail"}
       onclick={() => app.setView("artists")}
-      title="Artists"
+      title={SIDEBAR_LABELS.artists.label}
+      aria-label={SIDEBAR_LABELS.artists.label}
     >
       <span class="indicator"></span>
       <Icon name="artists" />
-      <span class="label">Artists</span>
+      <span class="label">{SIDEBAR_LABELS.artists.label}</span>
     </button>
     <button
       class:active={app.selectedView === "genres" || app.selectedView === "genre-detail"}
       onclick={() => app.setView("genres")}
-      title="Genres"
+      title={SIDEBAR_LABELS.genres.label}
+      aria-label={SIDEBAR_LABELS.genres.label}
     >
       <span class="indicator"></span>
       <Icon name="genres" />
-      <span class="label">Genres</span>
+      <span class="label">{SIDEBAR_LABELS.genres.label}</span>
     </button>
     <button
       class:active={app.selectedView === "favorites"}
       onclick={() => app.setView("favorites")}
-      title="Favorites"
+      title={SIDEBAR_LABELS.favorites.label}
+      aria-label={SIDEBAR_LABELS.favorites.label}
     >
       <span class="indicator"></span>
       <Icon name="heart" />
-      <span class="label">Favorites</span>
+      <span class="label">{SIDEBAR_LABELS.favorites.label}</span>
+    </button>
+    <button
+      class:active={app.selectedView === "queue"}
+      onclick={() => app.setView("queue")}
+      title={SIDEBAR_LABELS.queue.label}
+      aria-label={SIDEBAR_LABELS.queue.label}
+    >
+      <span class="indicator"></span>
+      <Icon name="queue" />
+      <span class="label">{SIDEBAR_LABELS.queue.label}</span>
     </button>
   </nav>
 
@@ -233,8 +270,8 @@
     <button
       class="ghost"
       onclick={openNewPlaylistDialog}
-      title="New playlist"
-      aria-label="New playlist"
+      title={SIDEBAR_LABELS.newPlaylist.label}
+      aria-label={SIDEBAR_LABELS.newPlaylist.label}
     >
       <Icon name="plus" size={14} />
     </button>
@@ -266,6 +303,26 @@
   </nav>
 
   <div class="spacer"></div>
+
+  <!-- Persisted "Sidebar étendue" toggle (R5.3/R5.4). Switches between
+       icon-only and labelled rows; the choice is saved to the SQLite
+       `settings` table (`ui.sidebar_expanded`). The button itself
+       carries a tooltip + accessible name so it is discoverable even
+       when collapsed. -->
+  <button
+    class="expand-toggle"
+    onclick={toggleExpanded}
+    aria-pressed={settings.values.sidebarExpanded}
+    title={settings.values.sidebarExpanded
+      ? "Réduire la barre latérale"
+      : "Sidebar étendue"}
+    aria-label={settings.values.sidebarExpanded
+      ? "Réduire la barre latérale"
+      : "Sidebar étendue"}
+  >
+    <Icon name={settings.values.sidebarExpanded ? "compress" : "expand"} size={15} />
+    <span class="label">Sidebar étendue</span>
+  </button>
 
   <!-- Right-edge drag handle. 6 px wide invisible bar that captures
        pointer events for resize. Drag below the snap threshold to
@@ -484,6 +541,56 @@
   }
   .spacer {
     flex: 1;
+  }
+
+  /* "Sidebar étendue" toggle — mirrors the nav button look so it sits
+     naturally at the foot of the column. The label hides in icon-only
+     mode just like the nav labels. */
+  .expand-toggle {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    width: 100%;
+    text-align: left;
+    height: 34px;
+    padding: 0 var(--space-3);
+    color: var(--fg-2);
+    font-size: 12px;
+    font-weight: 500;
+    border: none;
+    background: transparent;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    overflow: hidden;
+    transition: background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
+  }
+  .expand-toggle :global(svg) {
+    flex-shrink: 0;
+    color: var(--fg-2);
+    transition: color var(--dur-fast) var(--ease-out);
+  }
+  .expand-toggle:hover {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--fg-0);
+  }
+  .expand-toggle:hover :global(svg) {
+    color: var(--fg-0);
+  }
+  .expand-toggle:focus-visible {
+    outline: none;
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--fg-0);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+  aside.collapsed .expand-toggle {
+    justify-content: center;
+    padding: 0;
+    gap: 0;
+  }
+  aside.collapsed .expand-toggle .label {
+    display: none;
   }
 
   /* --- Resize handle --- */

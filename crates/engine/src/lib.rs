@@ -27,6 +27,7 @@
 //! no resampling or upmix happened.
 
 pub mod audio_settings;
+pub mod backend_asio;
 pub mod backend_cpal_shared;
 pub mod backend_symphonia;
 #[cfg(target_os = "windows")]
@@ -37,6 +38,9 @@ pub mod dsd;
 pub mod dsp;
 pub mod eq;
 pub mod error;
+pub mod format_cache;
+pub mod format_selection;
+pub mod ring_plan;
 pub mod types;
 pub mod volume;
 
@@ -44,9 +48,15 @@ pub use audio_settings::*;
 pub use dsd::{DopPacker, DsdGroup16, DsdRate, DsdStream};
 pub use dsp::{PreGainContext, StagesBypass};
 pub use error::{EngineError, EngineResult};
+#[doc(hidden)]
+pub use format_cache::{CachedFormat, DeviceConfigFingerprint, DeviceFormatCache};
+#[doc(hidden)]
+pub use format_selection::{select_format, CandidateFormat, FormatSelection};
+#[doc(hidden)]
+pub use ring_plan::RingPlan;
 pub use types::{
     BitPerfectHealth, BitPerfectStatus, EffectiveOutputMode, EngineEvent, OutputDevice, OutputMode,
-    PcmBuffer, PlaybackStatus, PlayerState, TrackFormat,
+    PcmBuffer, PlaybackStatus, PlayerState, TrackFormat, UpmixInfo,
 };
 
 use crossbeam_channel::Receiver;
@@ -136,4 +146,12 @@ pub trait AudioEngine: Send + Sync {
     /// that don't support crossfade ignore it (default no-op); the
     /// transition then falls back to the gapless / EOT path.
     fn set_crossfade_ms(&self, _ms: u32) {}
+
+    /// Cumulative count of audio callback underruns since the stream
+    /// started. Default `0` for backends without a ring buffer (e.g.
+    /// a future pure ASIO backend). Exposed through a Tauri command
+    /// for a future diagnostics panel (R10.4).
+    fn underrun_count(&self) -> u64 {
+        0
+    }
 }

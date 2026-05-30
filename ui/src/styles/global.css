@@ -56,6 +56,15 @@
   --player-height: 76px;
   --window-controls-width: 184px;
 
+  /* Responsive / DPI robustness (R1). Single source of truth for the
+     reserved Player_Zone height, the header breakpoint, the minimum
+     gap between top controls and the content edge, and the minimum
+     supported app width below which a horizontal scrollbar appears. */
+  --player-zone-h: 72px;   /* R1.3 reserved Player_Zone height */
+  --header-bp: 768px;      /* R1.2 responsive header breakpoint */
+  --content-edge-gap: 8px; /* R1.4 min gap top controls <-> content edge */
+  --app-min-width: 360px;  /* R1.6 floor before horizontal scroll */
+
   --shadow-1: 0 2px 6px rgba(0, 0, 0, 0.35);
   --shadow-2: 0 6px 20px rgba(0, 0, 0, 0.45);
   --shadow-lift: 0 14px 32px -8px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.4);
@@ -144,6 +153,14 @@ html[data-bg-theme="indigo"] {
   box-sizing: border-box;
 }
 
+/* Indicateur de focus visible global (R2.2). Contraste >= 3:1 avec les
+   surfaces sombres adjacentes (--focus-ring #8ab4ff sur --bg-* ~ #0e-#27).
+   `--focus-ring` est surchargeable par thème si besoin. */
+:focus-visible {
+  outline: 2px solid var(--focus-ring, #8ab4ff);
+  outline-offset: 2px;
+}
+
 html, body {
   margin: 0;
   padding: 0;
@@ -160,6 +177,19 @@ html, body {
 #app {
   height: 100%;
 }
+
+/* Responsive / DPI layout rules (R1). The app shell uses the class
+   `.shell` (see App.svelte) rather than an id, so the design's
+   `#app-shell` selector is adapted to `.shell` here. These rules are
+   additive: per-component scoped styles still apply on top. */
+.shell { min-width: var(--app-min-width); }              /* R1.6 */
+@media (max-width: 360px) { .shell { overflow-x: auto; } } /* R1.6 */
+main.content { padding-bottom: var(--player-zone-h); }   /* R1.3 */
+.player-zone { min-height: var(--player-zone-h); }       /* R1.3 */
+/* Marge minimale entre les controles superieurs et le bord du contenu
+   (R1.4). Appliquee aux conteneurs de controles en tete de zone de
+   contenu via la classe utilitaire `.top-controls`. */
+.top-controls { margin: var(--content-edge-gap); }       /* R1.4 */
 
 button {
   font: inherit;

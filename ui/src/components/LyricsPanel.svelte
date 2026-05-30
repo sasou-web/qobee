@@ -151,10 +151,11 @@
        never pushes content off-screen in the small panel. */
     padding: 45% 8px;
     scroll-behavior: smooth;
-    scrollbar-width: none;
-  }
-  .list::-webkit-scrollbar {
-    display: none;
+    /* Keep a thin, discreet scrollbar so the user can always tell the
+       lyrics are scrollable and reach every line by hand — even when
+       the track is paused or the lyrics aren't auto-scrolling. */
+    scrollbar-width: thin;
+    overscroll-behavior: contain;
   }
 
   .line {

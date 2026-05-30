@@ -54,7 +54,11 @@ use crate::backend_cpal_shared::{
 };
 use crate::backend_symphonia::SymphoniaDecoder;
 use crate::error::{EngineError, EngineResult};
-use crate::types::{EffectiveOutputMode, EngineEvent, OutputMode, PlaybackStatus, PlayerState};
+use crate::format_cache::DeviceConfigFingerprint;
+use crate::format_selection::{select_format, CandidateFormat};
+use crate::types::{
+    EffectiveOutputMode, EngineEvent, OutputMode, PlaybackStatus, PlayerState, UpmixInfo,
+};
 use crate::AudioEngine;
 use crate::AudioSettings;
 use crate::PreGainContext;
@@ -280,6 +284,12 @@ impl AudioEngine for WasapiExclusiveEngine {
             bit_perfect: None,
             dsd_rate_label: self.shared.dsd_rate_label(),
             is_dsd: self.shared.is_dsd_active(),
+            // Active upmix layout (R9.5): set by negotiation when a
+            // stereo source had to be widened onto a surround-only
+            // device layout; `None` when played natively.
+            upmix: self.shared.upmix(),
+            // Degraded flag (R11.3) set by the decoder thread at EOF.
+            degraded: self.shared.file_degraded(),
             error,
         };
         state.bit_perfect = build_bit_perfect_health(&self.shared, &state);
@@ -347,6 +357,10 @@ impl AudioEngine for WasapiExclusiveEngine {
 
     fn clear_pending_next(&self) -> EngineResult<()> {
         Ok(())
+    }
+
+    fn underrun_count(&self) -> u64 {
+        self.shared.underruns.load(Ordering::Relaxed) as u64
     }
 }
 
@@ -459,6 +473,10 @@ impl ActiveTrack {
 
 fn run_worker(ctx: WorkerCtx) {
     let mut active: Option<ActiveStream> = None;
+    // Per-device format cache (R9.1–R9.3). Owned by the worker loop so
+    // it persists across `Load`s (per-device reuse) yet stays entirely
+    // on the COM-owning thread (never shared, never serialized).
+    let mut format_cache: DeviceFormatCache = DeviceFormatCache::new();
 
     loop {
         // If something is loaded and playing, drain the audio device
@@ -492,12 +510,12 @@ fn run_worker(ctx: WorkerCtx) {
 
             // Drain commands without blocking.
             while let Ok(cmd) = ctx.cmd_rx.try_recv() {
-                handle_cmd(cmd, &ctx, &mut active);
+                handle_cmd(cmd, &ctx, &mut active, &mut format_cache);
             }
         } else {
             // Nothing is rendering: block on the next command.
             match ctx.cmd_rx.recv() {
-                Ok(cmd) => handle_cmd(cmd, &ctx, &mut active),
+                Ok(cmd) => handle_cmd(cmd, &ctx, &mut active, &mut format_cache),
                 Err(_) => break, // sender dropped
             }
         }
@@ -508,7 +526,30 @@ fn run_worker(ctx: WorkerCtx) {
     }
 }
 
-fn handle_cmd(cmd: Command, ctx: &WorkerCtx, active: &mut Option<ActiveStream>) {
+/// Events emitted by the `Load` worker arm when Exclusive format
+/// negotiation fails outright (R9.6). Returned in emission order: an
+/// [`EngineEvent::ExclusiveFallback`] carrying the failure `reason` (so
+/// the UI can explain the switch to Shared) followed by the
+/// [`EngineEvent::Error`] that drives the actual backend swap + track
+/// restart in `qobee-core` (behaviour unchanged from before this was
+/// factored out). Pulled into its own function so the total-failure →
+/// fallback mapping can be unit-tested without a live
+/// `wasapi::AudioClient`.
+fn exclusive_load_failure_events(reason: String) -> [EngineEvent; 2] {
+    [
+        EngineEvent::ExclusiveFallback {
+            reason: reason.clone(),
+        },
+        EngineEvent::Error { message: reason },
+    ]
+}
+
+fn handle_cmd(
+    cmd: Command,
+    ctx: &WorkerCtx,
+    active: &mut Option<ActiveStream>,
+    format_cache: &mut DeviceFormatCache,
+) {
     match cmd {
         Command::Load(path) => {
             if let Some(prev) = active.take() {
@@ -519,9 +560,12 @@ fn handle_cmd(cmd: Command, ctx: &WorkerCtx, active: &mut Option<ActiveStream>) 
             // Leaving DSD: unset the active flag so volume / EQ are
             // re-allowed for the next PCM track.
             ctx.shared.set_dsd_active(false, None);
+            // A fresh Load clears any degraded flag from the previous
+            // file (R11.3).
+            ctx.shared.set_file_degraded(false);
             set_status(ctx, PlaybackStatus::Loading);
 
-            match start_playback(ctx, &path) {
+            match start_playback(ctx, &path, format_cache) {
                 Ok(s) => {
                     *active = Some(ActiveStream::Pcm(s));
                     set_status(ctx, PlaybackStatus::Paused);
@@ -530,7 +574,16 @@ fn handle_cmd(cmd: Command, ctx: &WorkerCtx, active: &mut Option<ActiveStream>) 
                     let msg = e.to_string();
                     *ctx.last_error.lock() = Some(msg.clone());
                     set_status(ctx, PlaybackStatus::Errored);
-                    let _ = ctx.event_tx.try_send(EngineEvent::Error { message: msg });
+                    // Exclusive negotiation failed for this device: tell
+                    // the orchestrator we are about to fall back to the
+                    // Shared backend (R9.6) so it can surface an FR
+                    // toast explaining the switch and its reason. The
+                    // `Error` event below still drives the actual
+                    // backend swap + track restart in `qobee-core`
+                    // (behaviour unchanged).
+                    for ev in exclusive_load_failure_events(msg) {
+                        let _ = ctx.event_tx.try_send(ev);
+                    }
                 }
             }
         }
@@ -541,6 +594,9 @@ fn handle_cmd(cmd: Command, ctx: &WorkerCtx, active: &mut Option<ActiveStream>) 
             ctx.shared.pending_seek_ms.store(-1, Ordering::Release);
             ctx.shared.drain_ring.store(false, Ordering::Release);
             ctx.shared.set_dsd_active(true, Some(rate.label()));
+            // A fresh Load clears any degraded flag from the previous
+            // file (R11.3).
+            ctx.shared.set_file_degraded(false);
             set_status(ctx, PlaybackStatus::Loading);
 
             match start_dsd_playback(ctx, &path, rate) {
@@ -606,6 +662,7 @@ fn handle_cmd(cmd: Command, ctx: &WorkerCtx, active: &mut Option<ActiveStream>) 
             ctx.shared.pending_seek_ms.store(-1, Ordering::Release);
             ctx.shared.drain_ring.store(false, Ordering::Release);
             ctx.shared.set_dsd_active(false, None);
+            ctx.shared.set_upmix(None);
             ctx.is_native_rate.store(false, Ordering::Release);
             set_status(ctx, PlaybackStatus::Stopped);
         }
@@ -673,6 +730,12 @@ fn snapshot_state(ctx: &WorkerCtx) -> PlayerState {
         bit_perfect: None,
         dsd_rate_label: ctx.shared.dsd_rate_label(),
         is_dsd: ctx.shared.is_dsd_active(),
+        // Active upmix layout (R9.5): set by negotiation when a stereo
+        // source had to be widened onto a surround-only device layout;
+        // `None` when played natively.
+        upmix: ctx.shared.upmix(),
+        // Degraded flag (R11.3) read from the shared atomic.
+        degraded: ctx.shared.file_degraded(),
         error,
     };
     state.bit_perfect = build_bit_perfect_health(&ctx.shared, &state);
@@ -682,6 +745,30 @@ fn snapshot_state(ctx: &WorkerCtx) -> PlayerState {
 // ---------------------------------------------------------------------------
 // Per-track setup
 // ---------------------------------------------------------------------------
+
+/// Per-device format cache specialised to this backend's
+/// [`NegotiatedFormat`] payload.
+///
+/// The cache logic lives in the cross-platform [`crate::format_cache`]
+/// module (so the property test in
+/// `tests/properties/device_format_cache.rs` can reach it on any
+/// platform); here we alias it under the names the design uses
+/// (`Device_Format_Cache`, `CachedFormat`, `DeviceConfigFingerprint`)
+/// bound to the concrete `NegotiatedFormat` the worker thread applies.
+///
+/// `start_playback` resolves the device id, computes a
+/// [`DeviceConfigFingerprint`] from the current mixformat, and reuses a
+/// cached [`NegotiatedFormat`] on a fingerprint hit (R9.2) instead of
+/// re-probing. Kept module-private (the worker thread is the only
+/// consumer) to avoid leaking the private `NegotiatedFormat`.
+///
+/// [`crate::format_cache::CachedFormat`] holding this backend's
+/// [`NegotiatedFormat`].
+type CachedFormat = crate::format_cache::CachedFormat<NegotiatedFormat>;
+
+/// [`crate::format_cache::DeviceFormatCache`] of [`NegotiatedFormat`]
+/// entries, keyed by stable device id (R9.1–R9.3).
+type DeviceFormatCache = crate::format_cache::DeviceFormatCache<NegotiatedFormat>;
 
 #[derive(Clone)]
 struct NegotiatedFormat {
@@ -699,6 +786,14 @@ struct NegotiatedFormat {
     bytes_per_sample: usize,
     sample_type: SampleType,
     valid_bits: usize,
+    /// Active upmix layout (R9.5). `Some(UpmixInfo { src, dst })` when
+    /// no native config matching `src_channels` was available and the
+    /// engine had to upmix onto a wider device layout (`channels >
+    /// src_channels`); `None` otherwise. Set by `negotiate_with_fallback`
+    /// via the pure [`select_format`] and propagated to
+    /// `PlayerState::upmix` (through `Shared::upmix`) so the UI can
+    /// surface an upmix indicator.
+    upmix: Option<UpmixInfo>,
 }
 
 /// Resolve the device, opening a friendly-name match or the system
@@ -776,6 +871,10 @@ fn negotiate_exclusive_format(
                 bytes_per_sample: storebits / 8,
                 sample_type: *st,
                 valid_bits: *validbits,
+                // Upmix detection / flagging is wired in task 13.1 via
+                // the pure `select_format`; this low-level negotiator
+                // does not set it.
+                upmix: None,
             });
         }
     }
@@ -802,139 +901,178 @@ fn negotiate_exclusive_format(
 /// it and revert to Shared.
 fn negotiate_with_fallback(
     audio_client: &wasapi::AudioClient,
+    device_id: &str,
     src_sr: u32,
     src_channels: u16,
 ) -> EngineResult<(NegotiatedFormat, bool)> {
-    // Try source rate first.
+    // Accumulate every `(sample_rate, channels)` probe attempted across
+    // the whole fallback ladder so we can emit ONE aggregated summary
+    // (R9.7) instead of one `warn!` line per probed frequency.
+    let mut tried: Vec<(u32, u16)> = Vec::with_capacity(8);
+
+    // Try source rate first. A first-try success is the bit-perfect
+    // happy path: no fallback happened, so we return immediately
+    // without a summary `warn!` (`negotiate_exclusive_format` already
+    // logs the negotiated format at info level).
     if let Ok(n) = negotiate_exclusive_format(audio_client, src_sr, src_channels, src_channels) {
         return Ok((n, true));
     }
+    tried.push((src_sr, src_channels));
 
     // Common alternatives, ordered to pick the closest "up" first
     // (less destructive than downsampling).
     let common: [u32; 6] = [192_000, 176_400, 96_000, 88_200, 48_000, 44_100];
-    let mut tried: Vec<u32> = Vec::with_capacity(8);
     for &sr in common.iter().filter(|&&sr| sr >= src_sr) {
         if sr == src_sr {
             continue;
         }
-        tried.push(sr);
+        tried.push((sr, src_channels));
         if let Ok(n) = negotiate_exclusive_format(audio_client, sr, src_channels, src_channels) {
-            tracing::warn!(
-                target: "qobee::engine",
-                src_sr,
-                fallback_sr = sr,
-                "WASAPI Exclusive: source rate refused; using a higher common rate (sinc-resampled)"
+            log_negotiation_summary(
+                device_id,
+                &tried,
+                &format!(
+                    "source rate refused; using a higher common rate ({sr} Hz, sinc-resampled)"
+                ),
             );
             return Ok((n, false));
         }
     }
     for &sr in common.iter().filter(|&&sr| sr < src_sr) {
-        tried.push(sr);
+        tried.push((sr, src_channels));
         if let Ok(n) = negotiate_exclusive_format(audio_client, sr, src_channels, src_channels) {
-            tracing::warn!(
-                target: "qobee::engine",
-                src_sr,
-                fallback_sr = sr,
-                "WASAPI Exclusive: source rate refused; using a lower common rate (sinc-resampled)"
+            log_negotiation_summary(
+                device_id,
+                &tried,
+                &format!(
+                    "source rate refused; using a lower common rate ({sr} Hz, sinc-resampled)"
+                ),
             );
             return Ok((n, false));
         }
     }
 
     // Last resort: ask the device for the format it actually wants
-    // (its mixformat) and use that SR. We try the mix format's SR
-    // *with the source's channel count* first (so a stereo source
-    // doesn't suddenly turn into 7.1) before accepting the mix
-    // format's own channel count.
+    // (its mixformat) and pick a layout with the pure `select_format`
+    // (R9.4): prefer a NATIVE STEREO configuration at the device's
+    // rate over any surround upmix, and only flag an upmix (R9.5) when
+    // the chosen layout is genuinely wider than the source.
     if let Ok(mixfmt) = audio_client.get_mixformat() {
         let mix_sr = mixfmt.get_samplespersec();
         let mix_ch = mixfmt.get_nchannels();
 
-        if !tried.contains(&mix_sr) {
-            if let Ok(n) =
-                negotiate_exclusive_format(audio_client, mix_sr, src_channels, src_channels)
-            {
-                tracing::warn!(
-                    target: "qobee::engine",
-                    src_sr,
-                    fallback_sr = mix_sr,
-                    "WASAPI Exclusive: using device's preferred (mixformat) rate, source channels"
-                );
-                return Ok((n, false));
+        // Probe the channel layouts the device accepts at its
+        // mixformat rate. We consider the source's own channel count
+        // (no up/down-mix), a native stereo layout (R9.4), and the
+        // device's preferred layout (`mix_ch`). Keep the full
+        // negotiated format for each accepted layout so the one
+        // `select_format` picks can be applied directly.
+        let mut layouts: Vec<u16> = vec![src_channels.max(1), 2, mix_ch.max(1)];
+        layouts.sort_unstable();
+        layouts.dedup();
+
+        let mut probed: Vec<(CandidateFormat, NegotiatedFormat)> = Vec::new();
+        for &ch in &layouts {
+            tried.push((mix_sr, ch));
+            if let Ok(n) = negotiate_exclusive_format(audio_client, mix_sr, ch, src_channels) {
+                probed.push((CandidateFormat::new(mix_sr, ch), n));
             }
         }
 
-        if mix_ch != src_channels {
-            if let Ok(n) = negotiate_exclusive_format(audio_client, mix_sr, mix_ch, src_channels) {
-                tracing::warn!(
-                    target: "qobee::engine",
-                    src_sr,
-                    fallback_sr = mix_sr,
-                    src_channels,
-                    dst_channels = mix_ch,
-                    "WASAPI Exclusive: device requires a different channel layout; will upmix"
-                );
-                return Ok((n, false));
+        let candidates: Vec<CandidateFormat> = probed.iter().map(|(c, _)| *c).collect();
+        if let Some(sel) = select_format(&candidates, src_channels) {
+            if let Some((_, mut n)) = probed.into_iter().find(|(c, _)| *c == sel.chosen) {
+                // R9.5: upmix is `Some` iff the chosen layout is wider
+                // than the source; the pure selector already enforces
+                // this invariant.
+                n.upmix = sel.upmix;
+                let native_rate = mix_sr == src_sr;
+                let outcome = match sel.upmix {
+                    Some(u) => format!(
+                        "no native layout available; upmixing {}→{} ch onto device layout at {mix_sr} Hz",
+                        u.src_channels, u.dst_channels
+                    ),
+                    None => format!(
+                        "using device mixformat layout ({} ch at {mix_sr} Hz, native, no upmix)",
+                        sel.chosen.channels
+                    ),
+                };
+                log_negotiation_summary(device_id, &tried, &outcome);
+                return Ok((n, native_rate));
             }
         }
     }
 
+    log_negotiation_summary(
+        device_id,
+        &tried,
+        "no compatible format found; reverting to Shared",
+    );
     Err(EngineError::Output(format!(
         "no compatible WASAPI Exclusive format found for this device (tried {} Hz and {} other rates). \
          The device may be busy with another app, or its driver does not support Exclusive mode for any of: \
          24-in-32 / 32 int / 32 float / 16 int. Try a different output device.",
         src_sr,
-        tried.len()
+        tried.len().saturating_sub(1)
     )))
 }
 
-fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveTrack> {
-    let decoder = SymphoniaDecoder::open_uri(path.to_string_lossy().as_ref())?;
-    let format = decoder.format();
+/// Emit the single aggregated WASAPI Exclusive negotiation summary
+/// (R9.7). Replaces the previous one-`warn!`-per-probed-frequency
+/// noise with a single line carrying the device id, every
+/// `(sample_rate, channels)` pair attempted, and the final outcome
+/// (the format we settled on, or the total failure that triggers the
+/// Shared fallback).
+fn log_negotiation_summary(device_id: &str, tried: &[(u32, u16)], outcome: &str) {
+    tracing::warn!(
+        target: "qobee::engine",
+        device_id,
+        tried = ?tried,
+        outcome,
+        "WASAPI Exclusive: format negotiation summary"
+    );
+}
 
-    let device_name = ctx.selected_device.lock().clone();
-    let device = find_device(device_name.as_deref())?;
+/// Build a stable device identifier for the format cache key (R9.1):
+/// the friendly name combined with the endpoint id. Either query may
+/// fail on exotic drivers; we fall back to whatever is available so
+/// caching still works (an empty id simply shares one cache slot).
+fn device_identity(device: &wasapi::Device) -> String {
+    let name = device.get_friendlyname().unwrap_or_default();
+    let id = device.get_id().unwrap_or_default();
+    format!("{name}::{id}")
+}
+
+/// Compute the device-config fingerprint from a client's current
+/// mixformat (R9.2 reuse guard / R9.3 staleness guard). Returns `None`
+/// when the mixformat can't be read, in which case the caller skips
+/// caching and always renegotiates.
+fn device_fingerprint(audio_client: &wasapi::AudioClient) -> Option<DeviceConfigFingerprint> {
+    audio_client
+        .get_mixformat()
+        .ok()
+        .map(|mix| DeviceConfigFingerprint {
+            mix_sample_rate: mix.get_samplespersec(),
+            mix_channels: mix.get_nchannels(),
+        })
+}
+
+/// Open and initialize a WASAPI Exclusive stream for `nego`, handling
+/// the `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED` retry by recreating the
+/// client at the next-highest aligned size (as the wasapi-rs example
+/// does). Returns the initialized client plus its event handle and
+/// render client, ready to render.
+fn initialize_exclusive_stream(
+    device: &wasapi::Device,
+    nego: &NegotiatedFormat,
+) -> EngineResult<(
+    wasapi::AudioClient,
+    wasapi::Handle,
+    wasapi::AudioRenderClient,
+)> {
     let mut audio_client = device
         .get_iaudioclient()
         .map_err(|e| EngineError::Output(format!("get_iaudioclient: {e:?}")))?;
-
-    let (nego, native_rate) =
-        negotiate_with_fallback(&audio_client, format.sample_rate, format.channels)?;
-
-    ctx.shared
-        .sample_rate
-        .store(nego.sample_rate, Ordering::Relaxed);
-    // Report the *source* channel count to the UI: what the user
-    // expects to see is "stereo file", not the device's surround
-    // configuration.
-    ctx.shared
-        .channels
-        .store(nego.src_channels as u32, Ordering::Relaxed);
-    ctx.shared
-        .bit_depth
-        .store(nego.valid_bits as u32, Ordering::Relaxed);
-    ctx.shared.underruns.store(0, Ordering::Relaxed);
-    let dur_ms = (decoder.duration_seconds() * 1000.0) as u32;
-    ctx.shared.duration_ms.store(dur_ms, Ordering::Relaxed);
-    ctx.shared.position_ms.store(0, Ordering::Relaxed);
-    // Bit-perfect requires both same SR *and* same channel count
-    // (no upmix). When the device demanded surround we route mono/
-    // stereo into a few channels and pad the rest with silence â€”
-    // that's still cleaner than the OS mixer but no longer strictly
-    // bit-perfect.
-    let no_upmix = nego.src_channels == nego.channels;
-    ctx.is_native_rate
-        .store(native_rate && no_upmix, Ordering::Release);
-
-    // Publish the negotiated device format so `state()` can build a
-    // [`BitPerfectHealth`] snapshot from a single atomic read. The
-    // device channel count is what we actually write to WASAPI
-    // (post-upmix when applicable); pairing it with `nego.src_channels`
-    // is what lets `BitPerfectHealth::compute` flag an upmix.
-    ctx.shared
-        .set_device_format(nego.sample_rate, nego.channels);
-    ctx.shared.reset_bit_perfect_debounce();
 
     // Aim for ~ 1.5x the device's minimum period (handles Symphonia's
     // FLAC packet cadence comfortably).
@@ -948,9 +1086,6 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveTrack> {
 
     let mode = StreamMode::EventsExclusive { period_hns };
 
-    // Initialize. If WASAPI returns AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED
-    // we recreate the client at the next-highest aligned size, as the
-    // wasapi-rs example does.
     if let Err(e) = audio_client.initialize_client(&nego.wave_format, &Direction::Render, &mode) {
         if let wasapi::WasapiError::Windows(werr) = &e {
             use windows::Win32::Media::Audio::AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED;
@@ -996,7 +1131,180 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveTrack> {
         .get_audiorenderclient()
         .map_err(|e| EngineError::Output(format!("get_audiorenderclient: {e:?}")))?;
 
-    let (producer, consumer) = RingBuffer::<f32>::new(RING_CAPACITY_SAMPLES);
+    Ok((audio_client, h_event, render_client))
+}
+
+/// Resolve the negotiated format for `device` and open the exclusive
+/// stream, honouring the per-device [`DeviceFormatCache`]:
+///   * On a cache **hit** (same device id, unchanged config
+///     fingerprint), reuse the stored [`NegotiatedFormat`] without
+///     re-probing any candidate rate (R9.2).
+///   * On a cache **miss**, run a full [`negotiate_with_fallback`] and
+///     store the result (R9.1).
+///   * If applying a *cached* format fails (`initialize` errors — the
+///     device config changed under us), invalidate the entry and fall
+///     through to a full renegotiation (R9.3).
+fn resolve_and_open(
+    device: &wasapi::Device,
+    device_id: &str,
+    fingerprint: Option<&DeviceConfigFingerprint>,
+    src_sr: u32,
+    src_channels: u16,
+    format_cache: &mut DeviceFormatCache,
+) -> EngineResult<(
+    NegotiatedFormat,
+    bool,
+    wasapi::AudioClient,
+    wasapi::Handle,
+    wasapi::AudioRenderClient,
+)> {
+    // 1. Cache hit (R9.2): reuse the negotiated format with no re-probe.
+    if let Some(fp) = fingerprint {
+        let cached = format_cache
+            .get(device_id, fp)
+            .map(|c| (c.nego.clone(), c.is_native_rate));
+        if let Some((nego, native_rate)) = cached {
+            match initialize_exclusive_stream(device, &nego) {
+                Ok((ac, ev, rc)) => {
+                    tracing::debug!(
+                        target: "qobee::engine",
+                        device_id,
+                        "WASAPI Exclusive: reused cached format (no re-probe)"
+                    );
+                    return Ok((nego, native_rate, ac, ev, rc));
+                }
+                Err(e) => {
+                    // R9.3: the cached format no longer applies (device
+                    // config changed) → drop the stale entry and
+                    // renegotiate from scratch below.
+                    tracing::warn!(
+                        target: "qobee::engine",
+                        device_id,
+                        error = %e,
+                        "WASAPI Exclusive: cached format failed to apply; invalidating and renegotiating"
+                    );
+                    format_cache.invalidate(device_id);
+                }
+            }
+        }
+    }
+
+    // 2. Cache miss (or just-invalidated): full negotiation (R9.1).
+    let probe = device
+        .get_iaudioclient()
+        .map_err(|e| EngineError::Output(format!("get_iaudioclient: {e:?}")))?;
+    let (nego, native_rate) = negotiate_with_fallback(&probe, device_id, src_sr, src_channels)?;
+    let (ac, ev, rc) = initialize_exclusive_stream(device, &nego)?;
+
+    // Record the freshly negotiated format keyed by device id (R9.1),
+    // tagged with the current config fingerprint so a later config
+    // change is reported as a miss (R9.3). Skipped when the mixformat
+    // was unreadable (no fingerprint to guard against staleness).
+    if let Some(fp) = fingerprint {
+        format_cache.put(
+            device_id.to_string(),
+            CachedFormat::new(nego.clone(), native_rate, *fp),
+        );
+    }
+
+    Ok((nego, native_rate, ac, ev, rc))
+}
+
+fn start_playback(
+    ctx: &WorkerCtx,
+    path: &Path,
+    format_cache: &mut DeviceFormatCache,
+) -> EngineResult<ActiveTrack> {
+    let decoder = SymphoniaDecoder::open_uri(path.to_string_lossy().as_ref())?;
+    let format = decoder.format();
+
+    let device_name = ctx.selected_device.lock().clone();
+    let device = find_device(device_name.as_deref())?;
+
+    // Stable device id (friendly name + endpoint id) and current-config
+    // fingerprint for the per-device format cache (R9.1–R9.3).
+    let device_id = device_identity(&device);
+    let fingerprint = {
+        let probe = device
+            .get_iaudioclient()
+            .map_err(|e| EngineError::Output(format!("get_iaudioclient: {e:?}")))?;
+        device_fingerprint(&probe)
+    };
+
+    // Cache-aware format resolution + stream open. Reuses a cached
+    // format when the config is unchanged (R9.2), negotiates + caches
+    // otherwise (R9.1), and self-heals a stale cache entry (R9.3).
+    let (nego, native_rate, audio_client, h_event, render_client) = resolve_and_open(
+        &device,
+        &device_id,
+        fingerprint.as_ref(),
+        format.sample_rate,
+        format.channels,
+        format_cache,
+    )?;
+
+    ctx.shared
+        .sample_rate
+        .store(nego.sample_rate, Ordering::Relaxed);
+    // Report the *source* channel count to the UI: what the user
+    // expects to see is "stereo file", not the device's surround
+    // configuration.
+    ctx.shared
+        .channels
+        .store(nego.src_channels as u32, Ordering::Relaxed);
+    ctx.shared
+        .bit_depth
+        .store(nego.valid_bits as u32, Ordering::Relaxed);
+    ctx.shared.underruns.store(0, Ordering::Relaxed);
+    // Publish the active upmix layout (R9.5) so `PlayerState::upmix`
+    // surfaces an indicator when a stereo source had to be widened onto
+    // a surround-only device layout; `None` when played natively.
+    ctx.shared.set_upmix(nego.upmix);
+    let dur_ms = (decoder.duration_seconds() * 1000.0) as u32;
+    ctx.shared.duration_ms.store(dur_ms, Ordering::Relaxed);
+    ctx.shared.position_ms.store(0, Ordering::Relaxed);
+    // Bit-perfect requires both same SR *and* same channel count
+    // (no upmix). When the device demanded surround we route mono/
+    // stereo into a few channels and pad the rest with silence â€”
+    // that's still cleaner than the OS mixer but no longer strictly
+    // bit-perfect.
+    let no_upmix = nego.src_channels == nego.channels;
+    ctx.is_native_rate
+        .store(native_rate && no_upmix, Ordering::Release);
+
+    // Publish the negotiated device format so `state()` can build a
+    // [`BitPerfectHealth`] snapshot from a single atomic read. The
+    // device channel count is what we actually write to WASAPI
+    // (post-upmix when applicable); pairing it with `nego.src_channels`
+    // is what lets `BitPerfectHealth::compute` flag an upmix.
+    ctx.shared
+        .set_device_format(nego.sample_rate, nego.channels);
+    ctx.shared.reset_bit_perfect_debounce();
+
+    // R10.1/R10.2 — size the SPSC ring for this transition via the
+    // pure `RingPlan` policy (shared with the Shared backend). An
+    // upmix (`src_channels < channels`) or a device rate above the
+    // source rate widens the capacity so the renderer has enough slack
+    // to absorb the renegotiation latency without a size-induced
+    // underrun. See the design-deviation note in the Shared backend's
+    // `start_playback`: the ring is created here (before the decoder
+    // thread / render loop take the producer/consumer), and re-prefilled
+    // on every (re)open through the `ring_ready` gate, rather than being
+    // re-created mid-thread.
+    let ring_plan = crate::RingPlan::compute(
+        RING_CAPACITY_SAMPLES,
+        format.sample_rate,
+        nego.sample_rate,
+        nego.src_channels,
+        nego.channels,
+    );
+
+    // Arm the prefill gate: the PCM render loop emits silence (without
+    // counting underruns) until the decoder thread has prefilled the
+    // ring to `prefill_threshold` and flips `ring_ready` (R10.1).
+    ctx.shared.set_ring_ready(false);
+
+    let (producer, consumer) = RingBuffer::<f32>::new(ring_plan.capacity);
 
     // Decoder thread: same pipeline as Shared (resampler, EQ, ReplayGain).
     let decoder_alive = Arc::new(AtomicBool::new(true));
@@ -1007,6 +1315,7 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveTrack> {
     let src_sr = format.sample_rate;
     let src_ch = format.channels;
     let dst_sr = nego.sample_rate;
+    let prefill_threshold = ring_plan.prefill_threshold;
 
     let decoder_handle = thread::Builder::new()
         .name("qobee-wasapi-decoder".into())
@@ -1022,6 +1331,7 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveTrack> {
                 src_sr,
                 dst_sr,
                 EffectiveOutputMode::Exclusive,
+                prefill_threshold,
             );
         })
         .map_err(|e| EngineError::Internal(format!("WASAPI decoder spawn: {e}")))?;
@@ -1086,7 +1396,17 @@ fn render_one_period(track: &mut ActiveTrack, ctx: &WorkerCtx) -> EngineResult<(
         0.0
     };
 
-    if paused {
+    // R10.1 — post-transition prefill gate. Until the decoder thread
+    // has buffered `prefill_threshold` samples it leaves
+    // `ring_ready == false`; feed the device silence for this period and
+    // do *not* count it as an underrun (the ring is being filled, not
+    // starved). Treated exactly like `paused`: the device keeps
+    // streaming so resume is glitch-free, and `bytes` is already
+    // zero-filled. Once the gate opens a starved ring is a genuine
+    // underrun, counted below (R10.3).
+    let ring_ready = ctx.shared.ring_ready();
+
+    if paused || !ring_ready {
         // Send silence; the device keeps streaming, resume is instant.
         // bytes is already zero-filled from `vec!`.
     } else {
@@ -1287,6 +1607,12 @@ fn start_dsd_playback(
         .store(channels as u32, Ordering::Relaxed);
     ctx.shared.bit_depth.store(1, Ordering::Relaxed);
     ctx.shared.underruns.store(0, Ordering::Relaxed);
+    // The DSD render loop (`render_one_period_dsd`) does not use the
+    // PCM prefill gate (it pulls pre-packed DoP `i32` straight from its
+    // own ring with a spin-fill producer). Leave the gate open so any
+    // `false` left over from a previous PCM track can't stall it (R10.1
+    // applies to the PCM path only).
+    ctx.shared.set_ring_ready(true);
     let dur_ms = ((stream.frames() as f64 * 8.0 / rate.hz() as f64) * 1000.0) as u32;
     ctx.shared.duration_ms.store(dur_ms, Ordering::Relaxed);
     ctx.shared.position_ms.store(0, Ordering::Relaxed);
@@ -1412,6 +1738,8 @@ fn negotiate_dsd_format(
             bytes_per_sample: 4,
             sample_type: SampleType::Int,
             valid_bits: 24,
+            // DoP carries the source channels 1:1 — never an upmix.
+            upmix: None,
         });
     }
     Err(EngineError::Output(format!(
@@ -1578,5 +1906,132 @@ mod tests {
             !json.contains("\"bit_perfect\":"),
             "bit_perfect=None must be skipped on the wire, got {json}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Task 13.3 — negotiation example tests (R9.6, R9.7)
+    //
+    // The pure decision parts of the negotiation are unit-testable
+    // without a live `wasapi::AudioClient`:
+    //   * stereo-only / surround-only layout choice via the pure
+    //     `select_format` (R9.4/R9.5),
+    //   * the total-failure → `ExclusiveFallback` event mapping via
+    //     `exclusive_load_failure_events` (R9.6),
+    //   * the single aggregated negotiation log line via
+    //     `log_negotiation_summary` (R9.7).
+    //
+    // The full `negotiate_with_fallback` / `start_playback` paths need
+    // a real WASAPI render endpoint (COM, `IAudioClient`) that a unit
+    // test cannot construct, so the probing/`initialize` round-trip
+    // itself stays covered by manual/integration testing on hardware.
+    // -----------------------------------------------------------------
+    use tracing_test::traced_test;
+
+    /// Feature: qobee-beta-feedback-improvements, task 13.3 —
+    /// stereo-only device → no upmix (R9.4/R9.5).
+    ///
+    /// A device that only offers a native stereo layout, fed a stereo
+    /// source, must be selected at 2 channels with no upmix flag.
+    #[test]
+    fn stereo_only_device_selects_native_no_upmix() {
+        let candidates = [CandidateFormat::new(48_000, 2)];
+        let sel = select_format(&candidates, 2).expect("a stereo candidate must be selectable");
+        assert_eq!(sel.chosen.channels, 2, "stereo-only device must stay 2ch");
+        assert!(
+            sel.upmix.is_none(),
+            "a native stereo layout must not flag an upmix (R9.5)"
+        );
+    }
+
+    /// Feature: qobee-beta-feedback-improvements, task 13.3 —
+    /// surround-only device → upmix 2→8 with flag (R9.5).
+    ///
+    /// A device that only exposes a 7.1 (8ch) layout, fed a stereo
+    /// source, must be selected at 8 channels and carry an explicit
+    /// `UpmixInfo { src: 2, dst: 8 }`.
+    #[test]
+    fn surround_only_device_flags_upmix_2_to_8() {
+        let candidates = [CandidateFormat::new(48_000, 8)];
+        let sel = select_format(&candidates, 2).expect("an 8ch candidate must be selectable");
+        assert_eq!(sel.chosen.channels, 8, "surround-only device stays 8ch");
+        assert_eq!(
+            sel.upmix,
+            Some(UpmixInfo {
+                src_channels: 2,
+                dst_channels: 8,
+            }),
+            "upmixing a stereo source onto a surround-only layout must flag 2→8 (R9.5)"
+        );
+    }
+
+    /// Feature: qobee-beta-feedback-improvements, task 13.3 — total
+    /// negotiation failure → `ExclusiveFallback` emitted (R9.6).
+    ///
+    /// The `Load` worker arm maps a negotiation failure to exactly two
+    /// events, in order: `ExclusiveFallback { reason }` (so the UI can
+    /// explain the switch to Shared) then `Error { message }` (which
+    /// drives the backend swap + track restart in `qobee-core`). Both
+    /// carry the same failure reason.
+    #[test]
+    fn total_failure_emits_exclusive_fallback_then_error() {
+        let reason = "no compatible WASAPI Exclusive format found for this device".to_string();
+        let events = exclusive_load_failure_events(reason.clone());
+
+        assert_eq!(events.len(), 2, "exactly two events on total failure");
+        match &events[0] {
+            EngineEvent::ExclusiveFallback { reason: r } => {
+                assert_eq!(r, &reason, "fallback must carry the failure reason (R9.6)");
+            }
+            other => panic!("expected ExclusiveFallback first, got {other:?}"),
+        }
+        match &events[1] {
+            EngineEvent::Error { message } => {
+                assert_eq!(message, &reason, "Error must carry the same reason");
+            }
+            other => panic!("expected Error second, got {other:?}"),
+        }
+    }
+
+    /// Feature: qobee-beta-feedback-improvements, task 13.3 — multiple
+    /// probes → exactly one aggregated log line (R9.7).
+    ///
+    /// `log_negotiation_summary` emits a *single* `warn!` summary that
+    /// carries the whole `tried` list, replacing the old
+    /// one-line-per-probed-frequency noise. Even when six
+    /// `(sample_rate, channels)` pairs were attempted, exactly one
+    /// "format negotiation summary" line is produced.
+    #[traced_test]
+    #[test]
+    fn many_probes_produce_a_single_aggregated_log_line() {
+        // Simulate the full fallback ladder having probed six rates
+        // before settling (or failing).
+        let tried: Vec<(u32, u16)> = vec![
+            (44_100, 2),
+            (48_000, 2),
+            (88_200, 2),
+            (96_000, 2),
+            (176_400, 2),
+            (192_000, 2),
+        ];
+
+        log_negotiation_summary(
+            "Test Device (Render Endpoint)",
+            &tried,
+            "no compatible format found; reverting to Shared",
+        );
+
+        logs_assert(|lines: &[&str]| {
+            let summaries = lines
+                .iter()
+                .filter(|l| l.contains("format negotiation summary"))
+                .count();
+            if summaries == 1 {
+                Ok(())
+            } else {
+                Err(format!(
+                    "expected exactly one aggregated negotiation summary line, got {summaries} (R9.7)"
+                ))
+            }
+        });
     }
 }

@@ -110,6 +110,7 @@
             class="album-card lift marquee-host"
             role="button"
             tabindex="0"
+            aria-label={`Ouvrir l'album « ${alb.title} » — ${alb.artist}`}
             onclick={() => app.selectAlbum(alb.id)}
             onkeydown={(e) => {
               if (e.key === "Enter" || e.key === " ") {

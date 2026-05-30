@@ -125,44 +125,6 @@ impl StagesBypass {
 }
 
 // -----------------------------------------------------------------------------
-// Phase B placeholder stages (replaced incrementally by tasks 8-17 + 32)
-// -----------------------------------------------------------------------------
-
-/// Marker generator for the no-op placeholder stages. Each `Noop*`
-/// type implements `DspStage` with `is_bypass() == true`, an empty
-/// `process_inplace`, and empty `reconfigure` / `reset`.
-macro_rules! noop_stage {
-    ($name:ident) => {
-        pub(crate) struct $name;
-
-        impl DspStage for $name {
-            fn reconfigure(
-                &mut self,
-                _settings: &AudioSettings,
-                _sample_rate: u32,
-                _channels: u16,
-            ) {
-            }
-
-            fn is_bypass(&self) -> bool {
-                true
-            }
-
-            fn process_inplace(&mut self, _samples: &mut [f32]) {
-                // Bypass path: must not touch the buffer.
-            }
-
-            fn reset(&mut self) {}
-        }
-    };
-}
-
-noop_stage!(NoopEq);
-// `NoopConvolver` lived here in the placeholder phase. Task 32 swaps
-// it out for the real `ConvolverStage` (R9), so the macro is no longer
-// needed for the convolver slot.
-
-// -----------------------------------------------------------------------------
 // PcmChain
 // -----------------------------------------------------------------------------
 
@@ -175,7 +137,7 @@ pub(crate) struct PcmChain {
     pre_gain: PreGainStage,
     balance: ChannelBalanceStage,
     crossfeed: CrossfeedStage,
-    eq: Box<dyn DspStage>,
+    eq: crate::eq::Equalizer,
     convolver: ConvolverStage,
     limiter: PeakLimiter,
     dither: DitherStage,
@@ -188,15 +150,15 @@ impl PcmChain {
     /// Build a new chain. `Pre_Gain_Stage` (task 8),
     /// `Channel_Balance_Stage` (task 10), `Crossfeed_Stage`
     /// (task 12), `Peak_Limiter` (task 14), `Dither_Stage`
-    /// (task 16) and `Convolver_Stage` (task 32) are now real
-    /// implementations; the EQ slot remains a no-op placeholder
-    /// that a subsequent task will replace.
+    /// (task 16), `Convolver_Stage` (task 32) and the 10-band
+    /// `Equalizer` are now real implementations occupying their
+    /// canonical chain slots.
     pub fn new(settings: &AudioSettings, sample_rate: u32, channels: u16) -> Self {
         let mut chain = Self {
             pre_gain: PreGainStage::new(settings, sample_rate, channels),
             balance: ChannelBalanceStage::new(settings, sample_rate, channels),
             crossfeed: CrossfeedStage::new(settings, sample_rate, channels),
-            eq: Box::new(NoopEq),
+            eq: crate::eq::Equalizer::new(sample_rate, channels),
             convolver: ConvolverStage::new(settings, sample_rate, channels),
             limiter: PeakLimiter::new(settings, sample_rate, channels),
             dither: DitherStage::new(settings, sample_rate, channels),
@@ -247,6 +209,17 @@ impl PcmChain {
     /// concern, not a user-configurable [`AudioSettings`] field.
     pub fn set_dither_output_bits(&mut self, bits: Option<u8>) {
         self.dither.set_output_bits(bits);
+    }
+
+    /// Replace the 10-band EQ gains (dB). Forwarded from the decoder
+    /// thread when `Shared::eq_version` changes. Like the dither
+    /// output-bits setter this lives on the chain rather than the
+    /// [`DspStage`] trait because EQ gains are *not* an
+    /// [`AudioSettings`] field — they have their own versioned slot on
+    /// `Shared`. Missing entries default to 0 dB; values are clamped to
+    /// `[-12, +12]` dB by [`crate::eq::Equalizer::set_gains_db`].
+    pub fn set_eq_gains_db(&mut self, gains_db: &[f32]) {
+        self.eq.set_gains_db(gains_db);
     }
 
     /// Replace the convolver stage's active IR with a fresh
@@ -438,6 +411,83 @@ mod tests {
         chain.reset();
         // Calling reset twice in a row must remain safe.
         chain.reset();
+    }
+
+    #[test]
+    fn pcm_chain_eq_slot_processes_when_gains_non_flat() {
+        // The 10-band EQ now lives in the chain's EQ slot. With a
+        // non-flat gain set the slot must (a) stop reporting bypass
+        // and (b) actually alter the signal, proving the equaliser is
+        // wired in rather than a no-op placeholder. Limiter is forced
+        // Off so the only non-identity stage is the EQ.
+        let settings = AudioSettings {
+            peak_limiter_mode: crate::audio_settings::PeakLimiterMode::Off,
+            ..AudioSettings::default()
+        };
+        let mut chain = PcmChain::new(&settings, 48_000, 2);
+
+        // Flat by default ⇒ EQ bypassed ⇒ whole chain is identity.
+        assert!(chain.bypass_snapshot().eq_bypass);
+
+        // Push a +6 dB boost on the 1 kHz band (index 5).
+        let mut gains = [0.0_f32; crate::eq::NUM_BANDS];
+        gains[5] = 6.0;
+        chain.set_eq_gains_db(&gains);
+
+        assert!(
+            !chain.bypass_snapshot().eq_bypass,
+            "non-flat EQ must report the slot as active"
+        );
+
+        // A 1 kHz tone should be measurably amplified by the boosted
+        // band. Feed a short stereo sine and confirm the chain output
+        // differs from the input (the EQ is live).
+        let sr = 48_000.0_f32;
+        let f = 1_000.0_f32;
+        let frames = 4_096;
+        let mut buf = Vec::with_capacity(frames * 2);
+        for n in 0..frames {
+            let s = 0.2 * (2.0 * std::f32::consts::PI * f * (n as f32) / sr).sin();
+            buf.push(s);
+            buf.push(s);
+        }
+        let input = buf.clone();
+        chain.process(&mut buf);
+
+        let changed = buf
+            .iter()
+            .zip(input.iter())
+            .any(|(y, x)| (y - x).abs() > 1e-4);
+        assert!(
+            changed,
+            "EQ slot with a +6 dB band must alter the signal in the chain"
+        );
+        assert!(buf.iter().all(|y| y.is_finite()));
+    }
+
+    #[test]
+    fn pcm_chain_eq_preserves_gains_across_reconfigure() {
+        // EQ gains are not part of `AudioSettings`, so a chain
+        // reconfigure (e.g. a device sample-rate change) must keep the
+        // user's band gains. We set a boost, reconfigure to a new
+        // sample rate, and confirm the EQ slot is still active.
+        let settings = AudioSettings {
+            peak_limiter_mode: crate::audio_settings::PeakLimiterMode::Off,
+            ..AudioSettings::default()
+        };
+        let mut chain = PcmChain::new(&settings, 48_000, 2);
+
+        let mut gains = [0.0_f32; crate::eq::NUM_BANDS];
+        gains[0] = -9.0; // cut the 31 Hz band
+        chain.set_eq_gains_db(&gains);
+        assert!(!chain.bypass_snapshot().eq_bypass);
+
+        // Reconfigure to a different rate; gains must survive.
+        chain.reconfigure(&settings, 96_000, 2);
+        assert!(
+            !chain.bypass_snapshot().eq_bypass,
+            "EQ gains must be preserved across a chain reconfigure"
+        );
     }
 
     /// Canonical processing order of the PCM chain. Kept here as a

@@ -76,9 +76,9 @@
 {:else if !detail}
   <p class="state">Artist not found.</p>
 {:else}
-  <header class="head">
+  <header class="head detail-header">
     <div class="info">
-      <h1>{detail.name}</h1>
+      <h1 class="detail-title">{detail.name}</h1>
       <p class="sub">
         {detail.track_count} tracks · {detail.albums.length} releases
       </p>
@@ -110,6 +110,7 @@
               class:single={section.kind === "single"}
               role="button"
               tabindex="0"
+              aria-label={`Ouvrir « ${a.album.title} »`}
               onclick={() => app.selectAlbum(a.album.id)}
               onkeydown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {

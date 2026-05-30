@@ -231,7 +231,11 @@ impl Library {
         db.rename_playlist(playlist_id, new_name, now_secs())
     }
 
-    pub fn add_to_playlist(&self, playlist_id: i64, track_ids: &[i64]) -> LibraryResult<()> {
+    /// Adds the given tracks to a playlist and returns the number of
+    /// tracks actually inserted. The count is propagated up to the
+    /// command layer and the UI so the front-end can confirm
+    /// persistence (task 1.2, R3.2/R3.3).
+    pub fn add_to_playlist(&self, playlist_id: i64, track_ids: &[i64]) -> LibraryResult<usize> {
         let mut db = self.inner.db.lock();
         db.add_to_playlist(playlist_id, track_ids, now_secs())
     }
@@ -286,6 +290,14 @@ impl Library {
     pub fn clear_settings(&self) -> LibraryResult<()> {
         let mut db = self.inner.db.lock();
         db.clear_settings()
+    }
+
+    /// Supprime tous les réglages dont la clé commence par `prefix` et
+    /// retourne le nombre de lignes supprimées. Utilisé par la purge des
+    /// liens de covers Discord (`discord.cover_url::*`).
+    pub fn clear_settings_by_prefix(&self, prefix: &str) -> LibraryResult<usize> {
+        let mut db = self.inner.db.lock();
+        db.clear_settings_by_prefix(prefix)
     }
 
     // ---- Library roots ----

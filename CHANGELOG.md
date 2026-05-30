@@ -6,6 +6,171 @@ follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-05-31
+
+### Added
+
+- **ASIO output backend (Windows).** Adds an `Asio` output mode
+  alongside Shared and WASAPI Exclusive. ASIO bypasses the OS mixer
+  and talks to the device driver directly — the low-latency,
+  bit-perfect path pro-audio interfaces and many high-end USB DACs
+  expose as their preferred output. The bit-perfect health badge
+  treats ASIO like Exclusive (it can reach Green at unity gain and the
+  native rate). The backend reuses the existing decode → DSP → render
+  engine bound to cpal's ASIO host, so resampling, the DSP chain,
+  dither, gapless and crossfade behave identically to the other
+  backends.
+
+  ASIO requires the proprietary Steinberg ASIO SDK at build time and a
+  driver at runtime, so it is gated behind the `engine-asio` Cargo
+  feature. On a build without the feature (or with no driver
+  installed), selecting ASIO surfaces a clear message and the
+  orchestrator falls back to Shared automatically — the same
+  auto-fallback that already protects Exclusive. A new
+  `asio_available` command lets the UI offer ASIO only when the build
+  actually supports it, and the persisted output-mode setting now
+  round-trips `"asio"`.
+
+- **Dedicated queue panel.** The "up next" list is now a full-page
+  view (`QueuePanel`) reachable from the sidebar (*File d'attente*, `Q`)
+  and from the mini player, in addition to the existing quick-access
+  popover. It shows an explicit empty state, a *Vider la file* action,
+  and drag-to-reorder, with each row keyboard-activable and labelled for
+  screen readers. Clearing the queue purges the pending list and the
+  cursor without stopping the track currently playing — queue and
+  playback stay decoupled.
+
+- **Rescan progress feedback.** Triggering *Rescan all* now surfaces a
+  *Scan démarré…* toast, a *Scan terminé · N titres modifiés* toast on
+  completion, and a descriptive French error toast on failure. The
+  rescan button is disabled while a scan runs so a second concurrent
+  rescan can't be launched. Backed by normalized `library:scan-started`
+  / `library:scan-finished` / `library:scan-error` events.
+
+- **First-close tray notice.** The first time you close the window while
+  Qobee is configured to keep running in the notification area, a
+  one-shot banner explains it and offers a *Quitter complètement*
+  button. The "already shown" flag is persisted, so the notice never
+  reappears, and it never touches your `close_behavior` preference.
+
+- **Discord cover-upload privacy controls.** Cover upload to an external
+  host is now an explicit opt-in (off by default), with a clear Settings
+  toggle and a *Clear uploaded cover links* button that deletes every
+  uploaded link, resets the count and drops the in-memory cache —
+  confirming the number of links removed in a toast.
+
+- **Accessibility pass.** Interactive controls expose ARIA roles and
+  non-empty accessible names sourced from a single label table (so
+  screen-reader names and tooltips can't diverge), toggles carry
+  `aria-pressed`, non-native clickable rows activate on Enter/Space, a
+  visible `:focus-visible` ring is applied app-wide, and toasts are
+  announced through an ARIA live region. A *Raccourcis clavier* help
+  screen lists the shortcuts in Settings, an optional expanded sidebar
+  shows text labels next to the icons (persisted), and a manual NVDA /
+  Accessibility Insights validation procedure is documented in
+  `docs/accessibility-validation.md`.
+
+- **Underrun diagnostics counter.** The audio engine exposes a
+  cumulative underrun counter through a new `get_underrun_count` command
+  for a future diagnostics panel.
+
+### Changed
+
+- **New application icon.** The desktop icon was regenerated from a
+  refreshed source artwork across every platform target (Windows
+  `.ico`, macOS `.icns`, the Windows Store `Square*Logo` tiles, the
+  PNG set, and the iOS / Android launcher icons), normalised to fill
+  its tile edge-to-edge so it reads cleanly at taskbar sizes.
+
+- **The 10-band equaliser now runs in its canonical position in the
+  DSP chain.** Previously the EQ executed as a separate pass *before*
+  ReplayGain/volume pre-gain, while the chain's EQ slot was a no-op
+  placeholder — so the actual processing order did not match the
+  documented chain (`pre_gain → balance → crossfeed → eq → convolver
+  → limiter → dither`). The real `Equalizer` now occupies its slot in
+  `PcmChain`, so EQ boosts land *after* gain staging and *before* the
+  peak limiter, which means an EQ boost can no longer push the signal
+  past the limiter ceiling. As a side effect the bit-perfect health
+  panel now reports EQ activity accurately in Shared mode (the old
+  placeholder always reported the EQ slot as bypassed). EQ gains are
+  preserved across device-format changes, and a flat EQ remains an
+  exact passthrough.
+
+- **EQ and crossfeed filters now compute in 64-bit precision.** The
+  10-band equaliser and the BS2B crossfeed low-pass are IIR biquad
+  filters (Direct Form I). Their coefficients and recursive delay
+  state now run in `f64` instead of `f32` while the input/output
+  buffers stay `f32`. At high sample rates the low-frequency bands
+  (31/62 Hz) place the biquad poles very close to the unit circle,
+  where `f32` coefficient quantisation and recursive accumulation
+  raised the noise floor and bent the response away from its nominal
+  curve. Doing the recursion in double precision — standard audiophile
+  practice — removes that ceiling. Bypass (all bands flat / crossfeed
+  off) remains an exact `f32` passthrough, so the bit-perfect guarantee
+  is unchanged.
+
+- **WASAPI Exclusive: per-device format cache + native-stereo first.**
+  Format negotiation no longer re-probes every candidate sample rate on
+  each `Load`: a successful negotiation is cached per device (keyed by
+  friendly name + endpoint id, fingerprinted on the device mixformat),
+  reused while the config is unchanged, and invalidated when the device
+  config changes or a cached format fails to apply. When the source is
+  stereo and the device exposes a wider layout, a native stereo
+  configuration is now preferred over a surround upmix; if an upmix is
+  unavoidable, `PlayerState` carries an `upmix` indicator with the
+  source/target channel counts. Repeated negotiation failures are
+  logged once as an aggregate summary instead of one line per probed
+  frequency, and a total Exclusive failure now emits a messaged
+  fallback so the UI explains the switch to Shared (R9).
+
+- **Ring buffer pre-fill and adaptive sizing on format transitions.**
+  The decoder ring is now sized by a pure policy (`RingPlan`) that
+  scales capacity with the source/device sample-rate and channel-count
+  ratio (clamped ×1–×4), and is pre-filled to a threshold before the
+  callback is allowed to consume after a transition (device change,
+  upmix activation, resume from pause). While pre-filling, the callback
+  emits silence without counting underruns; once steady, a starved ring
+  still increments the cumulative underrun counter. This removes
+  size-induced micro-dropouts during format transitions (R10).
+
+- **Reduced MP3 `invalid main_data_begin` log noise.** Symphonia's
+  per-frame MP3 repair warnings are downgraded (the
+  `symphonia_bundle_mp3::layer3` log target no longer floods `warn`);
+  instead the decoder counts repaired frames per file and emits a
+  single aggregate `info` line at end-of-file (*N trames MP3 réparées
+  sur ce fichier*). Beyond a threshold the file is flagged
+  `degraded` in `PlayerState` so the UI can surface that the file is
+  possibly damaged (R11).
+
+### Fixed
+
+- **"Add to playlist" silently kept the playlist at 0 tracks.**
+  `Database::add_to_playlist` swallowed a failed `MAX(position)` read
+  with `unwrap_or(0)` and restarted at position `0`, re-inserting on an
+  already-occupied slot and violating the `(playlist_id, position)`
+  primary key — the insert failed with no feedback. The read now
+  propagates its error, positions increment per insertion inside a
+  single atomic transaction, and the command returns the number of rows
+  actually inserted. The picker shows a success toast (*Ajouté à «P»*)
+  only when at least one row was written, and a descriptive error toast
+  otherwise.
+
+- **Queue reorder moved the cursor to the wrong track.**
+  `Queue::move_item` recomputed the cursor's track id from the
+  already-reordered list, so reordering could leave the cursor pointing
+  at a different track. It now snapshots the cursor's track id before
+  mutating, so the cursor follows the same track across a move
+  (duplicate ids included). Caught by a new property test.
+
+- **Responsive / DPI robustness of headers and the player zone.** Long
+  album/artist titles now truncate with an ellipsis on one line (and
+  switch to multi-line below a 768 px breakpoint) with no overlap; the
+  player zone reserves a fixed 72 px height so the mini player stays
+  fully visible; a minimum content margin and a horizontal scrollbar
+  below 360 px prevent clipping; and the layout re-flows under 500 ms on
+  resize/restore. Covered by an automated layout matrix over the
+  reference resolutions × Windows scale factors.
+
 ## [0.5.1] - 2026-05-29
 
 A feature release focused on playback quality-of-life and
@@ -88,6 +253,7 @@ icon in the menu bar.
   exact position and restores the play/pause state — instead of dying
   with a hard error.
 
+[0.5.2]: https://github.com/qobee/qobee/releases/tag/v0.5.2
 [0.5.1]: https://github.com/qobee/qobee/releases/tag/v0.5.1
 
 ## [0.5.0] - 2026-05-28

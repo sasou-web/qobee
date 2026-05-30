@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import {
     addFavorite,
     albumIdForTrack,
@@ -21,6 +22,7 @@
   import { volumeSettings } from "../lib/audioSettings.svelte";
   import { stepDb } from "../lib/volumeFormat";
   import { formatDuration, formatOutputMode, formatQuality } from "../lib/format";
+  import { PLAYER_LABELS } from "../lib/labels";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import PlayButton from "./PlayButton.svelte";
@@ -221,9 +223,53 @@
       app.lastError = String(err);
     }
   }
+
+  // --- Relayout on resize / restore (R1.5) ----------------------------------
+  // When the window goes hidden/minimised → restored/maximised the
+  // WebView can lag a frame before it reflows. We schedule a single
+  // `requestAnimationFrame` that forces a synchronous reflow of the
+  // Player_Zone (this footer) and, via the document body, the album /
+  // artist headers — so everything re-flows well under 500 ms without
+  // leaving content overflowing or popping an unexpected scrollbar.
+  // Lightweight pattern, mirrored from `Sidebar.svelte`'s rAF guard.
+  let barEl = $state<HTMLElement | null>(null);
+  let relayoutScheduled = false;
+
+  function scheduleRelayout(): void {
+    if (relayoutScheduled) return;
+    relayoutScheduled = true;
+    requestAnimationFrame(() => {
+      relayoutScheduled = false;
+      // Reading layout properties forces the engine to recompute the
+      // box model now (a forced synchronous reflow) rather than on a
+      // later, possibly delayed, frame. We touch the footer and the
+      // document body so both the Player_Zone and the page headers
+      // re-measure against the new viewport size.
+      void barEl?.offsetHeight;
+      void document.body.offsetWidth;
+    });
+  }
+
+  onMount(() => {
+    // `resize` covers maximise / restore drags; `focus` catches the
+    // hidden→restored transition (minimise to tray then reopen) where
+    // a resize event may not fire.
+    window.addEventListener("resize", scheduleRelayout);
+    window.addEventListener("focus", scheduleRelayout);
+    // A ResizeObserver on the footer itself nudges a relayout when the
+    // bar's own box changes (e.g. sidebar width change reflows the
+    // grid column the bar lives in).
+    const ro = new ResizeObserver(scheduleRelayout);
+    if (barEl) ro.observe(barEl);
+    return () => {
+      window.removeEventListener("resize", scheduleRelayout);
+      window.removeEventListener("focus", scheduleRelayout);
+      ro.disconnect();
+    };
+  });
 </script>
 
-<footer class="bar">
+<footer class="bar player-zone" bind:this={barEl}>
   <!-- Top progress strip: a thin seek bar with the elapsed time on
        its left and the remaining time on its right. Styled to feel
        like a single horizontal unit (no full-width bleed). -->
@@ -252,6 +298,7 @@
         class="ctrl"
         class:active={shuffleOn}
         onclick={toggleShuffle}
+        aria-pressed={shuffleOn}
         aria-label={shuffleOn ? "Shuffle on" : "Shuffle off"}
         title={shuffleOn ? "Shuffle on" : "Shuffle off"}
       >
@@ -260,7 +307,8 @@
       <button
         class="ctrl"
         onclick={() => prevTrack()}
-        aria-label="Previous"
+        aria-label={PLAYER_LABELS.previous.label}
+        title={PLAYER_LABELS.previous.label}
       >
         <Icon name="prev" size={18} />
       </button>
@@ -283,7 +331,7 @@
           <Icon name="play" size={22} />
         </button>
       {/if}
-      <button class="ctrl" onclick={() => nextTrack()} aria-label="Next">
+      <button class="ctrl" onclick={() => nextTrack()} aria-label={PLAYER_LABELS.next.label} title={PLAYER_LABELS.next.label}>
         <Icon name="next" size={18} />
       </button>
       <button
@@ -311,8 +359,8 @@
       <button
         class="card-hit"
         onclick={() => nowPlayingFullscreen.toggle()}
-        title={nowTitle ? "Open Now Playing (F)" : "Now Playing"}
-        aria-label="Open Now Playing"
+        title={PLAYER_LABELS.immersive.label}
+        aria-label={PLAYER_LABELS.immersive.label}
         type="button"
       ></button>
       <div class="cover-wrap">
@@ -367,8 +415,9 @@
           void toggleFavorite();
         }}
         disabled={!nowTrack}
-        aria-label={nowFavorite ? "Remove from favorites" : "Add to favorites"}
-        title={nowFavorite ? "Remove from favorites" : "Add to favorites"}
+        aria-pressed={nowFavorite}
+        aria-label={nowFavorite ? PLAYER_LABELS.unfavorite.label : PLAYER_LABELS.favorite.label}
+        title={nowFavorite ? PLAYER_LABELS.unfavorite.label : PLAYER_LABELS.favorite.label}
       >
         <Icon name={nowFavorite ? "heart-filled" : "heart"} size={15} />
       </button>
@@ -385,8 +434,9 @@
         class:active={queuePopover.open}
         onmousedown={(e) => e.stopPropagation()}
         onclick={() => queuePopover.toggle()}
-        aria-label="Show queue"
-        title="Up next"
+        aria-pressed={queuePopover.open}
+        aria-label={PLAYER_LABELS.queue.label}
+        title={PLAYER_LABELS.queue.label}
       >
         <Icon name="queue" size={15} />
       </button>

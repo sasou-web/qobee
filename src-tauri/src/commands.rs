@@ -193,9 +193,19 @@ pub fn set_output_mode(mode: OutputMode, state: State<'_, AppState>) -> Result<(
         OutputMode::Auto => "auto",
         OutputMode::Shared => "shared",
         OutputMode::Exclusive => "exclusive",
+        OutputMode::Asio => "asio",
     };
     let _ = state.library().set_setting("audio.output_mode", value);
     Ok(())
+}
+
+/// Whether this build can actually open an ASIO stream (compiled with
+/// the `engine-asio` feature on Windows). The UI uses it to decide
+/// whether to offer ASIO as a selectable output mode; when `false`,
+/// selecting ASIO would immediately fall back to Shared.
+#[tauri::command]
+pub fn asio_available() -> Result<bool, String> {
+    Ok(qobee_engine::backend_asio::asio_available())
 }
 
 // ---------------------------------------------------------------------------
@@ -340,7 +350,7 @@ pub fn add_to_playlist(
     playlist_id: i64,
     track_ids: Vec<i64>,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     state
         .library()
         .add_to_playlist(playlist_id, &track_ids)
@@ -462,9 +472,34 @@ pub fn queue_move(from: usize, to: usize, state: State<'_, AppState>) -> Result<
     state.player().queue_move(from, to).map_err(map_err)
 }
 
+/// Empty the "up next" queue (R3.7). The track currently playing is
+/// not stopped — queue and playback stay decoupled.
+#[tauri::command]
+pub fn clear_queue(state: State<'_, AppState>) -> Result<(), String> {
+    state.player().clear_queue().map_err(map_err)
+}
+
 #[tauri::command]
 pub fn queue_jump_to(idx: usize, state: State<'_, AppState>) -> Result<(), String> {
     state.player().queue_jump_to(idx).map_err(map_err)
+}
+
+/// Current cumulative audio-callback underrun count (R10.3 / R10.4).
+/// Destined for a future diagnostics panel; returns `0` at rest and on
+/// backends without a ring buffer.
+#[tauri::command]
+pub fn get_underrun_count(state: State<'_, AppState>) -> Result<u64, String> {
+    Ok(state.player().underrun_count())
+}
+
+/// Quit the whole app, bypassing the `WindowEvent::CloseRequested`
+/// hook (R7.2). Latches the quit flag first so the close hook stops
+/// intercepting, then asks the runtime to exit. Invoked by the
+/// "Quitter complètement" button of the Tray_Notice.
+#[tauri::command]
+pub fn quit_app(app: tauri::AppHandle, state: State<'_, AppState>) {
+    state.request_quit();
+    app.exit(0);
 }
 
 /// Resolve a list of track ids to full Track records (so the UI can
@@ -1177,12 +1212,22 @@ pub async fn scan_all_roots(
 ) -> Result<ScanResult, String> {
     let roots = state.library().list_library_roots().map_err(map_err)?;
     if roots.is_empty() {
-        return Err("no library root configured".into());
+        // R6.3: report the global failure before returning so the UI can surface
+        // a descriptive error toast. No "started" event is emitted in this path.
+        let msg = "no library root configured";
+        let _ = app.emit("library:scan-error", &serde_json::json!({ "message": msg }));
+        return Err(msg.into());
     }
+    // R6.1: now that at least one root is resolved, signal that the scan started.
+    let _ = app.emit(
+        "library:scan-started",
+        &serde_json::json!({ "roots": roots.len() }),
+    );
+
     let library = state.library().clone();
     let app_for_progress = app.clone();
 
-    let aggregate = tauri::async_runtime::spawn_blocking(move || {
+    let aggregate = match tauri::async_runtime::spawn_blocking(move || {
         let mut visited: u64 = 0;
         let mut indexed: u64 = 0;
         let mut errors: Vec<String> = Vec::new();
@@ -1211,8 +1256,17 @@ pub async fn scan_all_roots(
         }
     })
     .await
-    .map_err(|e| format!("rescan task panicked: {e}"))?;
+    {
+        Ok(aggregate) => aggregate,
+        Err(e) => {
+            // R6.3: the blocking task panicked — surface a global error.
+            let msg = format!("rescan task panicked: {e}");
+            let _ = app.emit("library:scan-error", &serde_json::json!({ "message": msg }));
+            return Err(msg);
+        }
+    };
 
+    // R6.2: report completion with the aggregated ScanResult.
     let _ = app.emit("library:scan-finished", &aggregate);
     Ok(aggregate)
 }
@@ -1482,6 +1536,25 @@ pub fn discord_set_cover_upload_enabled(
 ) -> Result<(), String> {
     state.discord().set_cover_upload_enabled(enabled);
     Ok(())
+}
+
+/// Delete every uploaded cover link (`discord.cover_url::*` rows in
+/// the `settings` table), reset `discord.cover_url_count` to `0`, and
+/// drop the cover host's in-memory cache so a purged URL is not
+/// re-served this session. Returns the number of links removed so the
+/// UI can confirm it in a toast (R8.4, R8.5).
+#[tauri::command]
+pub fn clear_uploaded_cover_links(state: State<'_, AppState>) -> Result<usize, String> {
+    let removed = state
+        .library()
+        .clear_settings_by_prefix("discord.cover_url::")
+        .map_err(map_err)?;
+    state
+        .library()
+        .set_setting("discord.cover_url_count", "0")
+        .map_err(map_err)?;
+    state.discord().clear_uploaded_cover_links();
+    Ok(removed)
 }
 
 /// Push the currently playing track. Pass `null` to hide the activity

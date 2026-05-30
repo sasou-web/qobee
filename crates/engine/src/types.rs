@@ -20,6 +20,15 @@ pub enum OutputMode {
     /// Other applications cannot play to the same device while
     /// Qobee is active.
     Exclusive,
+    /// ASIO on Windows (low-latency, exclusive, bit-perfect path
+    /// favoured by audiophiles and pro-audio interfaces). Requires
+    /// an ASIO driver for the target device. The backend is only
+    /// compiled when the engine is built with the `engine-asio`
+    /// feature *and* the Steinberg ASIO SDK is available at build
+    /// time; otherwise selecting it surfaces a clean
+    /// `BackendUnavailable` and the orchestrator falls back to
+    /// Shared.
+    Asio,
 }
 
 /// Effective output mode reported back to the UI.
@@ -30,6 +39,8 @@ pub enum EffectiveOutputMode {
     Shared,
     /// Running in WASAPI Exclusive (the OS mixer is bypassed).
     Exclusive,
+    /// Running through an ASIO driver (the OS mixer is bypassed).
+    Asio,
 }
 
 /// Description of an output endpoint the user can pick.
@@ -105,6 +116,22 @@ impl PcmBuffer {
     }
 }
 
+/// Source → destination channel layout recorded when the engine had
+/// to upmix a stereo (or otherwise narrower) source onto a device
+/// configured for a wider channel layout (R9.5).
+///
+/// Only present on [`PlayerState::upmix`] when an upmix is actually
+/// active: a `None` upmix means the device played the source's own
+/// channel layout (or a native stereo configuration) with no upmix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpmixInfo {
+    /// Source channel count (e.g. `2` for a stereo file).
+    pub src_channels: u16,
+    /// Destination channel count the device was configured for
+    /// (e.g. `8` for a 7.1 surround layout).
+    pub dst_channels: u16,
+}
+
 /// Snapshot of player state, suitable for serialization to the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerState {
@@ -151,6 +178,21 @@ pub struct PlayerState {
     /// the track without polling a separate command.
     #[serde(default)]
     pub is_dsd: bool,
+    /// Active upmix layout (R9.5). `Some(UpmixInfo { src, dst })`
+    /// when no native stereo configuration was available and the
+    /// engine had to upmix the source onto a wider device layout;
+    /// `None` when the device played the source's channel layout
+    /// natively (no upmix). `#[serde(default)]` keeps older IPC
+    /// payloads that predate the field deserialising as `None`.
+    #[serde(default)]
+    pub upmix: Option<UpmixInfo>,
+    /// `true` when the current file has exceeded the MP3 frame-repair
+    /// threshold (R11.3), i.e. so many `invalid main_data_begin`
+    /// frames were repaired that the file is likely degraded. Reset
+    /// to `false` on the next `Load`. `#[serde(default)]` keeps older
+    /// IPC payloads that predate the field deserialising as `false`.
+    #[serde(default)]
+    pub degraded: bool,
     /// Last error message, when [`PlayerState::status`] is
     /// [`PlaybackStatus::Errored`].
     pub error: Option<String>,
@@ -173,6 +215,8 @@ impl Default for PlayerState {
             bit_perfect: None,
             dsd_rate_label: None,
             is_dsd: false,
+            upmix: None,
+            degraded: false,
             error: None,
         }
     }
@@ -320,7 +364,7 @@ impl BitPerfectHealth {
             && balance_off;
 
         let status = match state.output_mode {
-            EffectiveOutputMode::Exclusive
+            EffectiveOutputMode::Exclusive | EffectiveOutputMode::Asio
                 if all_stages_clean && is_native_rate && !upmix_active =>
             {
                 BitPerfectStatus::Green
@@ -440,6 +484,16 @@ pub enum EngineEvent {
     /// the DSD pipeline (which bypasses every PCM stage). The UI
     /// surfaces this as an informational toast.
     DsdReadOnlyDsp,
+    /// WASAPI Exclusive failed format negotiation for the current
+    /// device and the engine is falling back to the Shared backend
+    /// (R9.6). `reason` is a short message describing why Exclusive
+    /// was unavailable (e.g. no compatible format). `qobee-core`
+    /// republishes this as a [`crate::types::PlayerState`]-adjacent
+    /// `PlayerEvent::Error` carrying an FR-localised message so the
+    /// UI can surface the switch to Shared as a toast.
+    ExclusiveFallback {
+        reason: String,
+    },
     Error {
         message: String,
     },
@@ -473,6 +527,8 @@ mod bit_perfect_tests {
             bit_perfect: None,
             dsd_rate_label: None,
             is_dsd: false,
+            upmix: None,
+            degraded: false,
             error: None,
         }
     }

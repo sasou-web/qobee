@@ -23,6 +23,7 @@
   <input
     type="search"
     placeholder="Search tracks, albums, artists…"
+    aria-label="Rechercher des titres, albums et artistes"
     value={app.searchQuery}
     oninput={onInput}
     onfocus={onFocus}

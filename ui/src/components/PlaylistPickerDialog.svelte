@@ -3,6 +3,7 @@
   import { addToPlaylist, createPlaylist } from "../lib/api";
   import { playlistPicker } from "../lib/playlistPicker.svelte";
   import { app } from "../lib/stores.svelte";
+  import { toasts } from "../lib/toasts.svelte";
 
   // Local "create playlist" form state. Visible only when the user
   // clicks "+ New playlist" — keeping the picker compact by default.
@@ -20,15 +21,25 @@
     playlistPicker.close();
   }
 
-  async function pick(playlistId: number): Promise<void> {
+  async function pick(playlistId: number, playlistName: string): Promise<void> {
     if (busy) return;
     busy = true;
     try {
-      await addToPlaylist(playlistId, playlistPicker.state.trackIds);
+      // `addToPlaylist` resolves with the number of tracks actually
+      // persisted (R3.2). Only confirm success when at least one row
+      // was written; a zero count means nothing was persisted, so we
+      // surface an error instead of a misleading success (R3.3).
+      const n = await addToPlaylist(playlistId, playlistPicker.state.trackIds);
       await app.refreshPlaylists();
-      close();
+      if (n > 0) {
+        toasts.success(`Ajouté à «${playlistName}»`);
+        close();
+      } else {
+        toasts.error(`Impossible d'ajouter à «${playlistName}» : aucun titre n'a été enregistré.`);
+      }
     } catch (e) {
       app.lastError = String(e);
+      toasts.error(`Impossible d'ajouter à «${playlistName}» : ${String(e)}`);
     } finally {
       busy = false;
     }
@@ -40,11 +51,17 @@
     busy = true;
     try {
       const created = await createPlaylist(name);
-      await addToPlaylist(created.id, playlistPicker.state.trackIds);
+      const n = await addToPlaylist(created.id, playlistPicker.state.trackIds);
       await app.refreshPlaylists();
-      close();
+      if (n > 0) {
+        toasts.success(`Ajouté à «${name}»`);
+        close();
+      } else {
+        toasts.error(`Impossible d'ajouter à «${name}» : aucun titre n'a été enregistré.`);
+      }
     } catch (e) {
       app.lastError = String(e);
+      toasts.error(`Impossible d'ajouter à «${name}» : ${String(e)}`);
     } finally {
       busy = false;
     }
@@ -77,7 +94,7 @@
         <ul class="list">
           {#each app.playlists as pl (pl.id)}
             <li>
-              <button class="row" onclick={() => pick(pl.id)} disabled={busy}>
+              <button class="row" onclick={() => pick(pl.id, pl.name)} disabled={busy}>
                 <span class="name">{pl.name}</span>
                 <span class="count">{pl.track_count} tracks</span>
               </button>
@@ -107,7 +124,7 @@
         </div>
       {:else}
         <div class="actions">
-          <button onclick={() => (creating = true)} disabled={busy}>+ New playlist</button>
+          <button onclick={() => (creating = true)} disabled={busy}>+ Nouvelle playlist</button>
           <button onclick={close} disabled={busy}>Cancel</button>
         </div>
       {/if}

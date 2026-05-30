@@ -50,11 +50,11 @@
   <p class="state">Album not found.</p>
 {:else}
   {@const album = detail.album}
-  <header class="header">
+  <header class="header detail-header">
     <Cover coverKey={album.cover_key} size={220} title={album.title} />
     <div class="info">
       <div class="kind">Album</div>
-      <h1>{album.title}</h1>
+      <h1 class="detail-title">{album.title}</h1>
       <div class="sub">
         <button class="artist-link" onclick={() => app.selectArtist(album.artist)}>
           {album.artist}

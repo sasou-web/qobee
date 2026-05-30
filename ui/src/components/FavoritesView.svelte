@@ -115,6 +115,7 @@
           oncontextmenu={(e) => openTrackMenu(e, t)}
           role="button"
           tabindex="0"
+          aria-label={`Lire « ${t.title} » — ${t.artist}`}
           onkeydown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();

@@ -238,6 +238,16 @@ impl DiscordPresence {
         }
     }
 
+    /// Drop the cover host's in-memory URL cache so a purged link is
+    /// not re-served for the rest of the session (R8.4). No-op when
+    /// the host hasn't been attached yet. The persisted rows are
+    /// deleted separately by the command via the Library.
+    pub fn clear_uploaded_cover_links(&self) {
+        if let Some(host) = self.cover_host.lock().as_ref() {
+            host.clear_link_cache();
+        }
+    }
+
     /// Replace the whole rich-presence atomically. `track` of `None`
     /// hides the activity but keeps the connection.
     pub fn update_track(&self, track: Option<TrackPresence>, paused: bool) {

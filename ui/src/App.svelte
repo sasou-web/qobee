@@ -12,7 +12,6 @@
   import { nowPlayingFullscreen } from "./lib/nowPlayingFullscreen.svelte";
   import { installKeyboardShortcuts } from "./lib/keyboardShortcuts";
   import { installFolderDrop } from "./lib/dropToScan";
-  import { queuePopover } from "./lib/queuePopover.svelte";
   import { checkForUpdates } from "./lib/updater";
   import { restoreSession, saveSession } from "./lib/api";
   import {
@@ -42,7 +41,9 @@
   import PropertiesDialog from "./components/PropertiesDialog.svelte";
   import PlaylistPickerDialog from "./components/PlaylistPickerDialog.svelte";
   import QueuePopover from "./components/QueuePopover.svelte";
+  import QueuePanel from "./components/QueuePanel.svelte";
   import ToastsRoot from "./components/ToastsRoot.svelte";
+  import TrayNotice from "./components/TrayNotice.svelte";
   import Welcome from "./components/Welcome.svelte";
   import NowPlayingFullscreen from "./components/NowPlayingFullscreen.svelte";
   import { setEqGains, setOutputDevice, setVolume } from "./lib/api";
@@ -111,9 +112,10 @@
           app.setView("settings");
           break;
         case "queue":
-          // The queue lives in a popover, not a route, so we
-          // open it on demand.
-          queuePopover.toggle();
+          // The queue is now a dedicated route (QueuePanel). Navigate
+          // to it instead of the quick-access popover so a request
+          // coming from the tray / mini player lands on the full view.
+          app.setView("queue");
           break;
         default:
           break;
@@ -407,6 +409,8 @@
             <SearchView />
           {:else if app.selectedView === "favorites"}
             <FavoritesView />
+          {:else if app.selectedView === "queue"}
+            <QueuePanel />
           {:else if app.selectedView === "settings"}
             <Settings />
           {:else}
@@ -427,6 +431,7 @@
 <PlaylistPickerDialog />
 <QueuePopover />
 <ToastsRoot />
+<TrayNotice />
 
 {#if nowPlayingFullscreen.open}
   <NowPlayingFullscreen track={nowTrack} />

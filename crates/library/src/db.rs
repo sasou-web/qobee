@@ -954,26 +954,41 @@ impl Database {
         Ok(())
     }
 
+    /// Append `track_ids` to a playlist, in order, and return the number
+    /// of rows actually inserted.
+    ///
+    /// The starting position is read from `MAX(position)` and any error
+    /// reading it is propagated with `?` rather than swallowed: the old
+    /// `.unwrap_or(0)` would silently restart at position `0` on a read
+    /// failure, re-inserting on an already-occupied slot and violating
+    /// the `(playlist_id, position)` primary key — the root cause of the
+    /// "Add to playlist leaves the playlist at 0 track" bug (T17).
+    ///
+    /// `next_position` is incremented per insertion so a position is
+    /// never reused. The whole operation runs in a single transaction:
+    /// if any insertion fails, the transaction is dropped without a
+    /// commit and SQLite rolls back every prior insertion.
     pub fn add_to_playlist(
         &mut self,
         playlist_id: i64,
         track_ids: &[i64],
         now: i64,
-    ) -> LibraryResult<()> {
+    ) -> LibraryResult<usize> {
         let tx = self.conn.transaction()?;
-        let next_position: i64 = tx
-            .query_row(
-                "SELECT COALESCE(MAX(position), -1) + 1 FROM playlist_tracks WHERE playlist_id = ?1",
-                params![playlist_id],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
+        let mut next_position: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM playlist_tracks WHERE playlist_id = ?1",
+            params![playlist_id],
+            |row| row.get(0),
+        )?;
+        let mut inserted = 0usize;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
             )?;
-            for (i, track_id) in track_ids.iter().enumerate() {
-                stmt.execute(params![playlist_id, track_id, next_position + i as i64])?;
+            for &track_id in track_ids {
+                stmt.execute(params![playlist_id, track_id, next_position])?;
+                next_position += 1;
+                inserted += 1;
             }
         }
         tx.execute(
@@ -981,7 +996,7 @@ impl Database {
             params![now, playlist_id],
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(inserted)
     }
 
     pub fn remove_from_playlist(
@@ -1430,6 +1445,19 @@ impl Database {
         Ok(())
     }
 
+    /// Supprime toutes les lignes `settings` dont la clé commence par
+    /// `prefix`. Retourne le nombre de lignes supprimées. Utilise un
+    /// `LIKE` avec échappement des `%`/`_` pour éviter tout glob
+    /// accidentel sur des préfixes contenant ces caractères.
+    pub fn clear_settings_by_prefix(&mut self, prefix: &str) -> LibraryResult<usize> {
+        let pattern = format!("{}%", prefix.replace('%', "\\%").replace('_', "\\_"));
+        let n = self.conn.execute(
+            "DELETE FROM settings WHERE key LIKE ?1 ESCAPE '\\'",
+            params![pattern],
+        )?;
+        Ok(n)
+    }
+
     // ------------------------------------------------------------------
     // Artist detail
     // ------------------------------------------------------------------
@@ -1675,5 +1703,148 @@ mod tests {
             "expected None, got {:?}",
             got.replaygain_album_peak
         );
+    }
+
+    // ------------------------------------------------------------------
+    // `add_to_playlist` regression tests (T17)
+    //
+    // Targeted example tests for the "Add to playlist leaves the
+    // playlist at 0 track" bug. They guard two things:
+    //   * duplicates (same track id added twice) get distinct,
+    //     contiguous positions and never trip the
+    //     `(playlist_id, position)` primary key;
+    //   * appends to a non-empty playlist continue at
+    //     `MAX(position) + 1` rather than restarting at 0 — the direct
+    //     regression of the old `.unwrap_or(0)`.
+    // ------------------------------------------------------------------
+
+    /// Insert a minimal track row and return its id. The FK to
+    /// `tracks` is satisfied so the playlist inserts are realistic.
+    fn insert_track(db: &mut Database, path: &str) -> i64 {
+        db.upsert_track(&make_track(path, None, None), None)
+            .expect("upsert track")
+    }
+
+    /// Read `(track_id, position)` rows of a playlist ordered by
+    /// position, so the assertions can check exact slot assignment
+    /// (not just track order).
+    fn playlist_positions(db: &Database, playlist_id: i64) -> Vec<(i64, i64)> {
+        let mut stmt = db
+            .conn
+            .prepare(
+                "SELECT track_id, position FROM playlist_tracks \
+                 WHERE playlist_id = ?1 ORDER BY position",
+            )
+            .expect("prepare positions query");
+        stmt.query_map(params![playlist_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })
+        .expect("query positions")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect positions")
+    }
+
+    /// Regression (T17): adding the *same* track id twice in a single
+    /// call must occupy two distinct, contiguous positions — never
+    /// reuse a slot and violate the `(playlist_id, position)` PK.
+    #[test]
+    fn add_to_playlist_duplicate_in_single_call_keeps_unique_positions() {
+        let mut db = Database::open(Path::new(":memory:")).expect("open in-memory db");
+        let pl = db.create_playlist("Dupes", 1_000).expect("create playlist");
+        let t1 = insert_track(&mut db, "/synthetic/dupe.flac");
+
+        let inserted = db
+            .add_to_playlist(pl.id, &[t1, t1], 1_001)
+            .expect("adding a duplicate track twice in one call must not violate the PK");
+
+        assert_eq!(inserted, 2, "both insertions should be counted");
+
+        let rows = playlist_positions(&db, pl.id);
+        assert_eq!(
+            rows,
+            vec![(t1, 0), (t1, 1)],
+            "same track appears twice at contiguous, unique positions"
+        );
+
+        let detail = db
+            .get_playlist(pl.id)
+            .expect("get_playlist")
+            .expect("exists");
+        assert_eq!(detail.playlist.track_count, 2);
+        assert_eq!(detail.tracks.len(), 2);
+        assert!(
+            detail.tracks.iter().all(|t| t.id == t1),
+            "both rows reference the duplicated track"
+        );
+    }
+
+    /// Regression (T17): adding the same track across two separate
+    /// calls must continue at `MAX(position) + 1`, not restart at 0
+    /// and collide on the already-occupied slot.
+    #[test]
+    fn add_to_playlist_duplicate_across_calls_continues_positions() {
+        let mut db = Database::open(Path::new(":memory:")).expect("open in-memory db");
+        let pl = db.create_playlist("Dupes", 1_000).expect("create playlist");
+        let t1 = insert_track(&mut db, "/synthetic/dupe.flac");
+
+        let first = db.add_to_playlist(pl.id, &[t1], 1_001).expect("first add");
+        assert_eq!(first, 1);
+
+        let second = db
+            .add_to_playlist(pl.id, &[t1], 1_002)
+            .expect("second add of the same track must not collide on position 0");
+        assert_eq!(second, 1);
+
+        let rows = playlist_positions(&db, pl.id);
+        assert_eq!(
+            rows,
+            vec![(t1, 0), (t1, 1)],
+            "second call lands at position 1, not back at 0"
+        );
+    }
+
+    /// Direct regression of the old `.unwrap_or(0)`: appending to a
+    /// playlist that already holds tracks must continue at
+    /// `MAX(position) + 1`. Restarting at 0 would re-insert on
+    /// occupied slots and violate the `(playlist_id, position)` PK.
+    #[test]
+    fn add_to_playlist_continues_at_max_position_plus_one() {
+        let mut db = Database::open(Path::new(":memory:")).expect("open in-memory db");
+        let pl = db.create_playlist("Mix", 1_000).expect("create playlist");
+        let t1 = insert_track(&mut db, "/synthetic/a.flac");
+        let t2 = insert_track(&mut db, "/synthetic/b.flac");
+        let t3 = insert_track(&mut db, "/synthetic/c.flac");
+        let t4 = insert_track(&mut db, "/synthetic/d.flac");
+
+        // Seed three tracks -> positions 0, 1, 2.
+        let seeded = db
+            .add_to_playlist(pl.id, &[t1, t2, t3], 1_001)
+            .expect("seed playlist");
+        assert_eq!(seeded, 3);
+
+        // Append two more -> must land at positions 3, 4 (MAX + 1),
+        // not 0, 1. `t1` is reused on purpose to prove the slot, not
+        // the track id, is what stays unique.
+        let appended = db
+            .add_to_playlist(pl.id, &[t4, t1], 1_002)
+            .expect("appending to a non-empty playlist must not violate the PK");
+        assert_eq!(appended, 2);
+
+        let rows = playlist_positions(&db, pl.id);
+        assert_eq!(
+            rows,
+            vec![(t1, 0), (t2, 1), (t3, 2), (t4, 3), (t1, 4)],
+            "second batch continues at MAX(position) + 1"
+        );
+
+        // Positions are unique and contiguous starting at 0.
+        let positions: Vec<i64> = rows.iter().map(|(_, p)| *p).collect();
+        assert_eq!(positions, vec![0, 1, 2, 3, 4]);
+
+        let detail = db
+            .get_playlist(pl.id)
+            .expect("get_playlist")
+            .expect("exists");
+        assert_eq!(detail.playlist.track_count, 5);
     }
 }

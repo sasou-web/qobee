@@ -35,6 +35,9 @@ mod properties_dsd;
 #[path = "properties/null_test.rs"]
 mod properties_null_test;
 
+#[path = "properties/ring_plan.rs"]
+mod properties_ring_plan;
+
 use proptest::prelude::*;
 use qobee_engine::AudioSettings;
 

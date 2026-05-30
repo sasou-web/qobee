@@ -38,6 +38,7 @@ use crate::backend_symphonia::SymphoniaDecoder;
 use crate::error::{EngineError, EngineResult};
 use crate::types::{
     BitPerfectHealth, EffectiveOutputMode, EngineEvent, OutputMode, PlaybackStatus, PlayerState,
+    UpmixInfo,
 };
 use crate::AudioEngine;
 use crate::PreGainContext;
@@ -254,6 +255,34 @@ pub(crate) struct Shared {
     /// built stream's `fade_gain` still starts at `0`, giving every
     /// new track a clean ~12 ms fade-in.
     pub(crate) fade_target_micro: AtomicU32,
+    /// Active upmix layout (R9.5) of the *currently open* stream, or
+    /// `None` when the source channel count is played natively (no
+    /// upmix). Set by the WASAPI Exclusive backend when negotiation
+    /// has to widen a stereo source onto a surround-only device
+    /// layout; read by `state()` / `snapshot_state` so the indicator
+    /// reaches `PlayerState::upmix`. The Shared backend never upmixes,
+    /// so it leaves this `None`. A `parking_lot::Mutex` is ample: it
+    /// is written once per stream open and read only at snapshot time.
+    pub(crate) upmix: Mutex<Option<UpmixInfo>>,
+    /// `true` when the current file exceeded the MP3 frame-repair
+    /// threshold (R11.3): so many `invalid main_data_begin` frames
+    /// were repaired that the file is likely degraded. Set by the
+    /// decoder thread at EOF (when `repaired_frames >
+    /// DEGRADED_FRAME_THRESHOLD`), read by `state()` / `snapshot_state`
+    /// so the indicator reaches `PlayerState::degraded`, and reset to
+    /// `false` on the next `Load`.
+    pub(crate) file_degraded: AtomicBool,
+    /// Gate that tells the audio callback whether the ring has been
+    /// prefilled enough to start consuming after a format transition
+    /// (R10.1). Set to `false` when a stream opens (in `start_playback`)
+    /// and flipped to `true` by the decoder thread once it has pushed at
+    /// least `prefill_threshold` interleaved samples into the ring (or
+    /// when the source reaches EOF before that threshold, so a short
+    /// track still plays out). While `false`, the callback emits silence
+    /// **without** incrementing `underruns`; once `true`, a starved ring
+    /// counts as a genuine underrun (R10.3). The Shared callback and the
+    /// WASAPI PCM render loop both honor this flag.
+    pub(crate) ring_ready: AtomicBool,
 }
 
 impl Shared {
@@ -292,6 +321,11 @@ impl Shared {
             recover_device: AtomicBool::new(false),
             crossfade_ms: AtomicU32::new(0),
             fade_target_micro: AtomicU32::new(1_000_000),
+            upmix: Mutex::new(None),
+            file_degraded: AtomicBool::new(false),
+            // The ring is empty at construction; the decoder thread
+            // flips this to `true` after the first prefill (R10.1).
+            ring_ready: AtomicBool::new(false),
         }
     }
 
@@ -473,6 +507,54 @@ impl Shared {
         self.device_channels.store(ch as u32, Ordering::Relaxed);
     }
 
+    /// Publish the active upmix layout for the open stream (R9.5).
+    /// Pass `None` when the source is played natively (no upmix) — e.g.
+    /// on `Stop` / on a failed open so the snapshot reverts to "no
+    /// upmix". Written by the WASAPI Exclusive backend at stream open.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub(crate) fn set_upmix(&self, upmix: Option<UpmixInfo>) {
+        *self.upmix.lock() = upmix;
+    }
+
+    /// Current active upmix layout (R9.5), or `None` when the source is
+    /// played natively. Read by `state()` / `snapshot_state` so the
+    /// indicator reaches `PlayerState::upmix`.
+    pub(crate) fn upmix(&self) -> Option<UpmixInfo> {
+        *self.upmix.lock()
+    }
+
+    /// Publish whether the current file is degraded (R11.3): set by the
+    /// decoder thread at EOF when the number of repaired MP3 frames
+    /// exceeds [`DEGRADED_FRAME_THRESHOLD`](crate::backend_symphonia::DEGRADED_FRAME_THRESHOLD).
+    /// Reset to `false` on the next `Load`.
+    pub(crate) fn set_file_degraded(&self, degraded: bool) {
+        self.file_degraded.store(degraded, Ordering::Relaxed);
+    }
+
+    /// Whether the current file is flagged as possibly degraded (R11.3).
+    /// Read by `state()` / `snapshot_state` so the indicator reaches
+    /// `PlayerState::degraded`.
+    pub(crate) fn file_degraded(&self) -> bool {
+        self.file_degraded.load(Ordering::Relaxed)
+    }
+
+    /// Arm or disarm the post-transition prefill gate (R10.1). Called
+    /// with `false` when a stream opens (or at the start of a format
+    /// transition) so the callback emits silence without counting
+    /// underruns, and with `true` by the decoder thread once the ring
+    /// has been prefilled to its `prefill_threshold`.
+    pub(crate) fn set_ring_ready(&self, ready: bool) {
+        self.ring_ready.store(ready, Ordering::Release);
+    }
+
+    /// Whether the ring has been prefilled enough for the callback to
+    /// consume after a transition (R10.1). While `false`, a starved
+    /// callback emits silence without counting an underrun; once
+    /// `true`, an empty ring is a genuine underrun (R10.3).
+    pub(crate) fn ring_ready(&self) -> bool {
+        self.ring_ready.load(Ordering::Acquire)
+    }
+
     /// Decide whether a new [`BitPerfectHealth`] snapshot should be
     /// published as [`EngineEvent::BitPerfectChanged`]: emit only when
     /// the snapshot meaningfully differs from the last one *and* at
@@ -603,13 +685,54 @@ pub struct CpalSharedEngine {
     last_error: Arc<Mutex<Option<String>>>,
     requested_mode: Arc<Mutex<OutputMode>>,
     selected_device: Arc<Mutex<Option<String>>>,
+    host_kind: HostKind,
     _worker: JoinHandle<()>,
 }
 
+/// Which cpal host the engine drives.
+///
+/// The decode → DSP → render machinery is identical for every host;
+/// only the device-enumeration host and the reported
+/// [`EffectiveOutputMode`] differ. Keeping this on the engine lets the
+/// ASIO backend reuse the entire `CpalSharedEngine` worker instead of
+/// duplicating it (see [`backend_asio`](crate::backend_asio)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostKind {
+    /// The platform default host (WASAPI Shared on Windows,
+    /// CoreAudio on macOS, ALSA/Pulse on Linux). Routes through the
+    /// OS mixer; reports [`EffectiveOutputMode::Shared`].
+    System,
+    /// The ASIO host (Windows, pro-audio). Bypasses the OS mixer and
+    /// reports [`EffectiveOutputMode::Asio`]. Only reachable when the
+    /// engine is compiled with the `engine-asio` feature *and* the
+    /// Steinberg ASIO SDK was present at build time; otherwise opening
+    /// a stream on this host returns [`EngineError::BackendUnavailable`].
+    Asio,
+}
+
+impl HostKind {
+    /// Effective mode this host reports to the UI.
+    pub(crate) fn effective_mode(self) -> EffectiveOutputMode {
+        match self {
+            HostKind::System => EffectiveOutputMode::Shared,
+            HostKind::Asio => EffectiveOutputMode::Asio,
+        }
+    }
+}
+
 impl CpalSharedEngine {
-    /// Create a new engine. A background worker thread is spawned
-    /// immediately and lives for the lifetime of the engine.
+    /// Create a new engine on the platform default host. A background
+    /// worker thread is spawned immediately and lives for the lifetime
+    /// of the engine.
     pub fn new() -> EngineResult<Self> {
+        Self::with_host(HostKind::System)
+    }
+
+    /// Create an engine bound to a specific cpal host. Used by the
+    /// ASIO backend to reuse the entire Shared worker on the ASIO
+    /// host. Public within the crate only; external callers use
+    /// [`CpalSharedEngine::new`] or the dedicated backend constructors.
+    pub(crate) fn with_host(host_kind: HostKind) -> EngineResult<Self> {
         let (cmd_tx, cmd_rx) = bounded::<Command>(16);
         let (event_tx, event_rx) = bounded::<EngineEvent>(256);
 
@@ -640,6 +763,7 @@ impl CpalSharedEngine {
                     last_error: worker_last_error,
                     requested_mode: worker_requested_mode,
                     selected_device: worker_selected_device,
+                    host_kind,
                 });
             })
             .map_err(|e| EngineError::Internal(format!("failed to spawn worker: {e}")))?;
@@ -654,6 +778,7 @@ impl CpalSharedEngine {
             last_error,
             requested_mode,
             selected_device,
+            host_kind,
             _worker: worker,
         })
     }
@@ -851,7 +976,7 @@ impl AudioEngine for CpalSharedEngine {
 
         let requested = *self.requested_mode.lock();
         let _ = requested; // OutputMode is currently informational only
-        let output_mode = EffectiveOutputMode::Shared;
+        let output_mode = self.host_kind.effective_mode();
 
         let mut state = PlayerState {
             status,
@@ -869,6 +994,12 @@ impl AudioEngine for CpalSharedEngine {
             bit_perfect: None,
             dsd_rate_label: self.shared.dsd_rate_label(),
             is_dsd: self.shared.is_dsd_active(),
+            // Shared mode plays the device's own layout; upmix flag
+            // (R9.5) is a WASAPI-Exclusive concern, always None here.
+            upmix: None,
+            // Degraded flag (R11.3) set by the decoder thread at EOF
+            // when the MP3 frame-repair threshold is exceeded.
+            degraded: self.shared.file_degraded(),
             error,
         };
         state.bit_perfect = build_bit_perfect_health(&self.shared, &state);
@@ -933,6 +1064,10 @@ impl AudioEngine for CpalSharedEngine {
     fn set_crossfade_ms(&self, ms: u32) {
         self.shared.set_crossfade_ms(ms);
     }
+
+    fn underrun_count(&self) -> u64 {
+        self.shared.underruns.load(Ordering::Relaxed) as u64
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -948,6 +1083,10 @@ struct WorkerCtx {
     last_error: Arc<Mutex<Option<String>>>,
     requested_mode: Arc<Mutex<OutputMode>>,
     selected_device: Arc<Mutex<Option<String>>>,
+    /// Which cpal host this worker drives. `System` (default host) or
+    /// `Asio`. Selected once at engine construction and constant for
+    /// the worker's lifetime.
+    host_kind: HostKind,
 }
 
 /// Active stream + decoder pair for one loaded track.
@@ -1001,6 +1140,9 @@ fn handle_command(ctx: &WorkerCtx, active: &mut Option<ActiveStream>, cmd: Comma
             ctx.shared.recover_device.store(false, Ordering::Release);
             // A fresh Load invalidates any prepared next track.
             *ctx.shared.pending_next.lock() = None;
+            // A fresh Load clears any degraded flag from the previous
+            // file (R11.3).
+            ctx.shared.set_file_degraded(false);
             set_status(ctx, PlaybackStatus::Loading);
 
             match start_playback(ctx, &path) {
@@ -1299,7 +1441,7 @@ fn snapshot_state(ctx: &WorkerCtx) -> PlayerState {
 
     let requested = *ctx.requested_mode.lock();
     let _ = requested;
-    let output_mode = EffectiveOutputMode::Shared;
+    let output_mode = ctx.host_kind.effective_mode();
 
     let mut state = PlayerState {
         status,
@@ -1316,6 +1458,10 @@ fn snapshot_state(ctx: &WorkerCtx) -> PlayerState {
         bit_perfect: None,
         dsd_rate_label: ctx.shared.dsd_rate_label(),
         is_dsd: ctx.shared.is_dsd_active(),
+        // Shared mode: no upmix flag (R9.5 is WASAPI-Exclusive only).
+        upmix: None,
+        // Degraded flag (R11.3) read from the shared atomic.
+        degraded: ctx.shared.file_degraded(),
         error,
     };
     state.bit_perfect = build_bit_perfect_health(&ctx.shared, &state);
@@ -1328,6 +1474,40 @@ fn stop_active(active: ActiveStream) {
     // Decoder thread will exit on its own once it sees the flag and the
     // ring buffer producer is gone; we don't block on it.
     let _ = active.decoder_handle;
+}
+
+/// Resolve the cpal host for a [`HostKind`].
+///
+/// `System` always succeeds (it is `cpal::default_host()`). `Asio`
+/// only resolves when the engine was compiled with the `engine-asio`
+/// feature, which in turn requires the Steinberg ASIO SDK to have been
+/// present at build time (cpal pulls it through its own `asio`
+/// feature). When the feature is off, the function returns
+/// [`EngineError::BackendUnavailable`] with a localised, actionable
+/// message so the orchestrator can fall back to Shared and the UI can
+/// explain why.
+fn resolve_host(kind: HostKind) -> EngineResult<cpal::Host> {
+    match kind {
+        HostKind::System => Ok(cpal::default_host()),
+        HostKind::Asio => {
+            #[cfg(all(target_os = "windows", feature = "engine-asio"))]
+            {
+                cpal::host_from_id(cpal::HostId::Asio).map_err(|e| {
+                    EngineError::BackendUnavailable(format!(
+                        "ASIO host indisponible : {e}. Vérifiez qu'un pilote ASIO est installé."
+                    ))
+                })
+            }
+            #[cfg(not(all(target_os = "windows", feature = "engine-asio")))]
+            {
+                Err(EngineError::BackendUnavailable(
+                    "Le mode ASIO n'est pas inclus dans cette build \
+                     (fonctionnalité « engine-asio » désactivée)."
+                        .to_string(),
+                ))
+            }
+        }
+    }
 }
 
 /// Set up a CPAL stream and a decoder thread to feed it.
@@ -1350,7 +1530,7 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
     ctx.shared.duration_ms.store(dur_ms, Ordering::Relaxed);
     ctx.shared.position_ms.store(0, Ordering::Relaxed);
 
-    let host = cpal::default_host();
+    let host = resolve_host(ctx.host_kind)?;
     let device = match ctx.selected_device.lock().clone() {
         Some(id) => match find_device_by_name(&host, &id) {
             Some(d) => d,
@@ -1438,7 +1618,41 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
         .set_device_format(device_sample_rate, device_channels);
     ctx.shared.reset_bit_perfect_debounce();
 
-    let (producer, consumer) = RingBuffer::<f32>::new(RING_CAPACITY_SAMPLES);
+    // R10.1/R10.2 — size the SPSC ring for this format transition. The
+    // pure `RingPlan` policy widens the capacity proportionally to the
+    // throughput ratio (`device_sr / src_sr * dst_ch / src_ch`, clamped
+    // to `[1, 4]`) so a higher device rate or an upmix gets enough slack
+    // to absorb renegotiation latency without underrunning on size.
+    //
+    // Design deviation (documented): the design text says to recreate
+    // the `rtrb` ring *inside* `run_decoder_thread` when the target
+    // capacity grows. The ring is created here, before the decoder
+    // thread is spawned and before the callback takes ownership of the
+    // `Consumer`. Re-creating the ring mid-thread would require tearing
+    // down the live stream to re-plumb the `Producer`/`Consumer` pair
+    // (the callback already holds the consumer), which is exactly the
+    // glitch R10 sets out to avoid. Because `start_playback` runs on
+    // every `Load` *and* on every device-recovery / format transition
+    // (the worker calls it again with the new device), computing the
+    // plan here sizes the ring for the upcoming transition — achieving
+    // R10.2 (capacity sized for the new format) without unsafe
+    // mid-thread re-plumbing. The `ring_ready` gate below re-prefills on
+    // every (re)open, which covers the "resume from Paused" / gapless
+    // transition cases too.
+    let ring_plan = crate::RingPlan::compute(
+        RING_CAPACITY_SAMPLES,
+        format.sample_rate,
+        device_sample_rate,
+        format.channels,
+        device_channels,
+    );
+
+    // Arm the prefill gate: the callback emits silence (without counting
+    // underruns) until the decoder thread has pushed `prefill_threshold`
+    // samples and flips `ring_ready` to `true` (R10.1).
+    ctx.shared.set_ring_ready(false);
+
+    let (producer, consumer) = RingBuffer::<f32>::new(ring_plan.capacity);
 
     let decoder_alive = Arc::new(AtomicBool::new(true));
     let decoder_alive_clone = Arc::clone(&decoder_alive);
@@ -1447,6 +1661,8 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
     let status_clone = Arc::clone(&ctx.status);
     let src_sample_rate = format.sample_rate;
     let src_channels = format.channels;
+    let effective_mode = ctx.host_kind.effective_mode();
+    let prefill_threshold = ring_plan.prefill_threshold;
 
     let decoder_handle = thread::Builder::new()
         .name("qobee-engine-decoder".into())
@@ -1461,7 +1677,8 @@ fn start_playback(ctx: &WorkerCtx, path: &Path) -> EngineResult<ActiveStream> {
                 src_channels,
                 src_sample_rate,
                 device_sample_rate,
-                EffectiveOutputMode::Shared,
+                effective_mode,
+                prefill_threshold,
             );
         })
         .map_err(|e| EngineError::Internal(format!("failed to spawn decoder: {e}")))?;
@@ -1573,6 +1790,7 @@ pub(crate) fn run_decoder_thread(
     src_sample_rate: u32,
     dst_sample_rate: u32,
     effective_mode: EffectiveOutputMode,
+    prefill_threshold: usize,
 ) {
     use rubato::{Resampler, SincFixedIn};
 
@@ -1640,31 +1858,28 @@ pub(crate) fn run_decoder_thread(
     // Pending planar samples per channel, fed from decoded packets.
     let mut pending_planar: Vec<Vec<f32>> = vec![Vec::with_capacity(chunk_size_in * 4); n_ch];
 
-    // Per-track EQ. Built at the *device* sample rate when we resample,
-    // since EQ runs on the post-resampler signal.
-    let eq_sample_rate = if need_resample {
-        dst_sample_rate
-    } else {
-        src_sample_rate
-    };
-    let mut eq = crate::eq::Equalizer::new(eq_sample_rate, channels);
-    let mut eq_seen_version: u32 = u32::MAX; // forces an initial sync below
+    // The 10-band EQ now lives inside `PcmChain` in its canonical
+    // slot (pre_gain → balance → crossfeed → **eq** → convolver →
+    // limiter → dither). EQ gains are not part of `AudioSettings`;
+    // they have their own versioned slot on `Shared`, so we forward
+    // them into the chain whenever `eq_version` moves. `u32::MAX`
+    // forces an initial sync on the first loop iteration below.
+    let mut eq_seen_version: u32 = u32::MAX;
 
-    let sync_eq = |eq: &mut crate::eq::Equalizer, seen: &mut u32, shared: &Shared| -> () {
+    let sync_eq = |chain: &mut crate::dsp::PcmChain, seen: &mut u32, shared: &Shared| {
         let cur = shared.eq_version.load(Ordering::Acquire);
         if cur != *seen {
             let gains = shared.eq_gains_db.lock().clone();
-            eq.set_gains_db(&gains);
+            chain.set_eq_gains_db(&gains);
             *seen = cur;
         }
     };
 
-    // Assemble the PCM DSP chain. The legacy `eq` above stays inline
-    // for now because the chain's EQ slot is a `NoopEq` placeholder
-    // (a future task will move the equaliser into `PcmChain`). Every
-    // other stage â€” pre-gain, balance, crossfeed, limiter, dither â€”
-    // lives in the chain, so `chain.process` replaces the inline
-    // `pre_gain *=` multiply that used to live in this thread.
+    // Assemble the PCM DSP chain. Every stage — pre-gain, balance,
+    // crossfeed, EQ, convolver, limiter, dither — now lives in the
+    // chain in its canonical order, so `chain.process` is the single
+    // DSP entry point. EQ gains are forwarded into the chain's EQ
+    // slot via `sync_eq` (see above) whenever the user moves a slider.
     let chain_sample_rate = if need_resample {
         dst_sample_rate
     } else {
@@ -1701,9 +1916,36 @@ pub(crate) fn run_decoder_thread(
     let mut last_underrun_count: u32 = 0;
     let mut last_underrun_check = std::time::Instant::now();
 
+    // R10.1 — post-transition prefill gate. `start_playback` armed
+    // `Shared::ring_ready` to `false`; while it stays `false` the audio
+    // callback emits silence *without* counting underruns. We flip it to
+    // `true` once the ring holds at least `prefill_threshold` interleaved
+    // samples (computed by `RingPlan` for this transition), or at EOF for
+    // a track shorter than the threshold so it still plays out. The ring
+    // is empty when the decoder thread starts, so `producer.slots()` here
+    // is the usable capacity.
+    let ring_capacity = producer.slots();
+    let mut ring_prefilled = prefill_threshold == 0;
+    if ring_prefilled {
+        // Degenerate threshold (tiny ring): nothing to wait for.
+        shared.set_ring_ready(true);
+    }
+
     loop {
         if !alive.load(Ordering::Acquire) {
             return;
+        }
+
+        // Flip the prefill gate once the ring has buffered enough to
+        // absorb renegotiation latency (R10.1). `filled = capacity -
+        // free slots`. Cheap: a single relaxed atomic read on the SPSC
+        // producer; checked once per chunk boundary.
+        if !ring_prefilled {
+            let filled = ring_capacity.saturating_sub(producer.slots());
+            if filled >= prefill_threshold {
+                shared.set_ring_ready(true);
+                ring_prefilled = true;
+            }
         }
 
         // Re-check the published `AudioSettings` snapshot at every
@@ -1757,6 +1999,8 @@ pub(crate) fn run_decoder_thread(
             bit_perfect: None,
             dsd_rate_label: None,
             is_dsd: shared.is_dsd_active(),
+            upmix: None,
+            degraded: false,
             error: None,
         };
         if let Some(health) = build_bit_perfect_health(&shared, &bp_state) {
@@ -1844,7 +2088,8 @@ pub(crate) fn run_decoder_thread(
             if let Some(ref mut r) = resampler {
                 r.reset();
             }
-            eq.reset_state();
+            // `pcm_chain.reset()` clears every stage's state including
+            // the EQ delay lines (the EQ is a chain stage now).
             pcm_chain.reset();
             shared.pending_seek_ms.store(-1, Ordering::Release);
             shared.drain_ring.store(false, Ordering::Release);
@@ -1974,8 +2219,7 @@ pub(crate) fn run_decoder_thread(
                                         mixed.push(out_buf[idx] * og + in_buf[idx] * ig);
                                     }
                                 }
-                                sync_eq(&mut eq, &mut eq_seen_version, &shared);
-                                eq.process_inplace(&mut mixed);
+                                sync_eq(&mut pcm_chain, &mut eq_seen_version, &shared);
                                 pcm_chain.process(&mut mixed);
                                 dispatch_post_dsp(&mixed, &mut producer, &alive, &shared);
                                 done += this;
@@ -2020,6 +2264,8 @@ pub(crate) fn run_decoder_thread(
                                 bit_perfect: None,
                                 dsd_rate_label: None,
                                 is_dsd: shared.is_dsd_active(),
+                                upmix: None,
+                                degraded: false,
                                 error: None,
                             };
                             new_state.bit_perfect = build_bit_perfect_health(&shared, &new_state);
@@ -2028,8 +2274,7 @@ pub(crate) fn run_decoder_thread(
 
                             if !leftover.is_empty() {
                                 let mut lo = leftover;
-                                sync_eq(&mut eq, &mut eq_seen_version, &shared);
-                                eq.process_inplace(&mut lo);
+                                sync_eq(&mut pcm_chain, &mut eq_seen_version, &shared);
                                 pcm_chain.process(&mut lo);
                                 dispatch_post_dsp(&lo, &mut producer, &alive, &shared);
                             }
@@ -2083,13 +2328,11 @@ pub(crate) fn run_decoder_thread(
                         match r.process_into_buffer(&input_slices, &mut output_buffer, None) {
                             Ok((_in_frames, out_frames)) => {
                                 // Interleave the resampled output and
-                                // run it through the legacy EQ + the
-                                // PcmChain (pre-gain â†’ balance â†’
-                                // crossfeed â†’ noop EQ â†’ noop convolver
-                                // â†’ limiter â†’ dither). The legacy EQ
-                                // call survives until a future task
-                                // moves the equaliser into the chain's
-                                // EQ slot.
+                                // run it through the PcmChain in its
+                                // canonical order (pre-gain → balance →
+                                // crossfeed → EQ → convolver → limiter
+                                // → dither). EQ gains are synced into
+                                // the chain's EQ slot just before.
                                 let mut interleaved: Vec<f32> =
                                     Vec::with_capacity(out_frames * n_ch);
                                 for f in 0..out_frames {
@@ -2097,8 +2340,7 @@ pub(crate) fn run_decoder_thread(
                                         interleaved.push(output_buffer[c][f]);
                                     }
                                 }
-                                sync_eq(&mut eq, &mut eq_seen_version, &shared);
-                                eq.process_inplace(&mut interleaved);
+                                sync_eq(&mut pcm_chain, &mut eq_seen_version, &shared);
                                 pcm_chain.process(&mut interleaved);
                                 dispatch_post_dsp(&interleaved, &mut producer, &alive, &shared);
                             }
@@ -2123,14 +2365,30 @@ pub(crate) fn run_decoder_thread(
                     // owns the ReplayGain multiply that used to live
                     // inline here.
                     let mut buf = samples;
-                    sync_eq(&mut eq, &mut eq_seen_version, &shared);
-                    eq.process_inplace(&mut buf);
+                    sync_eq(&mut pcm_chain, &mut eq_seen_version, &shared);
                     pcm_chain.process(&mut buf);
                     dispatch_post_dsp(&buf, &mut producer, &alive, &shared);
                 }
             }
             Ok(None) => {
-                // End of stream. If a compatible next track has been
+                // End of stream. If we never reached the prefill
+                // threshold (a track shorter than ~half the ring), make
+                // sure the callback is allowed to consume what we did
+                // buffer instead of emitting silence forever (R10.1).
+                if !ring_prefilled {
+                    shared.set_ring_ready(true);
+                    ring_prefilled = true;
+                }
+                // Determine whether the file that just
+                // finished exceeded the MP3 frame-repair threshold
+                // (R11.3) before we potentially swap in the next
+                // decoder.
+                let was_degraded =
+                    decoder.repaired_frames() > crate::backend_symphonia::DEGRADED_FRAME_THRESHOLD;
+                // Publish the degraded status of the file that just
+                // finished (R11.3); read by `state()` / `snapshot_state`.
+                shared.set_file_degraded(was_degraded);
+                // If a compatible next track has been
                 // prepared, swap the decoder in place: the resampler
                 // and EQ keep their internal state so the audio
                 // callback sees one continuous signal. We emit a
@@ -2151,6 +2409,11 @@ pub(crate) fn run_decoder_thread(
                     // time but defend against state drift.
                     if new_sr == src_sample_rate && new_ch == channels {
                         decoder = new_decoder;
+                        // The incoming track starts fresh: clear the
+                        // degraded flag from the file that just ended
+                        // (R11.3). The new decoder will set it again at
+                        // its own EOF if it exceeds the threshold.
+                        shared.set_file_degraded(false);
 
                         // Update the shared track metadata atomically.
                         shared
@@ -2182,6 +2445,8 @@ pub(crate) fn run_decoder_thread(
                             bit_perfect: None,
                             dsd_rate_label: None,
                             is_dsd: shared.is_dsd_active(),
+                            upmix: None,
+                            degraded: false,
                             error: None,
                         };
                         new_state.bit_perfect = build_bit_perfect_health(&shared, &new_state);
@@ -2226,8 +2491,7 @@ pub(crate) fn run_decoder_thread(
                                     interleaved.push(output_buffer[c][f]);
                                 }
                             }
-                            sync_eq(&mut eq, &mut eq_seen_version, &shared);
-                            eq.process_inplace(&mut interleaved);
+                            sync_eq(&mut pcm_chain, &mut eq_seen_version, &shared);
                             pcm_chain.process(&mut interleaved);
                             dispatch_post_dsp(&interleaved, &mut producer, &alive, &shared);
                         }
@@ -2243,8 +2507,7 @@ pub(crate) fn run_decoder_thread(
                                     );
                                 }
                             }
-                            sync_eq(&mut eq, &mut eq_seen_version, &shared);
-                            eq.process_inplace(&mut interleaved);
+                            sync_eq(&mut pcm_chain, &mut eq_seen_version, &shared);
                             pcm_chain.process(&mut interleaved);
                             dispatch_post_dsp(&interleaved, &mut producer, &alive, &shared);
                         }
@@ -2284,6 +2547,8 @@ pub(crate) fn run_decoder_thread(
                         bit_perfect: None,
                         dsd_rate_label: None,
                         is_dsd: false,
+                        upmix: None,
+                        degraded: false,
                         error: None,
                     },
                 });
@@ -2515,6 +2780,20 @@ where
                 }
 
                 if paused {
+                    for slot in output.iter_mut() {
+                        *slot = S::from_sample(0.0_f32);
+                    }
+                    return;
+                }
+
+                // R10.1 — post-transition prefill gate. Until the
+                // decoder thread has buffered `prefill_threshold`
+                // samples it leaves `ring_ready == false`; emit silence
+                // and, crucially, do *not* count this as an underrun
+                // (the ring is intentionally being filled, not starved).
+                // Once the gate opens, a starved ring is a genuine
+                // underrun and is counted below (R10.3).
+                if !shared.ring_ready() {
                     for slot in output.iter_mut() {
                         *slot = S::from_sample(0.0_f32);
                     }
@@ -2762,7 +3041,20 @@ fn device_label(d: &cpal::Device) -> Result<String, cpal::DeviceNameError> {
 /// from individual device queries are logged and the device is skipped
 /// rather than failing the whole listing.
 pub fn list_output_devices() -> EngineResult<Vec<crate::types::OutputDevice>> {
-    let host = cpal::default_host();
+    list_output_devices_on(HostKind::System)
+}
+
+/// Enumerate output devices on a specific cpal host. Used by the ASIO
+/// backend (`HostKind::Asio`) so the UI can offer the ASIO driver list
+/// alongside the system devices. Behaves exactly like
+/// [`list_output_devices`] for `HostKind::System`; for `HostKind::Asio`
+/// it returns [`EngineError::BackendUnavailable`] on builds without the
+/// `engine-asio` feature (callers that prefer an empty list should use
+/// [`crate::backend_asio::list_asio_devices`]).
+pub(crate) fn list_output_devices_on(
+    kind: HostKind,
+) -> EngineResult<Vec<crate::types::OutputDevice>> {
+    let host = resolve_host(kind)?;
     let default_name = host
         .default_output_device()
         .and_then(|d| device_label(&d).ok())
@@ -2828,6 +3120,205 @@ mod tests {
         // version 0 (the store layer bumps it on every mutation).
         assert_eq!(snap.version, 0);
         assert_eq!(*snap, AudioSettings::default());
+    }
+
+    // Feature: qobee-beta-feedback-improvements, task 11.2 — smoke test
+    // for the underrun counter getter (R10.4).
+    //
+    // `get_underrun_count` (Tauri) → `Player::underrun_count` →
+    // `AudioEngine::underrun_count`. The lowest, most robust place to
+    // assert the at-rest value is the engine trait method itself: a
+    // freshly-booted `CpalSharedEngine` (the default, cross-platform
+    // backend) has opened no stream, so its `Shared::underruns`
+    // (`AtomicU32`) is still 0 and the getter must report 0. Building
+    // the CPAL engine here also proves the override compiles and links
+    // on non-Windows targets (the WASAPI override is Windows-only; the
+    // trait still provides the `0` default everywhere).
+    #[test]
+    fn underrun_count_is_zero_at_rest() {
+        let engine = match CpalSharedEngine::new() {
+            Ok(e) => e,
+            Err(e) => {
+                // A CI runner without any usable audio host should not
+                // flake this smoke test. The trait default already
+                // guarantees `0`; skip loudly if the device-less boot
+                // is impossible on this image.
+                eprintln!("skipping: CPAL engine boot failed: {e}");
+                return;
+            }
+        };
+
+        // No stream has been started → the underrun counter is at its
+        // initial value. Read it through the trait method exactly as
+        // the Tauri command path does.
+        assert_eq!(
+            AudioEngine::underrun_count(&engine),
+            0,
+            "a freshly-booted engine with no stream must report 0 underruns"
+        );
+    }
+
+    // Feature: qobee-beta-feedback-improvements, task 15.3 — the
+    // degraded flag propagated to `PlayerState` mirrors the decoder
+    // thread's EOF decision (`repaired_frames > DEGRADED_FRAME_THRESHOLD`)
+    // and is cleared on the next Load (R11.3).
+    #[test]
+    fn file_degraded_flag_tracks_repair_threshold_and_resets_on_load() {
+        use crate::backend_symphonia::DEGRADED_FRAME_THRESHOLD;
+
+        let shared = Shared::new();
+        // A fresh `Shared` starts clean.
+        assert!(!shared.file_degraded(), "default must not be degraded");
+
+        // A clean / lightly-repaired file (<= threshold) stays clean,
+        // exactly as the decoder thread computes `was_degraded` at EOF.
+        let repaired_clean = DEGRADED_FRAME_THRESHOLD; // boundary: not degraded
+        shared.set_file_degraded(repaired_clean > DEGRADED_FRAME_THRESHOLD);
+        assert!(
+            !shared.file_degraded(),
+            "exactly threshold repairs must not flag degraded"
+        );
+
+        // A damaged file (> threshold) flips the flag, which `state()` /
+        // `snapshot_state` read into `PlayerState::degraded`.
+        let repaired_damaged = DEGRADED_FRAME_THRESHOLD + 1;
+        shared.set_file_degraded(repaired_damaged > DEGRADED_FRAME_THRESHOLD);
+        assert!(
+            shared.file_degraded(),
+            "over-threshold repairs must flag the file degraded"
+        );
+
+        // The next Load resets the flag (the decoder thread calls
+        // `set_file_degraded(false)` before decoding the new file).
+        shared.set_file_degraded(false);
+        assert!(!shared.file_degraded(), "a fresh Load must clear the flag");
+    }
+
+    // Feature: qobee-beta-feedback-improvements, task 14.2 — example
+    // test complementing Property 7 (task 4.2). Property 7 proves the
+    // *pure* `RingPlan` sizing invariants (`capacity >= base`,
+    // `0 < prefill_threshold <= capacity`). This example models the
+    // *runtime* consequence the design promises for R10.5: at a stable
+    // format (no transition: `src_sr == device_sr`, identical channel
+    // counts) a ring sized by `RingPlan` and prefilled to
+    // `prefill_threshold` before the consumer starts must never produce
+    // an underrun attributable to sizing, as long as the producer keeps
+    // pace on average.
+    //
+    // We exercise the *real* `RingPlan` to size a *real* `rtrb` ring and
+    // a *real* `Shared` underrun counter, then mirror the audio
+    // callback's actual consume + underrun-counting logic
+    // (`backend_cpal_shared.rs` callback): while `ring_ready == true`, a
+    // failed `consumer.pop()` bumps `Shared::underruns`. A single-
+    // threaded "produce a chunk, consume a callback" interleave models
+    // steady state deterministically (no thread-timing flakiness).
+
+    /// Mirror the audio callback's per-frame consume loop for one
+    /// callback block of `block` interleaved samples. Honors the
+    /// `ring_ready` prefill gate (silence, no underrun while `false`) and
+    /// counts a genuine underrun on a starved ring once the gate is open
+    /// — exactly as the real callback does (R10.1/R10.3).
+    fn drain_one_callback(consumer: &mut Consumer<f32>, shared: &Shared, block: usize) {
+        if !shared.ring_ready() {
+            // Prefill gate closed: callback emits silence and does *not*
+            // count an underrun (the ring is being filled, not starved).
+            return;
+        }
+        for _ in 0..block {
+            if consumer.pop().is_err() {
+                // Starved while consuming: count one underrun and emit
+                // silence for the rest of the block (callback returns).
+                shared.underruns.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+    }
+
+    /// Push up to `n` samples, stopping early if the ring is full.
+    /// Returns the number actually pushed.
+    fn produce(producer: &mut Producer<f32>, n: usize) -> usize {
+        let mut pushed = 0;
+        for _ in 0..n {
+            if producer.push(0.0_f32).is_err() {
+                break;
+            }
+            pushed += 1;
+        }
+        pushed
+    }
+
+    #[test]
+    fn steady_state_stable_format_never_underruns_due_to_sizing() {
+        // Stable format: source and device agree (no transition), so the
+        // `RingPlan` scale clamps to 1.0 and `capacity == base`.
+        const SR: u32 = 48_000;
+        const CH: u16 = 2;
+        let plan = crate::RingPlan::compute(RING_CAPACITY_SAMPLES, SR, SR, CH, CH);
+        assert_eq!(
+            plan.capacity, RING_CAPACITY_SAMPLES,
+            "stable format must keep the baseline capacity"
+        );
+        assert!(plan.prefill_threshold > 0 && plan.prefill_threshold <= plan.capacity);
+
+        // Real SPSC ring sized by the real `RingPlan`.
+        let (mut producer, mut consumer) = RingBuffer::<f32>::new(plan.capacity);
+        let shared = Shared::new();
+
+        // One audio callback pulls 480 frames (10 ms at 48 kHz) × 2 ch.
+        let callback_samples = 480 * CH as usize;
+
+        // --- Prefill phase (R10.1) ----------------------------------
+        // The callback starts gated (`ring_ready == false`) — draining
+        // now must emit silence without counting an underrun. Fill the
+        // ring up to `prefill_threshold`, then open the gate.
+        assert!(!shared.ring_ready(), "fresh Shared starts gated");
+        drain_one_callback(&mut consumer, &shared, callback_samples);
+        assert_eq!(
+            shared.underruns.load(Ordering::Relaxed),
+            0,
+            "draining while gated must not count an underrun (R10.1)"
+        );
+        let prefilled = produce(&mut producer, plan.prefill_threshold);
+        assert_eq!(
+            prefilled, plan.prefill_threshold,
+            "prefill must reach the threshold within capacity"
+        );
+        shared.set_ring_ready(true);
+
+        // --- Steady-state phase (R10.5) -----------------------------
+        // Producer keeps pace *on average* but in bursts: it produces a
+        // 4-callback burst every 4th round and nothing in between. The
+        // prefilled, `RingPlan`-sized ring must absorb that decode jitter
+        // without ever starving the consumer over a long run.
+        const ROUNDS: usize = 4_000; // ~40 s of audio at 10 ms/callback
+        const BURST_PERIOD: usize = 4;
+        let burst = callback_samples * BURST_PERIOD;
+
+        let mut min_fill = plan.prefill_threshold;
+        for round in 0..ROUNDS {
+            if round % BURST_PERIOD == 0 {
+                produce(&mut producer, burst);
+            }
+            drain_one_callback(&mut consumer, &shared, callback_samples);
+
+            let fill = plan.capacity.saturating_sub(producer.slots());
+            min_fill = min_fill.min(fill);
+        }
+
+        assert_eq!(
+            shared.underruns.load(Ordering::Relaxed),
+            0,
+            "a stable-format run over {ROUNDS} callbacks must not underrun \
+             due to ring sizing (R10.5)"
+        );
+        // The buffer kept genuine slack: it never drained to a single
+        // callback block, confirming the prefill + sizing absorbed the
+        // producer jitter rather than merely breaking even.
+        assert!(
+            min_fill >= callback_samples,
+            "ring should retain at least one callback block of slack \
+             (min_fill={min_fill}, block={callback_samples})"
+        );
     }
 
     #[test]
@@ -3021,6 +3512,8 @@ mod tests {
             bit_perfect: None,
             dsd_rate_label: None,
             is_dsd: false,
+            upmix: None,
+            degraded: false,
             error: None,
         }
     }

@@ -24,3 +24,6 @@ blake3 = { workspace = true }
 
 lofty = { workspace = true }
 rusqlite = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

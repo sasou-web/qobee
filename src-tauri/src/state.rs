@@ -72,12 +72,14 @@ impl AppState {
         if let Ok(Some(mode_str)) = library.get_setting("audio.output_mode") {
             let mode = match mode_str.as_str() {
                 "exclusive" => qobee_engine::OutputMode::Exclusive,
+                "asio" => qobee_engine::OutputMode::Asio,
                 "shared" => qobee_engine::OutputMode::Shared,
                 _ => qobee_engine::OutputMode::Auto,
             };
-            // Errors here are non-fatal: if Exclusive can't init
-            // (no device, etc.) we fall back to Shared and log the
-            // failure so the user can see it in Settings.
+            // Errors here are non-fatal: if Exclusive/ASIO can't init
+            // (no device, no ASIO driver, build without the feature,
+            // etc.) we fall back to Shared and log the failure so the
+            // user can see it in Settings.
             if let Err(e) = handle.set_output_mode(mode) {
                 tracing::warn!(
                     target: "qobee::app",

@@ -72,6 +72,7 @@
         oncontextmenu={(e) => onContext(e, track)}
         role="button"
         tabindex="0"
+        aria-label={`Lire « ${track.title} » — ${track.artist}`}
         onkeydown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
