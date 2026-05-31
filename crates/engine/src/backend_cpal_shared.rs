@@ -519,6 +519,7 @@ impl Shared {
     /// Current active upmix layout (R9.5), or `None` when the source is
     /// played natively. Read by `state()` / `snapshot_state` so the
     /// indicator reaches `PlayerState::upmix`.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) fn upmix(&self) -> Option<UpmixInfo> {
         *self.upmix.lock()
     }
