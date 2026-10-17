@@ -108,8 +108,6 @@ vi.mock("../../lib/api", async (importOriginal) => {
     removeFavorite: vi.fn(async () => undefined),
     seek: vi.fn(async () => undefined),
     setVolume: vi.fn(async () => undefined),
-    // --- audioSettings store (volume curve warm-up) ---
-    listAudioSettings: vi.fn(async () => ({})),
     // --- SleepTimer (polls on an interval) ---
     getSleepTimer: vi.fn(async () => ({
       remaining_secs: null,
@@ -134,6 +132,7 @@ import ShortcutsHelp from "../ShortcutsHelp.svelte";
 import QueuePanel from "../QueuePanel.svelte";
 import * as api from "../../lib/api";
 import { app } from "../../lib/stores.svelte";
+import { playerStore } from "../../lib/playerStore.svelte";
 import { settings } from "../../lib/settings.svelte";
 import { toasts } from "../../lib/toasts.svelte";
 import { queuePopover } from "../../lib/queuePopover.svelte";
@@ -177,7 +176,9 @@ function clearLiveRegion(): void {
 
 beforeEach(() => {
   // Reset singleton stores mutated by individual tests.
-  app.player = { ...app.player, current_track_id: null };
+  playerStore.currentTrack = null;
+  playerStore.currentTrackId = null;
+  playerStore.status = "idle";
   app.lastError = null;
   app.playlists = [];
   queuePopover.open = false;
@@ -306,7 +307,7 @@ describe("PlayerBar — aria-pressed des toggles (R2.5)", () => {
 
   it("le bouton favori expose aria-pressed + nom accessible dynamiques (R2.5/R5.5)", async () => {
     // A track is loaded and already favorited.
-    app.player = { ...app.player, current_track_id: "10" };
+    playerStore.currentTrackId = "10";
     vi.mocked(api.getTrack).mockResolvedValue(track(10, "Titre", "Artiste"));
     vi.mocked(api.isFavorite).mockResolvedValue(true);
 

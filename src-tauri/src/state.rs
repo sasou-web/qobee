@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use qobee_core::{AudioSettingsApply, AudioSettingsStore, Player, PlayerHandle};
+use qobee_core::{cleanup_obsolete_audio_settings, Player, PlayerHandle};
 use qobee_library::Library;
 
 use crate::discord::DiscordPresence;
@@ -28,10 +28,6 @@ pub struct AppState {
 struct Inner {
     library: Library,
     player: PlayerHandle,
-    /// Persistent store for the `audio.*` settings. Loaded from the
-    /// SQLite `settings` table at boot, mirrored to a lock-free
-    /// snapshot read by the engine on each chunk boundary.
-    audio_settings: AudioSettingsStore,
     /// Kept alive for the lifetime of the app so the engine pump thread
     /// does not exit prematurely. Wrapped in a `Mutex<Option<_>>` to
     /// allow tests / shutdown logic to drop it explicitly.
@@ -58,35 +54,17 @@ impl AppState {
         let player = Player::new(library.clone()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
         let handle = player.handle();
 
-        // Restore persisted audio settings.
-        if let Ok(Some(rg)) = library.get_setting("audio.replaygain_mode") {
-            handle.set_replaygain_mode(qobee_core::ReplayGainMode::from_setting(&rg));
-        }
-        // Restore the persisted crossfade window (ms). Missing or
-        // unparseable → off.
-        if let Ok(Some(xf)) = library.get_setting("playback.crossfade_ms") {
-            if let Ok(ms) = xf.parse::<u32>() {
-                handle.set_crossfade_ms(ms.min(12_000));
-            }
-        }
-        if let Ok(Some(mode_str)) = library.get_setting("audio.output_mode") {
-            let mode = match mode_str.as_str() {
-                "exclusive" => qobee_engine::OutputMode::Exclusive,
-                "asio" => qobee_engine::OutputMode::Asio,
-                "shared" => qobee_engine::OutputMode::Shared,
-                _ => qobee_engine::OutputMode::Auto,
-            };
-            // Errors here are non-fatal: if Exclusive/ASIO can't init
-            // (no device, no ASIO driver, build without the feature,
-            // etc.) we fall back to Shared and log the failure so the
-            // user can see it in Settings.
-            if let Err(e) = handle.set_output_mode(mode) {
-                tracing::warn!(
-                    target: "qobee::app",
-                    error = %e,
-                    "could not restore persisted output mode; falling back to Shared"
-                );
-            }
+        // Remove obsolete `audio.*` settings rows left over from the
+        // previous audiophile engine (EQ, ReplayGain, output modes,
+        // crossfeed, convolver, dither, limiter, balance/trim, volume
+        // curve, resampler quality). Idempotent and tolerant of absent
+        // keys; non-audio settings are preserved.
+        if let Err(e) = cleanup_obsolete_audio_settings(&library) {
+            tracing::warn!(
+                target: "qobee::app",
+                error = %e,
+                "obsolete audio-settings cleanup failed"
+            );
         }
 
         let discord = DiscordPresence::new();
@@ -95,20 +73,10 @@ impl AppState {
         // active activity once a URL is available.
         discord.attach_cover_host(library.clone());
 
-        // Build the audio-settings store and load (or initialise)
-        // the persisted `audio.*` keys. `load_or_init` writes any
-        // missing/invalid rows, clamps stale values, and pushes the
-        // resulting snapshot into the engine via the `apply` impl on
-        // `PlayerHandle`.
-        let engine_apply: Arc<dyn AudioSettingsApply> = Arc::new(handle.clone());
-        let audio_settings = AudioSettingsStore::new(library.clone(), engine_apply);
-        audio_settings.load_or_init();
-
         Ok(AppState {
             inner: Arc::new(Inner {
                 library,
                 player: handle,
-                audio_settings,
                 _player_owner: Mutex::new(Some(player)),
                 cover_cache_dir,
                 discord,
@@ -123,10 +91,6 @@ impl AppState {
 
     pub fn player(&self) -> &PlayerHandle {
         &self.inner.player
-    }
-
-    pub fn audio_settings(&self) -> &AudioSettingsStore {
-        &self.inner.audio_settings
     }
 
     pub fn cover_cache_dir(&self) -> &Path {

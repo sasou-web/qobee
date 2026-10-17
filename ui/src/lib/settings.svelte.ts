@@ -28,10 +28,7 @@ export interface SettingsValues {
    *  the currently playing cover. Falls back to `accent` otherwise. */
   accentFollowsCover: boolean;
   defaultVolume: number;
-  outputMode: "auto" | "shared";
   outputDeviceId: string | null;
-  eqGains: number[]; // length 10
-  eqEnabled: boolean;
   /** Show the currently playing track on Discord (Rich Presence).
    *  Reconnects silently when Discord starts/restarts; does nothing
    *  visible if Discord is closed. */
@@ -56,10 +53,7 @@ const DEFAULTS: SettingsValues = {
   accent: "#7c5cff",
   accentFollowsCover: true,
   defaultVolume: 1.0,
-  outputMode: "auto",
   outputDeviceId: null,
-  eqGains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-  eqEnabled: false,
   discordRichPresence: true,
   discordClientId: "",
   discordCoverUpload: false,
@@ -72,10 +66,7 @@ const KEYS = {
   accent: "ui.accent",
   accentFollowsCover: "ui.accent_follows_cover",
   defaultVolume: "playback.default_volume",
-  outputMode: "playback.output_mode",
   outputDeviceId: "playback.output_device_id",
-  eqGains: "audio.eq_gains",
-  eqEnabled: "audio.eq_enabled",
   discordRichPresence: "integrations.discord_rich_presence",
   discordClientId: "integrations.discord_client_id",
   discordCoverUpload: "integrations.discord_cover_upload",
@@ -88,17 +79,14 @@ class SettingsStore {
 
   async load(): Promise<void> {
     try {
-      const [theme, bgTheme, accent, follow, vol, mode, dev, eqg, eqe, drpc, dcid, dupload, sbexp] =
+      const [theme, bgTheme, accent, follow, vol, dev, drpc, dcid, dupload, sbexp] =
         await Promise.all([
           getSetting(KEYS.theme),
           getSetting(KEYS.bgTheme),
           getSetting(KEYS.accent),
           getSetting(KEYS.accentFollowsCover),
           getSetting(KEYS.defaultVolume),
-          getSetting(KEYS.outputMode),
           getSetting(KEYS.outputDeviceId),
-          getSetting(KEYS.eqGains),
-          getSetting(KEYS.eqEnabled),
           getSetting(KEYS.discordRichPresence),
           getSetting(KEYS.discordClientId),
           getSetting(KEYS.discordCoverUpload),
@@ -112,11 +100,7 @@ class SettingsStore {
           follow === null ? DEFAULTS.accentFollowsCover : follow === "true",
         defaultVolume:
           vol !== null ? clamp01(Number.parseFloat(vol)) : DEFAULTS.defaultVolume,
-        outputMode:
-          mode === "shared" || mode === "auto" ? mode : DEFAULTS.outputMode,
         outputDeviceId: dev && dev.length > 0 ? dev : null,
-        eqGains: parseGains(eqg) ?? DEFAULTS.eqGains,
-        eqEnabled: eqe === "true",
         discordRichPresence:
           drpc === null ? DEFAULTS.discordRichPresence : drpc === "true",
         discordClientId: dcid ?? DEFAULTS.discordClientId,
@@ -196,11 +180,4 @@ function serializeValue(v: unknown): string {
   if (Array.isArray(v)) return v.map((x) => String(x)).join(",");
   if (v === null) return "";
   return String(v);
-}
-
-function parseGains(s: string | null): number[] | null {
-  if (!s) return null;
-  const parts = s.split(",").map((x) => Number.parseFloat(x));
-  if (parts.length !== 10 || parts.some((n) => !Number.isFinite(n))) return null;
-  return parts;
 }

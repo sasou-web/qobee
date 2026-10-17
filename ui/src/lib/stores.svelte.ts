@@ -4,7 +4,6 @@
 // values; they're cheap to import anywhere.
 
 import {
-  getPlayerState,
   listAlbums,
   listArtists,
   listGenres,
@@ -12,8 +11,6 @@ import {
   listPlaylists,
   onPlayerEndOfTrack,
   onPlayerError,
-  onPlayerPosition,
-  onPlayerState,
   onScanError,
   onScanFinished,
   onScanProgress,
@@ -24,12 +21,12 @@ import {
   type Album,
   type Artist,
   type Genre,
-  type PlayerState,
   type Playlist,
   type ScanProgress,
   type ScanResult,
   type Track,
 } from "./api";
+import { playerStore } from "./playerStore.svelte";
 import { toasts } from "./toasts.svelte";
 
 export type ViewKey =
@@ -59,23 +56,7 @@ export interface Route {
   playlistId: number | null;
 }
 
-const initialPlayer: PlayerState = {
-  status: "idle",
-  current_track_id: null,
-  position_seconds: 0,
-  duration_seconds: 0,
-  volume: 1,
-  output_mode: "shared",
-  sample_rate: null,
-  bit_depth: null,
-  channels: null,
-  is_bit_perfect: false,
-  rg_attenuation_db: null,
-  error: null,
-};
-
 class AppStore {
-  player = $state<PlayerState>(initialPlayer);
   albums = $state<Album[]>([]);
   artists = $state<Artist[]>([]);
   scan = $state<ScanProgress | null>(null);
@@ -133,22 +114,12 @@ class AppStore {
     if (this.wired) return;
     this.wired = true;
 
-    try {
-      this.player = await getPlayerState();
-    } catch (e) {
-      this.lastError = String(e);
-    }
+    // The player store owns every transport listener (player:event,
+    // player:state, player:position) and is the single source of
+    // truth for playback state. Idempotent — safe to call here and
+    // from the mini-player window.
+    await playerStore.init();
 
-    this.unlisten.push(
-      await onPlayerState((s) => {
-        this.player = s;
-      })
-    );
-    this.unlisten.push(
-      await onPlayerPosition((p) => {
-        this.player = { ...this.player, position_seconds: p };
-      })
-    );
     this.unlisten.push(
       await onPlayerEndOfTrack(async () => {
         // Refresh "recently played" when a track ends so the home page
@@ -158,16 +129,6 @@ class AppStore {
     );
     this.unlisten.push(
       await onPlayerError((msg) => {
-        // R9.6 — the WASAPI Exclusive → Shared fallback surfaces as a
-        // legacy `player:error` carrying the FR reason republished by
-        // core (`EngineEvent::ExclusiveFallback`). It's an informational
-        // soft fallback, not a hard failure, so route it to a transient
-        // toast (announced via the ToastsRoot live region) instead of
-        // the sticky red error banner. Other errors keep the banner.
-        if (msg.startsWith("Mode Exclusive indisponible")) {
-          toasts.warn(msg);
-          return;
-        }
         this.lastError = msg;
       })
     );

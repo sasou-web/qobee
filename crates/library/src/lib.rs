@@ -140,6 +140,14 @@ impl Library {
         db.get_track(track_id)
     }
 
+    /// Resolve many track ids in one query, in the requested order.
+    /// Unknown ids are skipped. Used by the queue / favorites screens
+    /// to avoid N per-id round-trips.
+    pub fn get_tracks_by_ids(&self, track_ids: &[i64]) -> LibraryResult<Vec<Track>> {
+        let db = self.inner.db.lock();
+        db.get_tracks_by_ids(track_ids)
+    }
+
     pub fn get_album_for_track(&self, track_id: i64) -> LibraryResult<Option<AlbumDetail>> {
         let db = self.inner.db.lock();
         db.get_album_for_track(track_id)
@@ -280,6 +288,13 @@ impl Library {
     pub fn set_setting(&self, key: &str, value: &str) -> LibraryResult<()> {
         let mut db = self.inner.db.lock();
         db.set_setting(key, value)
+    }
+
+    /// Delete a single settings row by key. A missing key is a no-op
+    /// that returns `Ok` (used by the startup audio-settings cleanup).
+    pub fn delete_setting(&self, key: &str) -> LibraryResult<()> {
+        let mut db = self.inner.db.lock();
+        db.delete_setting(key)
     }
 
     pub fn list_settings(&self) -> LibraryResult<Vec<(String, String)>> {

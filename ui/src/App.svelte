@@ -5,7 +5,6 @@
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "./lib/stores.svelte";
   import { playerStore } from "./lib/playerStore.svelte";
-  import type { PlayerEventDto } from "./lib/playerEvent";
   import { settings } from "./lib/settings.svelte";
   import { accent } from "./lib/accent.svelte";
   import { discordPresence } from "./lib/discordPresence";
@@ -46,7 +45,7 @@
   import TrayNotice from "./components/TrayNotice.svelte";
   import Welcome from "./components/Welcome.svelte";
   import NowPlayingFullscreen from "./components/NowPlayingFullscreen.svelte";
-  import { setEqGains, setOutputDevice, setVolume } from "./lib/api";
+  import { setOutputDevice, setVolume } from "./lib/api";
 
   // Element-bound ref so we can scroll the content area back to the
   // top whenever the user navigates to a new view. Without this, an
@@ -58,7 +57,7 @@
 
   // Cache of the currently playing track so MediaSession + accent can
   // both react to track changes without each component re-resolving
-  // the same id. Updated every time `app.player.current_track_id`
+  // the same id. Updated every time `playerStore.currentTrackId`
   // changes.
   let nowTrack = $state<Track | null>(null);
   let nowTrackId = "";
@@ -124,19 +123,12 @@
       cleanupDeepLink = un;
     });
 
-    // R8 transport bus: a single listener on `player:event` feeds
-    // the reactive `playerStore`. Registered here in App.svelte —
-    // the root is never unmounted (Qobee uses a home-grown router
-    // on top of App.svelte, not SvelteKit) so the listener
-    // survives every page transition. Doing this in any child
-    // page would re-register on each visit and either leak
-    // listeners or miss events between mounts.
-    let cleanupPlayerEvent: (() => void) | null = null;
-    void listen<PlayerEventDto>("player:event", (e) => {
-      playerStore.apply(e.payload);
-    }).then((un) => {
-      cleanupPlayerEvent = un;
-    });
+    // The player store (`playerStore`) owns the `player:event`,
+    // `player:state` and `player:position` listeners — wired once via
+    // `app.wire()` → `playerStore.init()` below. It is the single
+    // source of truth for playback state across the whole UI, so no
+    // component (this root included) registers its own transport
+    // listener.
 
     void (async () => {
       await settings.load();
@@ -148,10 +140,6 @@
         if (settings.values.outputDeviceId) {
           await setOutputDevice(settings.values.outputDeviceId);
         }
-        const eq = settings.values.eqEnabled
-          ? settings.values.eqGains
-          : [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        await setEqGains(eq);
       } catch {
         // best-effort
       }
@@ -215,7 +203,6 @@
       cleanupKeys();
       if (cleanupDrop) cleanupDrop();
       if (cleanupDeepLink) cleanupDeepLink();
-      if (cleanupPlayerEvent) cleanupPlayerEvent();
       window.clearInterval(sessionSaver);
       void saveSession().catch(() => {});
     };
@@ -247,7 +234,7 @@
   // accent driver, media session and any future panel share the same
   // lookup.
   $effect(() => {
-    const id = app.player.current_track_id;
+    const id = playerStore.currentTrackId;
     if (!id) {
       nowTrack = null;
       nowTrackId = "";
@@ -277,7 +264,7 @@
 
   // Mirror engine state into the OS-level "is currently playing" flag.
   $effect(() => {
-    const status = app.player.status;
+    const status = playerStore.status;
     if (status === "playing") setMediaPlaybackState("playing");
     else if (status === "paused") setMediaPlaybackState("paused");
     else if (status === "idle" || status === "stopped") setMediaPlaybackState("none");
@@ -286,8 +273,8 @@
   // Push position updates so OS-level scrubbers progress in sync.
   $effect(() => {
     setMediaPositionState(
-      app.player.duration_seconds,
-      app.player.position_seconds
+      playerStore.durationSeconds,
+      playerStore.positionSeconds
     );
   });
 
@@ -317,23 +304,23 @@
 
   $effect(() => {
     if (!settings.values.discordRichPresence) return;
-    const status = app.player.status;
+    const status = playerStore.status;
     const paused = status === "paused";
-    if (status === "idle" || status === "stopped" || status === "errored") {
+    if (status === "idle" || status === "stopped" || status === "error") {
       void discordPresence.clearPresence();
       return;
     }
     if (!nowTrack) return;
     void discordPresence.updateTrack(
       nowTrack,
-      app.player.position_seconds,
+      playerStore.positionSeconds,
       paused
     );
   });
 
   $effect(() => {
     if (!settings.values.discordRichPresence) return;
-    const status = app.player.status;
+    const status = playerStore.status;
     if (status === "playing") void discordPresence.setPaused(false);
     else if (status === "paused") void discordPresence.setPaused(true);
   });

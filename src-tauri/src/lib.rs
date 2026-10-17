@@ -136,10 +136,6 @@ pub fn run() {
             commands::next,
             commands::prev,
             commands::get_player_state,
-            commands::get_output_mode,
-            commands::set_output_mode,
-            commands::get_user_output_mode,
-            commands::asio_available,
             commands::list_output_devices,
             commands::get_selected_output_device,
             commands::set_output_device,
@@ -179,33 +175,19 @@ pub fn run() {
             commands::import_playlist_m3u,
             commands::save_session,
             commands::restore_session,
-            commands::set_crossfade_ms,
-            commands::get_crossfade_ms,
             commands::get_queue,
             commands::queue_remove_at,
             commands::queue_move,
             commands::clear_queue,
             commands::queue_jump_to,
-            commands::get_underrun_count,
             commands::quit_app,
             commands::get_tracks,
             commands::get_setting,
             commands::set_setting,
             commands::list_settings,
             commands::clear_settings,
-            commands::get_audio_setting,
-            commands::set_audio_setting,
-            commands::list_audio_settings,
-            commands::reset_audio_settings,
-            commands::get_bit_perfect_health,
-            commands::get_device_mix_format,
             commands::open_windows_sound_settings,
             commands::shell_open,
-            commands::load_convolver_ir,
-            commands::unload_convolver_ir,
-            commands::get_convolver_status,
-            commands::run_null_test,
-            commands::cancel_null_test,
             commands::list_library_roots,
             commands::add_library_root,
             commands::remove_library_root,
@@ -229,12 +211,8 @@ pub fn run() {
             commands::clear_history,
             commands::clear_cover_cache,
             commands::reset_library,
-            commands::get_eq_gains,
-            commands::set_eq_gains,
             commands::get_lyrics,
             commands::toggle_mini_player,
-            commands::get_replaygain_mode,
-            commands::set_replaygain_mode,
             commands::get_repeat_mode,
             commands::set_repeat_mode,
             commands::get_shuffle,
@@ -342,9 +320,6 @@ pub fn run() {
                             qobee_core::PlayerEvent::StateChanged { .. } => "player:state",
                             qobee_core::PlayerEvent::Position { .. } => "player:position",
                             qobee_core::PlayerEvent::EndOfTrack => "player:end-of-track",
-                            qobee_core::PlayerEvent::BitPerfectChanged { .. } => {
-                                "player:bit-perfect"
-                            }
                             qobee_core::PlayerEvent::Error { .. } => "player:error",
                             // The R8 transport-bus variants (`Started`,
                             // `Paused`, `Resumed`, `Stopped`,
@@ -372,9 +347,9 @@ pub fn run() {
             //
             // The legacy crossbeam pump above keeps republishing the
             // historical topics (`player:state`, `player:position`,
-            // `player:end-of-track`, `player:bit-perfect`,
-            // `player:error`) for back-compat. The new fan-out task
-            // sits next to it and consumes the dedicated
+            // `player:end-of-track`, `player:error`) for back-compat.
+            // The new fan-out task sits next to it and consumes the
+            // dedicated
             // `tokio::sync::broadcast` channel exposed by
             // `PlayerHandle::subscribe_broadcast`.
             //

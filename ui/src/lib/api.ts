@@ -153,10 +153,6 @@ export type PlaybackStatus =
   | "stopped"
   | "errored";
 
-export type EffectiveOutputMode = "shared" | "exclusive";
-
-export type OutputMode = "auto" | "shared" | "exclusive";
-
 export interface OutputDevice {
   id: string;
   name: string;
@@ -165,85 +161,25 @@ export interface OutputDevice {
   channels: number;
 }
 
-/// Source → destination channel layout recorded when the engine had to
-/// upmix a narrower source (e.g. stereo) onto a device configured for a
-/// wider channel layout (R9.5). Mirrors `qobee_engine::types::UpmixInfo`;
-/// serde serializes the Rust field names as-is (snake_case).
-export interface UpmixInfo {
-  src_channels: number;
-  dst_channels: number;
-}
-
 export interface PlayerState {
   status: PlaybackStatus;
   current_track_id: string | null;
   position_seconds: number;
   duration_seconds: number;
   volume: number;
-  output_mode: EffectiveOutputMode;
   sample_rate: number | null;
   bit_depth: number | null;
   channels: number | null;
-  is_bit_perfect: boolean;
-  /// Reported RG attenuation in dB (R1.5). Negative when the
-  /// pre-gain stage clamped the demanded RG gain to fit the
-  /// configured true-peak ceiling; null otherwise.
-  rg_attenuation_db: number | null;
-  /// Aggregated bit-perfect health snapshot (R5). Populated
-  /// whenever a device is currently open; absent while idle.
-  bit_perfect?: BitPerfectHealth | null;
-  /// Active upmix layout (R9.5). Present when no native stereo
-  /// configuration was available and the engine had to upmix the
-  /// source onto a wider device layout; null/absent when the device
-  /// played the source's channel layout natively (no upmix).
-  /// `#[serde(default)]` on the Rust side keeps older IPC payloads
-  /// that predate the field deserialising as None.
-  upmix?: UpmixInfo | null;
-  /// `true` when the current file exceeded the MP3 frame-repair
-  /// threshold (R11.3) and is likely degraded. Reset to false on the
-  /// next Load. Defaults to false when absent (`#[serde(default)]`).
-  degraded?: boolean;
   error: string | null;
 }
 
-// Discriminated union mirroring qobee_core::PlayerEvent.
+// Discriminated union mirroring qobee_core::PlayerEvent (legacy
+// crossbeam variants the UI listens for).
 export type PlayerEvent =
   | { type: "state_changed"; state: PlayerState }
   | { type: "position"; position_seconds: number }
   | { type: "end_of_track" }
-  | { type: "bit_perfect_changed"; health: BitPerfectHealth }
   | { type: "error"; message: string };
-
-// ---------------------------------------------------------------------------
-// Bit-Perfect Health (R5)
-// ---------------------------------------------------------------------------
-
-export type BitPerfectStatus = "green" | "amber" | "red";
-
-export interface BitPerfectHealth {
-  status: BitPerfectStatus;
-  source_sample_rate: number | null;
-  device_sample_rate: number | null;
-  source_bit_depth: number | null;
-  effective_output_mode: EffectiveOutputMode;
-  is_native_rate: boolean;
-  unity_volume: boolean;
-  unity_pregain: boolean;
-  eq_bypass: boolean;
-  crossfeed_off: boolean;
-  convolver_off: boolean;
-  limiter_off: boolean;
-  dither_bypass: boolean;
-  balance_off: boolean;
-  upmix_active: boolean;
-  messages: string[];
-}
-
-export interface DeviceMixFormat {
-  sample_rate: number;
-  channels: number;
-  bit_depth: number | null;
-}
 
 // ---------------------------------------------------------------------------
 // Commands
@@ -314,18 +250,6 @@ export async function prevTrack(): Promise<void> {
 
 export async function getPlayerState(): Promise<PlayerState> {
   return invoke<PlayerState>("get_player_state");
-}
-
-export async function getOutputMode(): Promise<EffectiveOutputMode> {
-  return invoke<EffectiveOutputMode>("get_output_mode");
-}
-
-export async function setOutputMode(mode: OutputMode): Promise<void> {
-  await invoke("set_output_mode", { mode });
-}
-
-export async function getUserOutputMode(): Promise<OutputMode> {
-  return invoke<OutputMode>("get_user_output_mode");
 }
 
 export async function listOutputDevices(): Promise<OutputDevice[]> {
@@ -574,20 +498,6 @@ export async function restoreSession(): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// Crossfade
-// ---------------------------------------------------------------------------
-
-/** Set the crossfade window in milliseconds (0 = off, max 12000). */
-export async function setCrossfadeMs(ms: number): Promise<void> {
-  await invoke("set_crossfade_ms", { ms });
-}
-
-/** Current crossfade window in milliseconds. */
-export async function getCrossfadeMs(): Promise<number> {
-  return invoke<number>("get_crossfade_ms");
-}
-
-// ---------------------------------------------------------------------------
 // Queue inspection
 // ---------------------------------------------------------------------------
 
@@ -616,13 +526,6 @@ export async function clearQueue(): Promise<void> {
 
 export async function queueJumpTo(idx: number): Promise<void> {
   await invoke("queue_jump_to", { idx });
-}
-
-/** Current cumulative audio-callback underrun count (R10.3 / R10.4).
- *  Destined for a future diagnostics panel; returns `0` at rest and on
- *  backends without a ring buffer. */
-export async function getUnderrunCount(): Promise<number> {
-  return invoke<number>("get_underrun_count");
 }
 
 /** Quit the whole app, bypassing the close-to-tray hook (R7.2). Wired
@@ -745,81 +648,6 @@ export async function clearSettings(): Promise<void> {
   await invoke("clear_settings");
 }
 
-// ---------------------------------------------------------------------------
-// Audio settings (typed wrappers around the audio.* keys persisted by
-// AudioSettingsStore — see crates/core/src/audio_settings.rs)
-// ---------------------------------------------------------------------------
-
-/**
- * Read a single `audio.*` setting. Returns `null` when the key is
- * unknown to the store. Only `audio.convolver_ir_path` ever returns
- * `null` for a *known* key, so callers should treat `null` as
- * "missing" for every other setting.
- *
- * The generic parameter lets callers narrow the JSON value to the
- * concrete shape they expect (`number`, `boolean`, an enum string,
- * or an array of numbers for `audio.trim_db_per_channel`).
- */
-export async function getAudioSetting<T = unknown>(
-  key: string
-): Promise<T | null> {
-  return invoke<T | null>("get_audio_setting", { key });
-}
-
-/**
- * Validate, persist, and apply a single `audio.*` setting. Rejects
- * with a `"Setting invalid: ..."` string when the value's type or
- * range is wrong; the engine snapshot is left untouched in that case.
- */
-export async function setAudioSetting<T>(
-  key: string,
-  value: T
-): Promise<void> {
-  await invoke("set_audio_setting", { key, value });
-}
-
-/**
- * Snapshot every persisted `audio.*` key in one round-trip. The
- * audio settings panel uses this on mount.
- */
-export async function listAudioSettings(): Promise<Record<string, unknown>> {
-  return invoke<Record<string, unknown>>("list_audio_settings");
-}
-
-/**
- * Reset every `audio.*` key to its default value. Backs the
- * "Restore defaults" button.
- */
-export async function resetAudioSettings(): Promise<void> {
-  await invoke("reset_audio_settings");
-}
-
-// ---------------------------------------------------------------------------
-// Bit-Perfect Health (R5) — diagnostics for the audio panel
-// ---------------------------------------------------------------------------
-
-/**
- * Snapshot of the engine's last-known [`BitPerfectHealth`]. Resolves
- * to `null` while no device is open (idle/stopped), in which case
- * the UI panel hides the source/track block (R5.7).
- */
-export async function getBitPerfectHealth(): Promise<BitPerfectHealth | null> {
-  return invoke<BitPerfectHealth | null>("get_bit_perfect_health");
-}
-
-/**
- * Read the device mix format used by the OS mixer. On Windows this
- * goes through `IAudioClient::GetMixFormat()`; on other platforms it
- * returns the CPAL default config (`bit_depth` is then `null`).
- */
-export async function getDeviceMixFormat(
-  deviceId?: string | null
-): Promise<DeviceMixFormat> {
-  return invoke<DeviceMixFormat>("get_device_mix_format", {
-    deviceId: deviceId ?? null,
-  });
-}
-
 /**
  * Open the Windows "Sound" control panel. No-op (with a backend
  * warning log) on other operating systems so the UI can call this
@@ -839,87 +667,6 @@ export async function openWindowsSoundSettings(): Promise<void> {
  */
 export async function shellOpen(url: string): Promise<void> {
   await invoke("shell_open", { url });
-}
-
-/** Subscribe to the dedicated `player:bit-perfect` Tauri topic. */
-export async function onBitPerfectChanged(
-  cb: (health: BitPerfectHealth) => void
-): Promise<UnlistenFn> {
-  return listen<PlayerEvent>("player:bit-perfect", (e) => {
-    if (e.payload.type === "bit_perfect_changed") cb(e.payload.health);
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Convolver IR (R9) — load, unload, status
-// ---------------------------------------------------------------------------
-
-export interface ConvolverStatus {
-  enabled: boolean;
-  ir_path: string | null;
-  ir_len: number | null;
-  latency_ms: number;
-}
-
-/**
- * Decode + validate + resample + apply gain compensation to the
- * supplied WAV impulse response and push it to the engine's
- * `Convolver_Stage`. Rejects with a descriptive string on failure;
- * the previously-loaded IR (if any) stays untouched.
- */
-export async function loadConvolverIr(path: string): Promise<void> {
-  await invoke("load_convolver_ir", { path });
-}
-
-/** Drop the active convolver IR. The stage falls back to bypass. */
-export async function unloadConvolverIr(): Promise<void> {
-  await invoke("unload_convolver_ir");
-}
-
-/**
- * Snapshot of the convolver runtime state for the
- * `ConvolverIrPicker` panel: enabled flag, persisted IR path,
- * active IR length in taps, and reported latency in milliseconds.
- */
-export async function getConvolverStatus(): Promise<ConvolverStatus> {
-  return invoke<ConvolverStatus>("get_convolver_status");
-}
-
-// ---------------------------------------------------------------------------
-// Null-test diagnostic (R11)
-// ---------------------------------------------------------------------------
-
-export type NullTestConclusion = "bit_perfect" | "modified" | "inconclusive";
-export type NullTestSource = "loopback" | "pre_render";
-
-export interface NullTestReport {
-  conclusion: NullTestConclusion;
-  mode: EffectiveOutputMode;
-  captured_via: NullTestSource;
-  peak_diff_dbfs: number;
-  rms_diff_dbfs: number;
-  samples_diff_count: number;
-  aligned_frames: number;
-  error: string | null;
-}
-
-/**
- * Run the null-test diagnostic end-to-end: generate a deterministic
- * 5 s WAV, capture it back via WASAPI loopback (Shared) or via the
- * engine's pre-render sink (Exclusive), align by FFT cross-correlation
- * and produce a conclusion. Always resolves with a report; failures
- * surface as `conclusion = "inconclusive"` with `error` populated.
- */
-export async function runNullTest(): Promise<NullTestReport> {
-  return invoke<NullTestReport>("run_null_test");
-}
-
-/**
- * Trip the cancellation flag so the in-flight `runNullTest` returns
- * an `Inconclusive` report at its next polling tick (≤ 100 ms).
- */
-export async function cancelNullTest(): Promise<void> {
-  await invoke("cancel_null_test");
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,28 +840,6 @@ export async function clearCoverCache(): Promise<number> {
 
 export async function resetLibrary(alsoSettings = false): Promise<void> {
   await invoke("reset_library", { alsoSettings });
-}
-
-// ---------------------------------------------------------------------------
-// Equalizer / repeat / shuffle / artist / album size
-// ---------------------------------------------------------------------------
-
-export async function getEqGains(): Promise<number[]> {
-  return invoke<number[]>("get_eq_gains");
-}
-
-export async function setEqGains(gains: number[]): Promise<void> {
-  await invoke("set_eq_gains", { gains });
-}
-
-export type ReplayGainMode = "off" | "track" | "album";
-
-export async function getReplayGainMode(): Promise<ReplayGainMode> {
-  return invoke<ReplayGainMode>("get_replaygain_mode");
-}
-
-export async function setReplayGainMode(mode: ReplayGainMode): Promise<void> {
-  await invoke("set_replaygain_mode", { mode });
 }
 
 // ---------------------------------------------------------------------------

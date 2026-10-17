@@ -8,54 +8,17 @@
 //! The frontend never talks to the engine or the library directly: it
 //! talks to a [`Player`] that owns both.
 
-pub mod audio_settings;
-pub mod diagnostic;
 pub mod player;
 pub mod queue;
+pub mod settings_cleanup;
 pub mod sync;
 
-pub use audio_settings::{AudioSettingsApply, AudioSettingsError, AudioSettingsStore};
-pub use diagnostic::{
-    cancel_null_test, run_null_test, NullTestConclusion, NullTestReport, NullTestSource,
-};
 pub use player::{Player, PlayerError, PlayerHandle};
 pub use queue::Queue;
+pub use settings_cleanup::{cleanup_obsolete_audio_settings, OBSOLETE_AUDIO_KEYS};
 pub use sync::MediaBridge;
 
 use serde::{Deserialize, Serialize};
-
-/// ReplayGain mode used by the player when starting a track.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum ReplayGainMode {
-    /// Don't apply any normalization.
-    #[default]
-    Off,
-    /// Apply per-track gain. Most consistent perceived loudness across
-    /// a shuffled queue.
-    Track,
-    /// Apply per-album gain. Preserves the relative dynamics within an
-    /// album (the artist's intended balance between tracks).
-    Album,
-}
-
-impl ReplayGainMode {
-    pub fn from_setting(s: &str) -> Self {
-        match s {
-            "track" => ReplayGainMode::Track,
-            "album" => ReplayGainMode::Album,
-            _ => ReplayGainMode::Off,
-        }
-    }
-    pub fn as_setting(&self) -> &'static str {
-        match self {
-            ReplayGainMode::Off => "off",
-            ReplayGainMode::Track => "track",
-            ReplayGainMode::Album => "album",
-        }
-    }
-}
 
 /// Events emitted by [`Player`] to the application layer (which then
 /// re-publishes them as Tauri events).
@@ -74,9 +37,8 @@ impl ReplayGainMode {
 /// bridge and the macOS MPNowPlayingInfoCenter bridge.
 ///
 /// The legacy variants (`StateChanged`, `Position`, `EndOfTrack`,
-/// `BitPerfectChanged`, `Error`) are kept on the same enum so the
-/// existing crossbeam consumers (`commands_drive`, `null_test`,
-/// the bit-perfect topic) keep working without churn.
+/// `Error`) are kept on the same enum so the existing crossbeam
+/// consumers keep working without churn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PlayerEvent {
@@ -121,14 +83,6 @@ pub enum PlayerEvent {
     Position { position_seconds: f64 },
     /// Current track finished playing.
     EndOfTrack,
-    /// Aggregated bit-perfect health snapshot republished from the
-    /// engine's [`qobee_engine::EngineEvent::BitPerfectChanged`].
-    /// Emitted as the dedicated `player:bit-perfect` Tauri topic so
-    /// the UI panel can react without parsing the heavier
-    /// `StateChanged` payload (R5.5).
-    BitPerfectChanged {
-        health: qobee_engine::BitPerfectHealth,
-    },
     /// Recoverable engine error that the UI should surface (legacy).
     Error { message: String },
 }

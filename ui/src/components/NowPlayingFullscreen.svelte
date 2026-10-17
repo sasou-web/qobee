@@ -26,6 +26,7 @@
     type Track,
   } from "../lib/api";
   import { app } from "../lib/stores.svelte";
+  import { playerStore } from "../lib/playerStore.svelte";
   import { nowPlayingFullscreen } from "../lib/nowPlayingFullscreen.svelte";
   import { toasts } from "../lib/toasts.svelte";
   import { PLAYER_LABELS } from "../lib/labels";
@@ -40,10 +41,10 @@
   }
   let { track }: Props = $props();
 
-  let isPlaying = $derived(app.player.status === "playing");
-  let pos = $derived(app.player.position_seconds);
+  let isPlaying = $derived(playerStore.status === "playing");
+  let pos = $derived(playerStore.positionSeconds);
   let dur = $derived(
-    Math.max(app.player.duration_seconds, track?.duration_seconds ?? 0),
+    Math.max(playerStore.durationSeconds, track?.duration_seconds ?? 0),
   );
   let pct = $derived(dur > 0 ? Math.min(100, (pos / dur) * 100) : 0);
 

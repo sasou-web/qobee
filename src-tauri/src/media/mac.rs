@@ -242,7 +242,6 @@ unsafe fn apply_event_on_main(ev: &PlayerEvent) {
         PlayerEvent::StateChanged { .. }
         | PlayerEvent::Position { .. }
         | PlayerEvent::EndOfTrack
-        | PlayerEvent::BitPerfectChanged { .. }
         | PlayerEvent::Error { .. } => {}
     }
 }

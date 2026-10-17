@@ -9,6 +9,7 @@
     type Track,
   } from "../lib/api";
   import { app } from "../lib/stores.svelte";
+  import { playerStore } from "../lib/playerStore.svelte";
   import { toasts } from "../lib/toasts.svelte";
   import { formatDuration, formatQuality } from "../lib/format";
   import Cover from "./Cover.svelte";
@@ -121,7 +122,7 @@
       </thead>
       <tbody>
         {#each detail.tracks as t, i (i)}
-          <tr class:current={app.player.current_track_id === String(t.id)}>
+          <tr class:current={playerStore.currentTrackId === String(t.id)}>
             <td class="num">{i + 1}</td>
             <td>
               <div class="title">{t.title}</div>

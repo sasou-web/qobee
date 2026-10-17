@@ -19,19 +19,10 @@
     scanAllRoots,
     scanLibrary,
     setCloseBehavior,
-    setEqGains,
     setNotifyOnTrackChange,
     setOutputDevice,
     setTrayEnabled,
-    getReplayGainMode,
-    setReplayGainMode,
-    getCrossfadeMs,
-    setCrossfadeMs,
     type CloseBehavior,
-    type ReplayGainMode,
-    getUserOutputMode,
-    setOutputMode,
-    type OutputMode,
     setVolume,
     type LibraryRoot,
     type LibrarySource,
@@ -39,12 +30,10 @@
     type OutputDevice,
     type WindowSettings,
   } from "../lib/api";
-  import { formatGainDb, formatFrequency } from "../lib/format";
   import { settings, type Theme, BG_THEMES, type BgTheme } from "../lib/settings.svelte";
   import { app } from "../lib/stores.svelte";
   import { discordPresence, type DiscordStatus } from "../lib/discordPresence";
   import { toasts } from "../lib/toasts.svelte";
-  import SettingsAudio from "./audio/SettingsAudio.svelte";
   import SettingsWindowsIntegration from "./SettingsWindowsIntegration.svelte";
   import ShortcutsHelp from "./ShortcutsHelp.svelte";
   import DriveWizard from "./DriveWizard.svelte";
@@ -61,11 +50,9 @@
   type Category =
     | "library"
     | "playback"
-    | "audio"
     | "windows"
     | "window"
     | "appearance"
-    | "equalizer"
     | "integrations"
     | "shortcuts"
     | "advanced";
@@ -89,12 +76,10 @@
 
   const CATEGORIES: CategoryDef[] = [
     { id: "library", label: "Library", icon: "library", keywords: "folder root drive scan source remote google" },
-    { id: "playback", label: "Playback", icon: "music", keywords: "device volume replaygain output exclusive shared crossfade fade" },
-    { id: "audio", label: "Audio", icon: "volume", keywords: "bit perfect dsp convolver resampler null test" },
+    { id: "playback", label: "Playback", icon: "music", keywords: "device volume output" },
     { id: "windows", label: "Windows integration", icon: "shield", keywords: "smtc taskbar jumplist aumid" },
     { id: "window", label: "Window", icon: "expand", keywords: "close tray notify minimize background" },
     { id: "appearance", label: "Appearance", icon: "settings", keywords: "theme dark light accent color background follow cover" },
-    { id: "equalizer", label: "Equalizer", icon: "shuffle", keywords: "eq band gain preset bass treble vocal flat" },
     { id: "integrations", label: "Integrations", icon: "zap", keywords: "discord rich presence cover upload" },
     { id: "shortcuts", label: "Keyboard shortcuts", icon: "quote", keywords: "raccourcis clavier keyboard shortcuts hotkeys touches accessibility" },
     { id: "advanced", label: "Advanced", icon: "settings", keywords: "reset clear cover history database wipe" },
@@ -121,10 +106,6 @@
   let devices = $state<OutputDevice[]>([]);
   let selectedDeviceId = $state<string>("");
   let stats = $state<LibraryStats | null>(null);
-  let replayGainMode = $state<ReplayGainMode>("off");
-  let outputMode = $state<OutputMode>("auto");
-  let outputModeError = $state<string | null>(null);
-  let crossfadeMs = $state<number>(0);
   let discordStatus = $state<DiscordStatus>("disabled");
   let discordPoll: number | null = null;
 
@@ -154,13 +135,10 @@
       listOutputDevices(),
       getSelectedOutputDevice(),
       libraryStats(),
-      getReplayGainMode(),
-      getUserOutputMode(),
       listLibrarySources(),
       getWindowSettings(),
-      getCrossfadeMs(),
     ]);
-    const [rs, ds, sel, st, rg, om, ss, ws, xf] = results;
+    const [rs, ds, sel, st, ss, ws] = results;
 
     if (rs.status === "fulfilled") roots = rs.value;
     else app.lastError = `Library roots: ${String(rs.reason)}`;
@@ -168,12 +146,9 @@
     else app.lastError = `Output devices: ${String(ds.reason)}`;
     if (sel.status === "fulfilled") selectedDeviceId = sel.value ?? "";
     if (st.status === "fulfilled") stats = st.value;
-    if (rg.status === "fulfilled") replayGainMode = rg.value;
-    if (om.status === "fulfilled") outputMode = om.value;
     if (ss.status === "fulfilled") sources = ss.value;
     if (ws.status === "fulfilled") windowSettings = ws.value;
     else windowError = String(ws.reason);
-    if (xf.status === "fulfilled") crossfadeMs = xf.value;
   }
 
   $effect(() => {
@@ -316,44 +291,6 @@
 
   // ------- Audio settings -------
 
-  async function handleReplayGainChange(e: Event): Promise<void> {
-    const v = (e.target as HTMLSelectElement).value as ReplayGainMode;
-    replayGainMode = v;
-    try {
-      await setReplayGainMode(v);
-    } catch (err) {
-      app.lastError = String(err);
-    }
-  }
-
-  // Crossfade is debounced so dragging the slider doesn't spam the
-  // backend (each call persists a settings row + touches the engine).
-  let crossfadeDebounce: ReturnType<typeof setTimeout> | null = null;
-  function handleCrossfadeChange(e: Event): void {
-    const ms = Number((e.target as HTMLInputElement).value);
-    crossfadeMs = ms;
-    if (crossfadeDebounce) clearTimeout(crossfadeDebounce);
-    crossfadeDebounce = setTimeout(() => {
-      void setCrossfadeMs(ms).catch((err) => (app.lastError = String(err)));
-    }, 200);
-  }
-
-  async function handleOutputModeChange(e: Event): Promise<void> {
-    const v = (e.target as HTMLSelectElement).value as OutputMode;
-    const previous = outputMode;
-    outputMode = v;
-    outputModeError = null;
-    try {
-      await setOutputMode(v);
-    } catch (err) {
-      // Reverting in the UI keeps the dropdown honest if the engine
-      // refused (e.g. the device doesn't accept Exclusive).
-      outputMode = previous;
-      outputModeError = String(err);
-      app.lastError = `Output mode: ${String(err)}`;
-    }
-  }
-
   async function handleDeviceChange(e: Event): Promise<void> {
     const v = (e.target as HTMLSelectElement).value;
     selectedDeviceId = v;
@@ -389,103 +326,6 @@
   async function handleAccent(e: Event): Promise<void> {
     const v = (e.target as HTMLInputElement).value;
     await settings.set("accent", v);
-  }
-
-  // ------- Equalizer -------
-
-  // Display-only frequency labels for the 10 EQ bands. The engine
-  // uses ISO centers 31.25 / 62.5 for the lowest two; we round to
-  // 32 / 64 here to match the labels users expect on commercial
-  // equalizers (R4.4). The gain array index (0..=9) is what actually
-  // routes to `qobee-engine::eq::FREQS_HZ`.
-  const EQ_FREQS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
-  const EQ_PRESETS: Record<string, number[]> = {
-    Flat: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    "Bass boost": [6, 5, 4, 2, 0, 0, 0, 0, 0, 0],
-    "Treble boost": [0, 0, 0, 0, 0, 1, 3, 4, 5, 6],
-    "V-shape": [5, 4, 2, 0, -2, -2, 0, 2, 4, 5],
-    Vocal: [-2, -2, -1, 1, 3, 4, 4, 3, 1, 0],
-    "Loudness (low vol)": [5, 4, 2, 0, 0, 0, 1, 3, 4, 4],
-    Soft: [-1, -1, -1, 0, 0, 0, 0, -1, -2, -2],
-  };
-
-  async function pushEqToEngine(): Promise<void> {
-    try {
-      const gains = settings.values.eqEnabled
-        ? settings.values.eqGains
-        : [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-      await setEqGains(gains);
-    } catch (e) {
-      app.lastError = String(e);
-    }
-  }
-
-  async function handleEqEnable(e: Event): Promise<void> {
-    const v = (e.target as HTMLInputElement).checked;
-    await settings.set("eqEnabled", v);
-    await pushEqToEngine();
-  }
-
-  async function handleEqBand(idx: number, e: Event): Promise<void> {
-    const v = Number((e.target as HTMLInputElement).value);
-    const next = settings.values.eqGains.slice();
-    next[idx] = v;
-    await settings.set("eqGains", next);
-    await pushEqToEngine();
-  }
-
-  async function applyPreset(name: string): Promise<void> {
-    const gains = EQ_PRESETS[name];
-    if (!gains) return;
-    await settings.set("eqGains", gains);
-    if (!settings.values.eqEnabled) {
-      await settings.set("eqEnabled", true);
-    }
-    await pushEqToEngine();
-  }
-
-  function eqLabel(hz: number): string {
-    return hz >= 1000 ? `${hz / 1000}k` : `${hz}`;
-  }
-  // Retained as a quick-revert label format. Unused by the EQ
-  // template, which now uses `safeFreqLabel` (R4.4 / R4.5).
-  void eqLabel;
-
-  // Safe wrappers around the formatters so a transient runtime error
-  // (e.g. NaN gain after a corrupted settings file) cannot blank out
-  // the slider. The catch returns an empty string; the slider stays
-  // fully interactive (R4.5).
-  function safeGainLabel(v: unknown): string {
-    try {
-      const n = typeof v === "number" ? v : Number(v);
-      if (!Number.isFinite(n)) return "";
-      // Round to one decimal so half-steps display as "+1.5 dB"
-      // while integer gains stay clean ("+3 dB").
-      const rounded = Math.round(n * 10) / 10;
-      return formatGainDb(rounded);
-    } catch {
-      return "";
-    }
-  }
-
-  function safeFreqLabel(hz: unknown): string {
-    try {
-      const n = typeof hz === "number" ? hz : Number(hz);
-      if (!Number.isFinite(n)) return "";
-      return formatFrequency(n);
-    } catch {
-      return "";
-    }
-  }
-
-  async function handleEqReset(): Promise<void> {
-    const zeros = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    await settings.set("eqGains", zeros);
-    try {
-      await setEqGains(zeros);
-    } catch (e) {
-      app.lastError = String(e);
-    }
   }
 
   // ------- Window_Manager (R7 — task 10.1) -------
@@ -779,59 +619,10 @@
           step="1"
           value={settings.values.defaultVolume * 100}
           oninput={handleDefaultVolume}
+          style:--range-fill={`${Math.round(settings.values.defaultVolume * 100)}%`}
         />
         <span class="value">{Math.round(settings.values.defaultVolume * 100)}%</span>
       </div>
-
-      <div class="row">
-        <label for="replaygain">ReplayGain</label>
-        <select
-          id="replaygain"
-          value={replayGainMode}
-          onchange={handleReplayGainChange}
-        >
-          <option value="off">Off</option>
-          <option value="track">Track gain</option>
-          <option value="album">Album gain</option>
-        </select>
-      </div>
-
-      <div class="row">
-        <label for="crossfade">Crossfade</label>
-        <input
-          id="crossfade"
-          type="range"
-          min="0"
-          max="12000"
-          step="500"
-          value={crossfadeMs}
-          oninput={handleCrossfadeChange}
-        />
-        <span class="value">
-          {crossfadeMs === 0 ? "Off" : `${(crossfadeMs / 1000).toFixed(1)} s`}
-        </span>
-      </div>
-
-      <div class="row">
-        <label for="output-mode">Output mode</label>
-        <select
-          id="output-mode"
-          value={outputMode}
-          onchange={handleOutputModeChange}
-        >
-          <option value="auto">Auto (Shared)</option>
-          <option value="shared">Shared (OS mixer)</option>
-          <option value="exclusive">Exclusive (bit-perfect)</option>
-        </select>
-      </div>
-
-      {#if outputModeError}
-        <p class="error-line">{outputModeError}</p>
-      {/if}
-    {/if}
-
-    {#if activeCategory === "audio"}
-      <SettingsAudio />
     {/if}
 
     {#if activeCategory === "windows"}
@@ -944,51 +735,6 @@
           />
           <span class="slider"></span>
         </label>
-      </div>
-    {/if}
-
-    {#if activeCategory === "equalizer"}
-      <div class="row toggle-row">
-        <span>Enabled</span>
-        <label class="switch">
-          <input
-            type="checkbox"
-            checked={settings.values.eqEnabled}
-            onchange={handleEqEnable}
-          />
-          <span class="slider"></span>
-        </label>
-      </div>
-
-      <div class="eq-presets">
-        {#each Object.keys(EQ_PRESETS) as name (name)}
-          <button onclick={() => applyPreset(name)}>{name}</button>
-        {/each}
-      </div>
-
-      <div class="eq" class:disabled={!settings.values.eqEnabled}>
-        {#each EQ_FREQS as hz, i (hz)}
-          <div class="band">
-            <div class="db">
-              {safeGainLabel(settings.values.eqGains[i] ?? 0)}
-            </div>
-            <input
-              type="range"
-              min="-12"
-              max="12"
-              step="0.5"
-              value={settings.values.eqGains[i] ?? 0}
-              oninput={(e) => handleEqBand(i, e)}
-              class="vert"
-              aria-label={`${safeFreqLabel(hz) || `Band ${i + 1}`} gain`}
-            />
-            <div class="hz">{safeFreqLabel(hz)}</div>
-          </div>
-        {/each}
-      </div>
-
-      <div class="actions">
-        <button class="secondary" onclick={handleEqReset}>Reset</button>
       </div>
     {/if}
 
@@ -1626,60 +1372,6 @@
   }
   .bg-swatch-label {
     text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
-  }
-
-  /* ------------------------------------------------------------
-     Equalizer — vertical sliders + presets.
-     ------------------------------------------------------------ */
-  .eq-presets {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-  .eq-presets button {
-    background: var(--bg-2) !important;
-    border-radius: 999px !important;
-    padding: 4px 12px !important;
-    font-size: 12px !important;
-    font-weight: 500;
-  }
-  .eq {
-    display: grid;
-    grid-template-columns: repeat(10, 1fr);
-    gap: 8px;
-    padding: var(--space-3);
-    background: var(--bg-2);
-    border-radius: var(--radius-md);
-    align-items: end;
-  }
-  .eq.disabled {
-    opacity: 0.5;
-    pointer-events: none;
-  }
-  .band {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-  }
-  .band .db {
-    color: var(--fg-2);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-  }
-  .band .hz {
-    color: var(--fg-1);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-  }
-  .vert {
-    appearance: none;
-    -webkit-appearance: slider-vertical;
-    writing-mode: vertical-lr;
-    direction: rtl;
-    width: 18px;
-    height: 130px;
-    background: transparent;
   }
 
   /* ------------------------------------------------------------

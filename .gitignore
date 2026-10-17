@@ -19,6 +19,13 @@ ui/dist/
 ui/.vite/
 ui/.svelte-kit/
 
+# Single package manager: Qobee standardizes on npm (CI runs
+# `npm ci` against ui/package-lock.json). Keep alternative lockfiles
+# out so the dependency tree stays reproducible.
+pnpm-lock.yaml
+yarn.lock
+bun.lockb
+
 # IDE / OS
 .vscode/
 .idea/

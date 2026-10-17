@@ -6,6 +6,7 @@
 // keypresses (no input focused) trigger transport / search shortcuts.
 
 import { app } from "./stores.svelte";
+import { playerStore } from "./playerStore.svelte";
 import { nowPlayingFullscreen } from "./nowPlayingFullscreen.svelte";
 import { nextTrack, pause, prevTrack, resume, seek } from "./api";
 
@@ -47,7 +48,7 @@ export function installKeyboardShortcuts(): () => void {
         // Space: toggle play/pause. Only when not typing, otherwise
         // we'd swallow legitimate spacebar input.
         e.preventDefault();
-        const status = app.player.status;
+        const status = playerStore.status;
         if (status === "playing") void pause();
         else if (status === "paused") void resume();
         break;
@@ -59,9 +60,9 @@ export function installKeyboardShortcuts(): () => void {
           void nextTrack();
         } else {
           e.preventDefault();
-          const dur = app.player.duration_seconds;
+          const dur = playerStore.durationSeconds;
           if (dur > 0) {
-            const target = Math.min(dur, app.player.position_seconds + 5);
+            const target = Math.min(dur, playerStore.positionSeconds + 5);
             void seek(target);
           }
         }
@@ -73,7 +74,7 @@ export function installKeyboardShortcuts(): () => void {
           void prevTrack();
         } else {
           e.preventDefault();
-          const target = Math.max(0, app.player.position_seconds - 5);
+          const target = Math.max(0, playerStore.positionSeconds - 5);
           void seek(target);
         }
         break;

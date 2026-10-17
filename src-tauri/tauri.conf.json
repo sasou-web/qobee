@@ -27,7 +27,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' data: blob: asset: http://asset.localhost https://asset.localhost qobee-cover: http://qobee-cover.localhost https://qobee-cover.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'"
     }
   },
   "plugins": {
@@ -45,11 +45,11 @@
     "active": true,
     "createUpdaterArtifacts": true,
     "category": "Music",
-    "shortDescription": "A local audio player focused on fidelity.",
-    "longDescription": "Qobee indexes a music folder and plays FLAC and other lossless formats through a careful audio path. No cloud, no streaming, no telemetry. Built with Rust + Tauri + Svelte.",
+    "shortDescription": "A simple, fast local audio player.",
+    "longDescription": "Qobee indexes a music folder and plays your local library (FLAC, MP3, AAC/M4A, WAV, OGG and more) with a simple, stable playback engine. No cloud, no streaming, no telemetry. Built with Rust + Tauri + Svelte.",
     "copyright": "Qobee contributors",
     "publisher": "Qobee",
-    "homepage": "https://github.com/qobee/qobee",
+    "homepage": "https://github.com/sasou-web/qobee",
     "targets": ["msi", "nsis", "dmg", "app"],
     "icon": [
       "icons/32x32.png",

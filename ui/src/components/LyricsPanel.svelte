@@ -2,7 +2,7 @@
   import { onDestroy } from "svelte";
   import { fade } from "svelte/transition";
   import { getLyrics, type Lyrics } from "../lib/api";
-  import { app } from "../lib/stores.svelte";
+  import { playerStore } from "../lib/playerStore.svelte";
 
   interface Props {
     /// Track id to fetch lyrics for. Pass `null` to clear.
@@ -50,7 +50,7 @@
 
   // Active line index for synced lyrics: latest line whose timestamp
   // is less than or equal to the current player position.
-  let positionMs = $derived(Math.floor(app.player.position_seconds * 1000));
+  let positionMs = $derived(Math.floor(playerStore.positionMs));
   let activeIdx = $derived.by(() => {
     if (!lyrics?.synced || lyrics.synced.length === 0) return -1;
     const lines = lyrics.synced;

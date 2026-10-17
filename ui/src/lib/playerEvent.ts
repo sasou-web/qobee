@@ -3,10 +3,9 @@
 //
 // We only model the *new* R8 transport variants that the player
 // store consumes. The legacy variants (`state_changed`, `position`,
-// `end_of_track`, `bit_perfect_changed`, `error`) ride the same
-// channel but are handled by other callers (`stores.svelte.ts`,
-// the bit-perfect topic, etc.) — we accept them in the union with
-// `unknown` payload shapes so `apply()` can ignore them safely
+// `end_of_track`, `error`) ride the same channel but are handled by
+// other callers (`stores.svelte.ts`) — we accept them in the union
+// with `unknown` payload shapes so `apply()` can ignore them safely
 // without TypeScript forcing us to model their innards.
 //
 // Sync policy: hand-written, kept tiny on purpose. If you change a
@@ -53,5 +52,4 @@ export type PlayerEventDto =
   | { type: "state_changed"; state: unknown }
   | { type: "position"; position_seconds: number }
   | { type: "end_of_track" }
-  | { type: "bit_perfect_changed"; health: unknown }
   | { type: "error"; message: string };

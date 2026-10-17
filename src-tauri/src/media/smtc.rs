@@ -349,7 +349,6 @@ impl MediaBridge for SmtcBridge {
             PlayerEvent::StateChanged { .. }
             | PlayerEvent::Position { .. }
             | PlayerEvent::EndOfTrack
-            | PlayerEvent::BitPerfectChanged { .. }
             | PlayerEvent::Error { .. } => Ok(()),
         };
 
@@ -415,7 +414,6 @@ fn event_kind(ev: &PlayerEvent) -> &'static str {
         PlayerEvent::StateChanged { .. } => "state_changed",
         PlayerEvent::Position { .. } => "position",
         PlayerEvent::EndOfTrack => "end_of_track",
-        PlayerEvent::BitPerfectChanged { .. } => "bit_perfect",
         PlayerEvent::Error { .. } => "error",
     }
 }

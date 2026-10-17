@@ -12,4 +12,4 @@
 // component test rig.
 
 export const GOOGLE_CLOUD_SETUP_DOC_URL =
-  "https://github.com/qobee/qobee/blob/main/docs/google-cloud-setup.md";
+  "https://github.com/sasou-web/qobee/blob/main/docs/google-cloud-setup.md";

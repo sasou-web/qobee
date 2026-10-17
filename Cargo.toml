@@ -14,7 +14,7 @@ edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 authors = ["Qobee contributors"]
-repository = "https://github.com/qobee/qobee"
+repository = "https://github.com/sasou-web/qobee"
 
 [workspace.dependencies]
 # Async / runtime utils
@@ -60,15 +60,13 @@ symphonia = { version = "0.5.5", features = [
 # Audio output
 cpal = "0.17"
 
-# Sample-rate conversion (used by the CPAL Shared backend when the OS
-# mixer's rate differs from the file's rate; see backend_cpal_shared.rs).
-rubato = "0.16"
-
-# Real-time-safe partitioned FFT convolver (R9 — `Convolver_Stage`).
-# Used only by `crates/engine/src/dsp/convolver.rs`. Alternative
-# `realfft` manual partitioning kept as a fallback if upstream goes
-# stale.
-fft-convolver = "0.3"
+# High-level playback: rodio wraps Symphonia (decode) + CPAL (output)
+# and owns the decode → output → volume → seek pipeline so the engine
+# stays small. `symphonia-all` enables every codec Qobee supports.
+rodio = { version = "0.21", default-features = false, features = [
+    "symphonia-all",
+    "playback",
+] }
 
 # Tag / cover extraction
 lofty = "0.24"

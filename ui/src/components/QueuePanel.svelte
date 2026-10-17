@@ -23,6 +23,7 @@
     type Track,
   } from "../lib/api";
   import { app } from "../lib/stores.svelte";
+  import { playerStore } from "../lib/playerStore.svelte";
   import { formatDuration } from "../lib/format";
   import { activateOnKey, announce } from "../lib/a11y";
   import { PLAYER_LABELS } from "../lib/labels";
@@ -59,7 +60,7 @@
   // Reload on first render and whenever the playing track changes
   // (covers auto-advance, manual next, play_next inserts).
   $effect(() => {
-    void app.player.current_track_id;
+    void playerStore.currentTrackId;
     void load();
   });
 
@@ -241,7 +242,7 @@
               {:else}
                 <div class="thumb-placeholder">?</div>
               {/if}
-              {#if row.isCurrent && app.player.status === "playing"}
+              {#if row.isCurrent && playerStore.status === "playing"}
                 <span class="row-eq" aria-hidden="true">
                   <span></span><span></span><span></span>
                 </span>

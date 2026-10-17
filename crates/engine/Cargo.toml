@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Audio engine for Qobee: decoding (Symphonia) + output (CPAL Shared, WASAPI Exclusive seam)."
+description = "Simple audio engine for Qobee: a thin rodio-backed playback core (decode + output + volume + seek) with a CPAL output-device picker."
 
 [dependencies]
 serde = { workspace = true }
@@ -15,62 +15,19 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 crossbeam-channel = { workspace = true }
-rtrb = { workspace = true }
-arc-swap = { workspace = true }
 
-symphonia = { workspace = true }
-cpal = { workspace = true }
-rubato = { workspace = true }
-fft-convolver = { workspace = true }
-realfft = "3"
+# High-level playback core. rodio owns decoding (Symphonia), output
+# (CPAL), volume, seeking, and source queuing. It also re-exports the
+# matching `cpal` (used by `device.rs` for output-device enumeration),
+# so we deliberately do NOT depend on `cpal` directly — that would risk
+# pulling a second, incompatible cpal version into the graph.
+rodio = { workspace = true }
 
-# Drive backend used by `SymphoniaDecoder::open_uri` when the
-# track path is a `drv://...` URI. The dependency is one-way
-# (engine depends on drive, never the reverse); drive only knows
-# about the `MediaSource` trait from symphonia, so there's no
-# loop.
+# Drive backend: lets the engine build a rodio `Decoder` over an HTTP
+# byte-range `MediaSource` when a track path is a `drv://…` URI. The
+# dependency is one-way (engine → drive, never the reverse).
 qobee-drive = { workspace = true }
-
-# WASAPI Exclusive backend (Windows-only). Pulled via target-cfg below.
-
-[target.'cfg(target_os = "windows")'.dependencies]
-wasapi = "0.23"
-windows = { version = "0.62", features = [
-    "Win32_Foundation",
-    "Win32_Media_Audio",
-] }
-
-[features]
-default = []
-# Reserved seam for a future BASS-based backend. Currently a stub that returns
-# `EngineError::BackendUnavailable`; pulling this feature in does not add any
-# external dependency yet.
-engine-bass = []
-# ASIO output backend (Windows, pro-audio / audiophile). Enables cpal's
-# `asio` host, which requires the proprietary Steinberg ASIO SDK and
-# LLVM/bindgen at build time (point `CPAL_ASIO_DIR` at the SDK). When
-# this feature is off, `backend_asio::AsioEngine::new` returns
-# `EngineError::BackendUnavailable` and the orchestrator falls back to
-# Shared, so the default build needs none of the SDK toolchain.
-engine-asio = ["cpal/asio"]
-# Opt-in flag for the long-running resampler SNR property tests
-# (Properties 15 / 16). Off by default because each FFT pass through
-# 65 536 samples is a few seconds of CPU; CI only runs them on the
-# nightly audio-quality job that explicitly enables this feature.
-slow-tests = []
 
 [dev-dependencies]
 serde_json = { workspace = true }
 proptest = { workspace = true }
-# `no-env-filter` makes `#[traced_test]` capture events on every target
-# regardless of `RUST_LOG`, so the task 15.3 MP3 example tests can
-# deterministically assert on (and against) the `qobee::engine`
-# aggregate `info` summary.
-tracing-test = { workspace = true, features = ["no-env-filter"] }
-# FFT helper used by the `Dither_Stage` property tests (Property 3,
-# `shaped_f_weighted` spectral bound). See task 17.
-realfft = "3"
-# Direct rubato access for the resampler SNR tests (Properties
-# 15-16). The engine itself depends on rubato as a regular dep, but
-# integration tests need an explicit handle on `SincFixedIn`.
-rubato = { workspace = true }

@@ -6,6 +6,40 @@ follows semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- **Audio engine rebuilt on `rodio`.** The audiophile engine was
+  replaced with a small, fast, stable playback core built on `rodio`
+  (RustAudio), which wraps Symphonia (decoding) and CPAL (output) and
+  owns loading, transport (play / pause / resume / stop / seek),
+  volume, seeking and source queuing. The new goal is a simple,
+  ergonomic local player rather than a fidelity-first audiophile
+  stack.
+- Volume now maps the slider position linearly to the output gain
+  (0 → mute, 1 → unity).
+
+### Removed
+
+- All audiophile DSP and diagnostics: the 10-band EQ, ReplayGain,
+  crossfeed, the FFT convolver, dither, the look-ahead limiter,
+  balance/trim, the DSD pipeline, the bit-perfect health badge, and
+  the null-test diagnostic.
+- Output modes (Auto / Shared / WASAPI Exclusive / ASIO) and the
+  configurable resampler quality. The **output-device picker is
+  kept** — you can still choose where audio plays, with automatic
+  fallback to the system default when the chosen device is gone.
+- The corresponding Tauri commands, frontend stores and Settings
+  panels (Audio, Equalizer) that backed those features.
+- Gapless / crossfade is out of scope for now; a small inter-track
+  gap is expected.
+
+### Migration
+
+- On first launch after the upgrade, the obsolete `audio.*` settings
+  rows left by the previous engine are removed automatically. All
+  non-audio preferences (UI, output device, integrations, session)
+  are preserved.
+
 ## [0.5.2] - 2026-05-31
 
 ### Added
@@ -253,8 +287,8 @@ icon in the menu bar.
   exact position and restores the play/pause state — instead of dying
   with a hard error.
 
-[0.5.2]: https://github.com/qobee/qobee/releases/tag/v0.5.2
-[0.5.1]: https://github.com/qobee/qobee/releases/tag/v0.5.1
+[0.5.2]: https://github.com/sasou-web/qobee/releases/tag/v0.5.2
+[0.5.1]: https://github.com/sasou-web/qobee/releases/tag/v0.5.1
 
 ## [0.5.0] - 2026-05-28
 
@@ -559,9 +593,9 @@ runtime characteristics are identical to 0.4.0.
   with (the clippy error above was latent because the previous
   CI only ran `cargo check`).
 
-[0.4.2]: https://github.com/qobee/qobee/releases/tag/v0.4.2
-[0.4.1]: https://github.com/qobee/qobee/releases/tag/v0.4.1
-[0.4.0]: https://github.com/qobee/qobee/releases/tag/v0.4.0
+[0.4.2]: https://github.com/sasou-web/qobee/releases/tag/v0.4.2
+[0.4.1]: https://github.com/sasou-web/qobee/releases/tag/v0.4.1
+[0.4.0]: https://github.com/sasou-web/qobee/releases/tag/v0.4.0
 
 ## [0.4.0] - 2026-05-26
 
@@ -915,8 +949,8 @@ WASAPI Exclusive, lyrics, mini player).
   auto-fallback handles this transparently — the user just sees
   a switch back to Shared.
 
-[0.3.0]: https://github.com/qobee/qobee/releases/tag/v0.3.0
-[0.2.0]: https://github.com/qobee/qobee/releases/tag/v0.2.0
+[0.3.0]: https://github.com/sasou-web/qobee/releases/tag/v0.3.0
+[0.2.0]: https://github.com/sasou-web/qobee/releases/tag/v0.2.0
 
 ## [0.1.0] - 2026-05-25
 
@@ -973,4 +1007,4 @@ First public release.
 - Seek is Coarse only (snaps to the nearest demuxer keyframe).
 - BASS backend is a stub behind the `engine-bass` Cargo feature.
 
-[0.1.0]: https://github.com/qobee/qobee/releases/tag/v0.1.0
+[0.1.0]: https://github.com/sasou-web/qobee/releases/tag/v0.1.0

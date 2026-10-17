@@ -56,8 +56,6 @@ vi.mock("../../lib/api", () => ({
   listOutputDevices: vi.fn(async () => []),
   getSelectedOutputDevice: vi.fn(async () => null),
   libraryStats: vi.fn(async () => null),
-  getReplayGainMode: vi.fn(async () => "off"),
-  getUserOutputMode: vi.fn(async () => "auto"),
   listLibrarySources: vi.fn(async () => []),
   getWindowSettings: vi.fn(async () => ({
     close_behavior: "quit",
@@ -65,7 +63,6 @@ vi.mock("../../lib/api", () => ({
     notify_on_track_change: false,
     tray_notice_shown: false,
   })),
-  getCrossfadeMs: vi.fn(async () => 0),
   // --- R8.4 : purge des liens de covers (compte connu) ---
   clearUploadedCoverLinks: vi.fn(async () => 3),
   // --- persistance bas niveau utilisée par le vrai store `settings` ---

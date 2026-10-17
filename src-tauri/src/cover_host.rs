@@ -193,7 +193,7 @@ fn worker_main<F>(
     // OpenSSL-free on Windows. Modest connect/timeout so a stuck
     // host never wedges the queue.
     let client = match reqwest::blocking::Client::builder()
-        .user_agent("Qobee/0.1 (+https://github.com/qobee)")
+        .user_agent("Qobee/0.1 (+https://github.com/sasou-web/qobee)")
         .timeout(Duration::from_secs(45))
         .connect_timeout(Duration::from_secs(15))
         .build()

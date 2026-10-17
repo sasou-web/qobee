@@ -447,12 +447,10 @@ fn apply_to_state(s: &mut BridgeState, ev: &PlayerEvent) {
         // Legacy variants ride the crossbeam channel, not the R8
         // broadcast bus. The proptest generators below never
         // produce them; we accept them as no-ops for forward
-        // compatibility (e.g. if a future version starts mirroring
-        // `BitPerfectChanged` onto the broadcast).
+        // compatibility.
         PlayerEvent::StateChanged { .. }
         | PlayerEvent::Position { .. }
         | PlayerEvent::EndOfTrack
-        | PlayerEvent::BitPerfectChanged { .. }
         | PlayerEvent::Error { .. } => {}
     }
 }

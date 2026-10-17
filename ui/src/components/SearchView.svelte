@@ -6,6 +6,7 @@
     type SearchResults,
   } from "../lib/api";
   import { app } from "../lib/stores.svelte";
+  import { playerStore } from "../lib/playerStore.svelte";
   import { formatDuration, formatQuality } from "../lib/format";
   import Cover from "./Cover.svelte";
   import Marquee from "./Marquee.svelte";
@@ -132,8 +133,8 @@
           </thead>
           <tbody>
             {#each results.tracks as t, i (t.id)}
-              {@const isCurrent = app.player.current_track_id === String(t.id)}
-              {@const isPlaying = isCurrent && app.player.status === "playing"}
+              {@const isCurrent = playerStore.currentTrackId === String(t.id)}
+              {@const isPlaying = isCurrent && playerStore.status === "playing"}
               <tr
                 class:current={isCurrent}
                 onclick={() => playFromList(i)}

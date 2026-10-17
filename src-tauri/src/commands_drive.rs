@@ -19,9 +19,9 @@
 //! returns or after a coarse timeout.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
 
@@ -85,12 +85,14 @@ pub struct OAuthSessions {
 
 impl OAuthSessions {
     pub fn put(&self, id: String, session: OAuthSession) {
-        let mut g = self.inner.lock().expect("poisoned");
+        // parking_lot::Mutex has no poisoning, so the lock can never
+        // become unusable after a panic in another command.
+        let mut g = self.inner.lock();
         g.insert(id, session);
     }
 
     pub fn take(&self, id: &str) -> Option<OAuthSession> {
-        let mut g = self.inner.lock().expect("poisoned");
+        let mut g = self.inner.lock();
         g.remove(id)
     }
 }

@@ -18,10 +18,9 @@
     type Track,
   } from "../lib/api";
   import { app } from "../lib/stores.svelte";
+  import { playerStore } from "../lib/playerStore.svelte";
   import { settings } from "../lib/settings.svelte";
-  import { volumeSettings } from "../lib/audioSettings.svelte";
-  import { stepDb } from "../lib/volumeFormat";
-  import { formatDuration, formatOutputMode, formatQuality } from "../lib/format";
+  import { formatDuration, formatQuality } from "../lib/format";
   import { PLAYER_LABELS } from "../lib/labels";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
@@ -48,8 +47,14 @@
   let shuffleOn = $state<boolean>(false);
   let repeatMode = $state<RepeatMode>("off");
 
+  // Mute state, Kopuz-style: the mute button remembers the volume it
+  // muted from and restores it on un-mute. `isMuted` tracks whether
+  // the slider currently sits at zero.
+  let isMuted = $derived(playerStore.volume <= 0);
+  let volumeBeforeMute = $state<number>(1);
+
   async function refreshNowPlaying(): Promise<void> {
-    const id = app.player.current_track_id;
+    const id = playerStore.currentTrackId;
     if (id === null) {
       nowTitle = "";
       nowArtist = "";
@@ -153,7 +158,7 @@
   }
 
   $effect(() => {
-    void app.player.current_track_id;
+    void playerStore.currentTrackId;
     void refreshNowPlaying();
   });
 
@@ -161,67 +166,140 @@
     void refreshDevices();
   });
 
-  let isPlaying = $derived(app.player.status === "playing");
+  let isPlaying = $derived(playerStore.status === "playing");
+  // While the user is dragging the seek bar we drive the fill + thumb
+  // from a local preview (`seekPreviewPct`) so they track the pointer
+  // in real time. Without this the native thumb jumps to the cursor
+  // instantly while the purple fill waits for the engine to echo a
+  // `player:position` event back — the "fill lags the thumb" bug.
+  let seeking = $state<boolean>(false);
+  let seekPreviewPct = $state<number>(0);
   let progressPct = $derived.by(() => {
-    const dur = app.player.duration_seconds;
+    if (seeking) return seekPreviewPct;
+    const dur = playerStore.durationSeconds;
     if (dur <= 0) return 0;
-    return Math.min(100, (app.player.position_seconds / dur) * 100);
+    return Math.min(100, (playerStore.positionSeconds / dur) * 100);
   });
-  let volumePct = $derived(Math.round(app.player.volume * 100));
+  let volumePct = $derived(Math.round(playerStore.volume * 100));
   let remainingSeconds = $derived(
-    Math.max(0, app.player.duration_seconds - app.player.position_seconds)
+    Math.max(0, playerStore.durationSeconds - playerStore.positionSeconds)
   );
 
-  // Lazily warm the cached `audio.volume_curve` / `audio.volume_floor_db`
-  // pair so wheel scrolls behave correctly. The store returns spec
-  // defaults synchronously while the load is in flight.
-  void volumeSettings.ensureLoaded();
+  // Live drag: keep the fill + thumb glued to the pointer by feeding
+  // a local preview, and don't hit the engine on every input tick.
+  function onSeekInput(e: Event): void {
+    seeking = true;
+    seekPreviewPct = Number((e.target as HTMLInputElement).value);
+  }
 
-  async function handleSeek(e: Event): Promise<void> {
+  // Release (pointer up / keyboard commit): seek the engine once to
+  // the final value, then drop back to the store-driven position.
+  async function onSeekCommit(e: Event): Promise<void> {
     const value = Number((e.target as HTMLInputElement).value);
-    const dur = app.player.duration_seconds;
-    if (dur <= 0) return;
-    try {
-      await seek((value / 100) * dur);
-    } catch (err) {
-      app.lastError = String(err);
+    seekPreviewPct = value;
+    const dur = playerStore.durationSeconds;
+    if (dur > 0) {
+      // Optimistically move the store so the fill stays put through
+      // the round-trip instead of snapping back to the old position.
+      playerStore.positionMs = (value / 100) * dur * 1000;
+      try {
+        await seek((value / 100) * dur);
+      } catch (err) {
+        app.lastError = String(err);
+      }
     }
+    seeking = false;
   }
 
-  async function handleVolume(e: Event): Promise<void> {
-    const value = Number((e.target as HTMLInputElement).value) / 100;
-    try {
-      await setVolume(value);
-      await settings.set("defaultVolume", value);
-    } catch (err) {
-      app.lastError = String(err);
-    }
-  }
-
-  // Mouse-wheel volume. Steps by ±2 dB per notch (R4.6) by deferring
-  // to `stepDb` so the slider's audible delta stays uniform across
-  // the curve regardless of the user's selected `audio.volume_curve`.
+  // Volume drag. Fully custom slider (no native <input>): we compute
+  // the value from the pointer X relative to the track width, update
+  // the store optimistically so the fill + thumb track the pointer in
+  // real time, and debounce the settings write so we don't hit SQLite
+  // on every move.
   let pendingVolumePersist: ReturnType<typeof setTimeout> | null = null;
+  let volTrackEl = $state<HTMLElement | null>(null);
+  let volDragging = $state<boolean>(false);
+
+  function persistVolumeSoon(value: number): void {
+    if (pendingVolumePersist) clearTimeout(pendingVolumePersist);
+    pendingVolumePersist = setTimeout(() => {
+      void settings.set("defaultVolume", value);
+    }, 250);
+  }
+
+  async function applyVolume(value: number): Promise<void> {
+    const v = Math.min(1, Math.max(0, value));
+    playerStore.volume = v;
+    if (v > 0) volumeBeforeMute = v;
+    try {
+      await setVolume(v);
+      persistVolumeSoon(v);
+    } catch (err) {
+      app.lastError = String(err);
+    }
+  }
+
+  /** Map a pointer clientX onto a 0..1 volume from the track geometry. */
+  function volumeFromPointer(clientX: number): number {
+    if (!volTrackEl) return playerStore.volume;
+    const rect = volTrackEl.getBoundingClientRect();
+    if (rect.width <= 0) return playerStore.volume;
+    return (clientX - rect.left) / rect.width;
+  }
+
+  function onVolPointerDown(e: PointerEvent): void {
+    e.preventDefault();
+    volDragging = true;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    void applyVolume(volumeFromPointer(e.clientX));
+  }
+
+  function onVolPointerMove(e: PointerEvent): void {
+    if (!volDragging) return;
+    void applyVolume(volumeFromPointer(e.clientX));
+  }
+
+  function onVolPointerUp(e: PointerEvent): void {
+    if (!volDragging) return;
+    volDragging = false;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function onVolKeydown(e: KeyboardEvent): void {
+    let next = playerStore.volume;
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") next += 0.05;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next -= 0.05;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = 1;
+    else return;
+    e.preventDefault();
+    void applyVolume(next);
+  }
+
+  // Mute / un-mute toggle (Kopuz-style). Muting remembers the current
+  // level; un-muting restores it (falling back to 1.0 if we muted from
+  // an already-silent slider).
+  async function toggleMute(): Promise<void> {
+    if (playerStore.volume > 0) {
+      volumeBeforeMute = playerStore.volume;
+      await applyVolume(0);
+    } else {
+      await applyVolume(volumeBeforeMute > 0 ? volumeBeforeMute : 1);
+    }
+  }
+
+  // Mouse-wheel volume. Steps by a fixed ±0.02 (2%) per notch, clamped
+  // to [0, 1]. The simplified engine maps the slider linearly to gain.
   async function handleVolumeWheel(e: WheelEvent): Promise<void> {
     e.preventDefault();
     const direction = e.deltaY > 0 ? -1 : 1;
-    const next = stepDb(
-      app.player.volume,
-      direction * 2.0,
-      volumeSettings.curve,
-      volumeSettings.floorDb
-    );
-    if (next === app.player.volume) return;
-    try {
-      await setVolume(next);
-      app.player = { ...app.player, volume: next };
-      if (pendingVolumePersist) clearTimeout(pendingVolumePersist);
-      pendingVolumePersist = setTimeout(() => {
-        void settings.set("defaultVolume", next);
-      }, 250);
-    } catch (err) {
-      app.lastError = String(err);
-    }
+    const next = Math.min(1, Math.max(0, playerStore.volume + direction * 0.02));
+    if (next === playerStore.volume) return;
+    await applyVolume(next);
   }
 
   // --- Relayout on resize / restore (R1.5) ----------------------------------
@@ -274,7 +352,7 @@
        its left and the remaining time on its right. Styled to feel
        like a single horizontal unit (no full-width bleed). -->
   <div class="seek-row">
-    <span class="seek-time tabular">{formatDuration(app.player.position_seconds)}</span>
+    <span class="seek-time tabular">{formatDuration(playerStore.positionSeconds)}</span>
     <div class="seek-track">
       <input
         class="seek"
@@ -283,7 +361,8 @@
         max="100"
         step="0.1"
         value={progressPct}
-        oninput={handleSeek}
+        oninput={onSeekInput}
+        onchange={onSeekCommit}
         style:--range-fill={`${progressPct}%`}
         aria-label="Seek"
       />
@@ -425,8 +504,8 @@
 
     <!-- Right: format badges, queue, volume. -->
     <div class="right">
-      <span class="badge quality" title={`${formatOutputMode(app.player.output_mode)} · ${formatQuality(app.player.sample_rate, app.player.bit_depth)}`}>
-        {formatQuality(app.player.sample_rate, app.player.bit_depth)}
+      <span class="badge quality" title={formatQuality(playerStore.sampleRate, playerStore.bitDepth)}>
+        {formatQuality(playerStore.sampleRate, playerStore.bitDepth)}
       </span>
 
       <button
@@ -444,18 +523,35 @@
       <SleepTimer />
 
       <div class="volume" onwheel={handleVolumeWheel} role="group" aria-label="Volume">
-        <Icon name="volume" size={13} />
-        <input
-          type="range"
-          min="0"
-          max="100"
-          step="1"
-          value={app.player.volume * 100}
-          oninput={handleVolume}
-          style:--range-fill={`${volumePct}%`}
+        <button
+          class="vol-btn"
+          onclick={toggleMute}
+          aria-label={isMuted ? "Réactiver le son" : "Couper le son"}
+          title={isMuted ? "Réactiver le son" : "Couper le son"}
+        >
+          <Icon name={isMuted ? "volume-mute" : "volume"} size={14} />
+        </button>
+        <div
+          class="vol-track"
+          class:dragging={volDragging}
+          bind:this={volTrackEl}
+          onpointerdown={onVolPointerDown}
+          onpointermove={onVolPointerMove}
+          onpointerup={onVolPointerUp}
+          onpointercancel={onVolPointerUp}
+          onkeydown={onVolKeydown}
+          role="slider"
+          tabindex="0"
           aria-label="Volume"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={volumePct}
+          aria-valuetext={`${volumePct}%`}
           title={`Volume: ${volumePct}%`}
-        />
+        >
+          <div class="vol-fill" style:width={`${volumePct}%`}></div>
+          <span class="vol-thumb" style:left={`${volumePct}%`}></span>
+        </div>
       </div>
     </div>
   </div>
@@ -921,8 +1017,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    width: 120px;
-    min-width: 90px;
+    width: 124px;
+    min-width: 96px;
     color: var(--fg-2);
     padding-left: 4px;
     transition: color var(--dur-fast) var(--ease-out);
@@ -930,13 +1026,91 @@
   .volume:hover {
     color: var(--fg-1);
   }
-  .volume :global(svg) {
+  /* Mute / un-mute button — flat icon that brightens on hover. */
+  .vol-btn {
     flex-shrink: 0;
-    opacity: 0.7;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--fg-2);
+    cursor: pointer;
+    border-radius: 50%;
+    transition:
+      color var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out);
   }
-  .volume input[type="range"] {
-    height: 14px;
+  .vol-btn:hover {
+    color: var(--fg-0);
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  /* Fully-custom volume slider (no native <input>): a div track with a
+     fill + thumb both driven by the same `volumePct`, so they always
+     stay aligned. Grey at rest, accent on hover; thumb only on hover. */
+  .vol-track {
+    position: relative;
     flex: 1 1 auto;
     min-width: 60px;
+    height: 14px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    touch-action: none;
+  }
+  .vol-track::before {
+    /* the rail */
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+  }
+  .vol-fill {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    height: 4px;
+    border-radius: 999px;
+    background: var(--fg-1);
+    pointer-events: none;
+    transition: background var(--dur-fast) var(--ease-out);
+  }
+  .volume:hover .vol-fill,
+  .vol-track.dragging .vol-fill {
+    background: var(--accent);
+  }
+  .vol-thumb {
+    position: absolute;
+    top: 50%;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--fg-0);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-out);
+  }
+  .volume:hover .vol-thumb,
+  .vol-track.dragging .vol-thumb {
+    opacity: 1;
+  }
+  .vol-track:focus-visible {
+    outline: none;
+  }
+  .vol-track:focus-visible .vol-thumb {
+    opacity: 1;
+    box-shadow: 0 0 0 4px var(--accent-glow);
   }
 </style>

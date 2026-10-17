@@ -458,6 +458,50 @@ impl Database {
         Ok(track)
     }
 
+    /// Resolve many track ids in a single query, returned in the same
+    /// order as `track_ids`. Ids that don't resolve to a row are
+    /// skipped (the result can be shorter than the input). Avoids the
+    /// N round-trips a per-id `get_track` loop would cost when the UI
+    /// renders a long queue or favorites list.
+    pub fn get_tracks_by_ids(&self, track_ids: &[i64]) -> LibraryResult<Vec<Track>> {
+        if track_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Build a `?,?,...` placeholder list; ids are i64 so there is
+        // no injection surface, but we still bind them as params.
+        let placeholders = std::iter::repeat_n("?", track_ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            r#"
+            SELECT id, path, title, artist, album, album_artist,
+                   track_number, disc_number, year, genre,
+                   duration_seconds, sample_rate, bit_depth, channels, cover_key, replaygain_track_db, replaygain_album_db,
+                   replaygain_track_peak, replaygain_album_peak
+            FROM tracks
+            WHERE id IN ({placeholders})
+            "#
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params = rusqlite::params_from_iter(track_ids.iter());
+        let rows = stmt
+            .query_map(params, track_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Re-order to match the requested id order (SQL `IN` does not
+        // guarantee row order). Build an id -> Track map, then pull
+        // each requested id in turn.
+        let mut by_id: std::collections::HashMap<i64, Track> =
+            rows.into_iter().map(|t| (t.id, t)).collect();
+        let mut out = Vec::with_capacity(track_ids.len());
+        for id in track_ids {
+            if let Some(t) = by_id.remove(id) {
+                out.push(t);
+            }
+        }
+        Ok(out)
+    }
+
     /// Resolve a track by its absolute file system path. The lookup
     /// matches on the `path` column verbatim, so callers must
     /// canonicalise (or at least normalise) the path before calling.
@@ -1108,6 +1152,15 @@ impl Database {
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![key, value],
         )?;
+        Ok(())
+    }
+
+    /// Delete a single settings row by key. Deleting a missing key
+    /// affects zero rows and returns `Ok`, which gives the startup
+    /// audio-settings cleanup its idempotence and absent-key tolerance.
+    pub fn delete_setting(&mut self, key: &str) -> LibraryResult<()> {
+        self.conn
+            .execute("DELETE FROM settings WHERE key = ?1", params![key])?;
         Ok(())
     }
 

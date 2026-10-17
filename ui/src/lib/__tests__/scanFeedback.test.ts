@@ -82,12 +82,9 @@ vi.mock("../api", () => {
     position_seconds: 0,
     duration_seconds: 0,
     volume: 1,
-    output_mode: "shared",
     sample_rate: null,
     bit_depth: null,
     channels: null,
-    is_bit_perfect: false,
-    rg_attenuation_db: null,
     error: null,
   };
 

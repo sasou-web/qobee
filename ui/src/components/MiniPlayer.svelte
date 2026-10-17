@@ -11,6 +11,7 @@
     toggleMiniPlayer,
   } from "../lib/api";
   import { app } from "../lib/stores.svelte";
+  import { playerStore } from "../lib/playerStore.svelte";
   import { formatDuration } from "../lib/format";
   import { PLAYER_LABELS } from "../lib/labels";
   import Cover from "./Cover.svelte";
@@ -25,7 +26,7 @@
   let lastResolvedId = "";
 
   $effect(() => {
-    const sid = app.player.current_track_id;
+    const sid = playerStore.currentTrackId;
     if (!sid) {
       track = null;
       lastResolvedId = "";
@@ -44,8 +45,8 @@
       });
   });
 
-  let pos = $derived(app.player.position_seconds);
-  let dur = $derived(Math.max(app.player.duration_seconds, track?.duration_seconds ?? 0));
+  let pos = $derived(playerStore.positionSeconds);
+  let dur = $derived(Math.max(playerStore.durationSeconds, track?.duration_seconds ?? 0));
   let pct = $derived(dur > 0 ? Math.min(100, (pos / dur) * 100) : 0);
 
   let alwaysOnTop = $state(true);

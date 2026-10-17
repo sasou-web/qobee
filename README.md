@@ -1,60 +1,35 @@
-#aA+ Qobee
+# Qobee
 
-A local audio player for Windows, focused on fidelity. Indexes one or
-more music folders, plays FLAC and other lossless formats through the
-OS mixer, and is built so that a future bit-perfect output path can
-drop in without rewriting the rest of the app.
+A simple, fast local audio player for Windows and macOS. Indexes one
+or more music folders and plays your library through a small, stable
+playback engine built on `rodio` (RustAudio).
 
 The current build delivers a complete listening experience: scanning,
 albums / artists / genres / playlists / favorites, search, queue
-management, 10-band equalizer, ReplayGain, gapless playback,
-sample-accurate seek, lyrics (synced + plain), a mini player,
-themes, accent following the cover, OS media keys, and Discord
-Rich Presence. The audio engine ships with two output backends —
-**Shared** (default, OS mixer) and **WASAPI Exclusive** (opt-in,
-strictly bit-perfect when the device cooperates). See
-"Bit-perfect honesty" below for the truth about each chain.
+management, sample-accurate seek, lyrics (synced + plain), a mini
+player, themes, accent following the cover, OS media keys, and Discord
+Rich Presence. The audio engine is intentionally minimal: it decodes
+with Symphonia, outputs through CPAL, and lets you pick the output
+device.
 
 ## Concept
 
 - Local-first: no streaming, no cloud, no media server.
-- FLAC priority, other lossless formats next.
+- Broad local format support (FLAC, MP3, AAC/M4A, ALAC, WAV, OGG,
+  Vorbis, MKV).
 - No tag editing, no media-server features, no library lock-in.
 - Sober, dark UI inspired by Cider (sidebar, album grid, artist list,
   album detail, track list, persistent player bar).
-- Audio engine designed up front to deliver clean Shared output
-  with a real bit-perfect path available via WASAPI Exclusive on
-  Windows.
-
-## Bit-perfect honesty
-
-Qobee will tell you the truth about its current playback chain rather
-than ship a misleading badge.
-
-- The default backend, **Shared (CpalSharedEngine)**, talks to WASAPI
-  in shared mode on Windows. The OS mixer can resample, dither,
-  apply effects, and mix Qobee's stream with other apps. **It is not
-  bit-perfect.** The player bar reports `Bit-perfect: false` on
-  this backend even when the in-app DSP is at unity.
-- The opt-in backend, **WASAPI Exclusive (WasapiExclusiveEngine)**,
-  bypasses the OS mixer and reaches a strictly bit-perfect chain
-  *only* when the device natively accepts the source's sample rate
-  and channel count, the EQ is flat, ReplayGain is at unity and the
-  volume is at 100 %. Any departure from that — resampling, upmix to
-  a surround layout because the OS is configured that way, an EQ
-  band that isn't 0 dB, a volume slider that isn't at the top —
-  flips `is_bit_perfect` back to `false`. While Exclusive is active
-  no other application can play to the same device.
-- Software volume, the EQ and ReplayGain are honored on both paths
-  because users still want them; the badge tracks them honestly.
+- Simple, maintainable audio engine: rock-solid play / pause / seek /
+  volume / queue over fancy DSP.
 
 ## Stack
 
 - **Rust** workspace with separate crates for the audio engine,
   library indexing and orchestration:
-  - `crates/engine` — Symphonia (decoding), CPAL (Shared output),
-    WASAPI Exclusive backend, biquad EQ, and a fidelity-first DSP
-    chain shared by both backends (see "Audio chain" below).
+  - `crates/engine` — a thin `rodio`-backed playback core
+    (decoding via Symphonia, output via CPAL, volume, seek, source
+    queuing) plus an output-device picker.
   - `crates/library` — `walkdir` + `lofty` for tag extraction,
     `rusqlite` (bundled) for storage, embedded covers cached on
     disk, FTS-style search, settings table.
@@ -66,53 +41,19 @@ than ship a misleading badge.
   uploads to a public host so Discord can render local album art).
 - **Svelte 5** + **TypeScript strict** + **Vite** frontend in `ui/`.
 
-### Audio chain
+### Audio engine
 
-The engine runs a single, deterministic DSP pipeline on top of both
-the Shared and Exclusive backends. Every stage is bypassable and
-honest about what it does — the truthful `is_bit_perfect` badge
-reflects the actual chain, not a marketing flag.
+The engine is a small wrapper around `rodio`, which itself uses
+Symphonia (decoding) and CPAL (output). It owns loading, transport
+(play / pause / resume / stop / seek), volume, and an output-device
+picker — nothing more. There is no EQ, ReplayGain, crossfeed,
+convolver, dither, limiter, DSD pipeline, output-mode switching,
+bit-perfect badge, or null-test diagnostic; those were removed in
+favour of a simpler, faster, more maintainable core.
 
-- **ReplayGain peak protection.** The pre-gain stage combines the
-  RG track/album gain, a configurable safety headroom and the
-  source's true peak (read from `REPLAYGAIN_TRACK_PEAK` /
-  `_ALBUM_PEAK` tags) so the output never exceeds the chosen
-  ceiling. Missing peak tags fall back to a conservative `1.0`,
-  and the attenuation actually applied is reported in the player
-  state.
-- **Dither.** Three profiles: `tpdf` (legacy white triangular PDF),
-  `shaped_hp` (HF-emphasis shaping), and `shaped_f_weighted` (the
-  default — F-weighted noise shaping that pushes the noise floor
-  away from the ear's peak sensitivity). The stage is in exact
-  bypass when the output is wider than 16 bits.
-- **Peak limiter.** Three modes: `off` (passthrough), `soft_clip`
-  (smooth tanh-style clipper, legacy behaviour), and
-  `lookahead_limiter` (the default — true-peak look-ahead limiter
-  with configurable ceiling, look-ahead and release).
-- **Logarithmic volume.** The slider maps to a dB scale by default
-  (`logarithmic` curve, configurable floor) so a small movement at
-  low levels behaves like the volume control on a real amplifier.
-  The legacy `quadratic` curve remains available.
-- **Crossfeed.** Bauer-style stereo-to-headphones crossfeed with
-  three presets (`bauer`, `bauer_strong`, `custom`) and tunable
-  inter-aural delay and low-pass cutoff. Off by default.
-- **DSD / DoP.** Native decoding of DSF and DFF files, with DSD
-  over PCM (DoP) packing for WASAPI Exclusive devices that accept
-  it.
-- **Convolver.** FFT-partitioned IR convolver for room-correction
-  or headphone-EQ filters. Loads any IR the user picks, with a
-  per-IR gain trim to keep the output within the limiter ceiling.
-- **Balance + per-channel trim.** Stereo balance plus an optional
-  per-channel trim vector (≤8 channels) for asymmetric setups.
-- **Bit-Perfect Health panel.** A live status badge surfaces every
-  factor that breaks bit-perfect — non-native sample rate, channel
-  upmix, non-unity volume, EQ engaged, ReplayGain attenuation,
-  dither active, limiter biting — so the user knows exactly which
-  stage is colouring the sound.
-- **Null-test diagnostic.** Plays a known reference and compares
-  it against either a loopback capture or the pre-render buffer,
-  reporting peak/RMS difference and a `BitPerfect / Modified /
-  Inconclusive` verdict.
+Volume maps the slider position linearly to the output gain (0 → mute,
+1 → unity). Gapless / crossfade is out of scope: a small inter-track
+gap is expected.
 
 Pinned versions:
 
@@ -120,34 +61,23 @@ Pinned versions:
 | ---------------------------- | --------- |
 | `tauri`                      | 2.11      |
 | `tauri-plugin-dialog`        | 2.2       |
-| `symphonia`                  | 0.5.5     |
-| `cpal`                       | 0.17      |
-| `wasapi` (Windows-only)      | 0.23      |
-| `windows` (Windows-only)     | 0.62      |
+| `rodio`                      | 0.21      |
+| `symphonia` (via rodio)      | 0.5.5     |
+| `cpal` (via rodio)           | 0.16      |
 | `lofty`                      | 0.24      |
 | `rusqlite` (bundled)         | 0.39      |
 | `notify`                     | 8.2       |
 | `crossbeam-channel`          | 0.5       |
-| `rtrb`                       | 0.3       |
-| `rubato`                     | 0.16      |
 | `blake3`                     | 1.5       |
 | `discord-rich-presence`      | 1.1       |
 | `reqwest` (rustls, blocking) | 0.12      |
 | `svelte`                     | 5.20      |
 | `vite`                       | 6.1       |
 | `typescript`                 | 5.7       |
-| `@tauri-apps/api`            | 2.4       |
+| `@tauri-apps/api`            | 2.11      |
 
 ## Architecture notes
 
-- **PCM buffer is an enum, not just `Vec<f32>`.** The engine exposes
-  `F32Interleaved`, `I16Interleaved`, `I24In32Interleaved` and
-  `I32Interleaved`. Only `F32Interleaved` is produced today, but the
-  integer variants are part of the public API so a future
-  bit-perfect path can plug in without breaking call sites.
-- **SPSC ring** between decoder and audio callback uses `rtrb`. The
-  current ring carries `f32`; an integer ring will be added
-  alongside the Exclusive backend.
 - **Cover art never crosses the IPC boundary** for the UI. Embedded
   pictures are written to a sharded on-disk cache
   (`%APPDATA%\Qobee\covers\<aa>\<hash>.<ext>`) and exposed to the
@@ -159,11 +89,11 @@ Pinned versions:
   cover once to a public host (litterbox.catbox.moe), memoizes the
   URL in the settings table, and patches the active activity in
   place. The Discord IPC worker is never blocked on the network.
-- **No silent resampling.** When the device's sample rate differs
-  from the source, the engine logs an explicit warning and the
-  player state continues to report `is_bit_perfect: false`.
-- **Smooth UI under audio cadence.** Position events fire at decoder
-  cadence, not per audio frame, and the Discord and MediaSession
+- **Drive playback.** Tracks indexed from a Google Drive source use
+  a `drv://<source_id>/<file_id>` path; the engine feeds rodio's
+  decoder an HTTP byte-range media source for those.
+- **Smooth UI under audio cadence.** Position events fire on a short
+  poll, not per audio frame, and the Discord and MediaSession
   layers coalesce same-bucket updates so the elapsed bar never
   flickers and Discord's rate limit is never tripped.
 
@@ -248,7 +178,6 @@ Playback:
 | `set_volume`                     | Software volume (Shared mode)                       |
 | `next` / `prev`                  | Queue navigation                                    |
 | `get_player_state`               | Snapshot of `PlayerState`                           |
-| `get_output_mode` / `set_output_mode` | Auto / Shared (Exclusive reserved)             |
 | `list_output_devices` / `get_selected_output_device` / `set_output_device` | Output device picker |
 | `get_repeat_mode` / `set_repeat_mode` | Off / track / queue                            |
 | `get_shuffle` / `set_shuffle`    | Shuffle toggle                                      |
@@ -272,11 +201,10 @@ Playlists / favorites:
 | `add_favorite` / `remove_favorite` / `is_favorite` | Per-track favorite               |
 | `list_favorite_track_ids` / `list_favorites` | Favorites screen data                   |
 
-Equalizer / settings / maintenance / Discord:
+Settings / maintenance / Discord:
 
 | Command                          | Description                                         |
 | -------------------------------- | --------------------------------------------------- |
-| `get_eq_gains` / `set_eq_gains`  | 10-band peaking EQ (±12 dB)                         |
 | `get_setting` / `set_setting` / `list_settings` / `clear_settings` | Key/value preferences |
 | `clear_history` / `clear_cover_cache` / `reset_library` | Maintenance                  |
 | `discord_init`                   | Boot the Rich Presence worker                       |
@@ -409,33 +337,16 @@ The MSI / NSIS installers land under `src-tauri/target/release/bundle/`.
   Covers are cached at `%APPDATA%\Qobee\covers\` and served via
   `qobee-cover://`. Logs land in `%APPDATA%\Qobee\logs\` with
   daily rotation.
-- Decoding via Symphonia, output via CPAL Shared, output device
-  selectable from Settings.
-- Play / pause / resume / next / prev, seek (Coarse), software
-  volume in Shared mode.
+- Decoding via Symphonia, output via CPAL (through rodio), output
+  device selectable from Settings with automatic fallback to the
+  system default when the chosen device is unavailable.
+- Play / pause / resume / next / prev, seek, and software volume
+  (linear slider-to-gain mapping).
 - Queue: play next, add to queue, reorder, remove, jump to,
   inspect from a popover.
 - Playlists (create / rename / delete / add / remove / play from
   any track) and favorites (per-track, global Favorites screen).
 - Repeat (off / track / queue), shuffle, and endless playback.
-- 10-band peaking EQ at ISO octave centers (Q=1.0, ±12 dB), with
-  presets and an automatic bypass when every band is at 0 dB.
-- **Full audio DSP chain**, shared between Shared and Exclusive
-  backends and exposed in **Settings → Audio**: ReplayGain
-  true-peak protection with safety headroom, dither (TPDF /
-  shaped HP / shaped F-weighted), peak limiter (off / soft-clip /
-  look-ahead, on by default), logarithmic volume curve with a
-  configurable floor, Bauer-style crossfeed (presets + custom),
-  native DSD/DoP playback, FFT-partitioned IR convolver, balance
-  and per-channel trim. See "Audio settings keys" below for the
-  full key list.
-- **Bit-Perfect Health badge** in the player bar that lists every
-  factor breaking bit-perfect (non-native rate, channel upmix,
-  non-unity volume, EQ on, ReplayGain attenuation, dither, limiter
-  biting) instead of a binary green light.
-- **Null-test diagnostic** in Settings → Diagnostics that plays a
-  reference signal and reports peak/RMS difference plus a
-  `BitPerfect / Modified / Inconclusive` verdict.
 - Search across titles, artists and albums.
 - Recently played tracks / albums / artists on the home page.
 - Themes (system / dark / light), configurable accent color, and
@@ -463,40 +374,17 @@ The MSI / NSIS installers land under `src-tauri/target/release/bundle/`.
   resume restores it. Local cover hosting is **opt-in** for
   privacy: enable it from Settings → Integrations and the matching
   privacy notice explains exactly what gets uploaded and where.
-- The player bar always shows the effective output mode and a
-  truthful bit-perfect badge.
 
-## Audio settings keys
+## Migration from the audiophile engine
 
-Every audio preference is persisted as a JSON value in the SQLite
-`settings` table under an `audio.*` key. Booleans, numbers and
-arrays are stored as JSON; enums are stored as `snake_case`
-strings. Out-of-range values read at boot are clamped and
-rewritten; missing keys are created with their default. The full
-list is below; bounds and defaults are kept in sync with
-`crates/engine/src/audio_settings.rs` and the design document.
-
-| Key                                | Type             | Default              | Bounds                                          | Description                                                       |
-| ---------------------------------- | ---------------- | -------------------- | ----------------------------------------------- | ----------------------------------------------------------------- |
-| `audio.rg_peak_protection`         | bool             | `true`               | —                                               | Cap pre-gain so RG-boosted peaks never exceed the limiter ceiling.|
-| `audio.rg_safety_headroom_db`      | f32              | `1.0`                | `[0.0, 3.0]`                                    | Extra headroom subtracted from the ceiling when peak protection is on. |
-| `audio.dither_profile`             | enum             | `shaped_f_weighted`  | `tpdf` \| `shaped_hp` \| `shaped_f_weighted`    | Noise profile used when output is ≤ 16 bits.                      |
-| `audio.peak_limiter_mode`          | enum             | `lookahead_limiter`  | `off` \| `soft_clip` \| `lookahead_limiter`     | Final stage protecting the DAC from inter-sample / peak overshoot.|
-| `audio.peak_limiter_ceiling_dbfs`  | f32              | `-1.0`               | `[-3.0, 0.0]`                                   | True-peak ceiling enforced by the limiter.                        |
-| `audio.peak_limiter_lookahead_ms`  | f32              | `5.0`                | `[2.0, 10.0]`                                   | Look-ahead window for the limiter.                                |
-| `audio.peak_limiter_release_ms`    | f32              | `100.0`              | `[20.0, 500.0]`                                 | Release time of the limiter envelope.                             |
-| `audio.volume_curve`               | enum             | `logarithmic`        | `quadratic` \| `logarithmic`                    | Slider-to-gain mapping for software volume.                       |
-| `audio.volume_floor_db`            | f32              | `-60.0`              | `[-80.0, -30.0]`                                | Minimum gain (in dB) the slider can reach above 0 % (mute is exact). |
-| `audio.crossfeed_enabled`          | bool             | `false`              | —                                               | Enables Bauer-style headphones crossfeed.                         |
-| `audio.crossfeed_preset`           | enum             | `bauer`              | `bauer` \| `bauer_strong` \| `custom`           | Crossfeed preset; `custom` honours the delay/cutoff fields below. |
-| `audio.crossfeed_delay_us`         | f32              | `300.0`              | `[200.0, 400.0]`                                | Inter-aural delay in microseconds (used by `custom`).             |
-| `audio.crossfeed_lp_cutoff_hz`     | f32              | `700.0`              | `[500.0, 1500.0]`                               | Crossfeed low-pass cutoff (used by `custom`).                     |
-| `audio.resampler_quality`          | enum             | `best`               | `standard` \| `best`                            | Sinc length / oversampling factor of the rubato resampler.        |
-| `audio.convolver_enabled`          | bool             | `false`              | —                                               | Enables the FFT-partitioned IR convolver.                         |
-| `audio.convolver_ir_path`          | string \| null   | `null`               | readable file path                              | Impulse response file picked from disk.                           |
-| `audio.convolver_gain_db`          | f32              | `-6.0`               | `[-24.0, 0.0]`                                  | Trim applied to the convolver output to stay below the ceiling.   |
-| `audio.balance`                    | f32              | `0.0`                | `[-1.0, 1.0]`                                   | Stereo balance (-1 = full left, +1 = full right).                 |
-| `audio.trim_db_per_channel`        | array of f32     | `[]`                 | length ≤ 8, each ∈ `[-12.0, 0.0]`               | Per-channel trim in dB for asymmetric setups.                     |
+Earlier builds shipped an audiophile engine (WASAPI Exclusive / ASIO
+output modes, a 10-band EQ, ReplayGain, crossfeed, an FFT convolver,
+dither, a look-ahead limiter, balance/trim, a DSD pipeline, a
+bit-perfect health badge and a null-test diagnostic). That stack was
+removed in favour of the simple rodio-backed engine. On first launch
+after the upgrade, the obsolete `audio.*` settings rows are cleaned up
+automatically; all non-audio preferences (UI, output device,
+integrations, session) are preserved.
 
 ## Windows integration
 

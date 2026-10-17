@@ -13,6 +13,7 @@
     type Track,
   } from "../lib/api";
   import { app } from "../lib/stores.svelte";
+  import { playerStore } from "../lib/playerStore.svelte";
   import { formatDuration } from "../lib/format";
   import { queuePopover } from "../lib/queuePopover.svelte";
   import Cover from "./Cover.svelte";
@@ -79,7 +80,7 @@
     }
   });
   $effect(() => {
-    void app.player.current_track_id;
+    void playerStore.currentTrackId;
     if (queuePopover.open) void load();
   });
 
@@ -266,7 +267,7 @@
                   {:else}
                     <div class="thumb-placeholder">?</div>
                   {/if}
-                  {#if row.isCurrent && app.player.status === "playing"}
+                  {#if row.isCurrent && playerStore.status === "playing"}
                     <span class="row-eq" aria-hidden="true">
                       <span></span><span></span><span></span>
                     </span>

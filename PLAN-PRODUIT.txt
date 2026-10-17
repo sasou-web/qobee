@@ -1,0 +1,318 @@
+================================================================================
+QOBEE — PLAN PRODUIT (POST-REFONTE AUDIO)
+================================================================================
+
+Document orienté produit / utilisateur.
+Quand une fonctionnalité est incertaine ou contradictoire dans le code, c'est
+signalé explicitement par « [A VERIFIER] » au lieu d'inventer.
+
+Analyse basée sur le code réel (surface de commandes Tauri, routage des écrans,
+réglages persistés, formats déclarés) et non sur le seul README, certaines
+mentions du README étant devenues obsolètes après la refonte audio.
+
+
+--------------------------------------------------------------------------------
+1. VISION GENERALE DE L'APP
+--------------------------------------------------------------------------------
+
+Qobee est un lecteur de musique local, simple, rapide et ergonomique pour
+Windows (et, dans une moindre mesure, macOS). Il indexe un ou plusieurs dossiers
+de musique et joue la bibliothèque à travers un moteur de lecture volontairement
+minimal.
+
+Le positionnement a changé avec la refonte : Qobee n'est PLUS un lecteur
+« audiophile ». L'ancien moteur orienté fidélité (EQ, ReplayGain, modes de
+sortie exclusifs, DSD, etc.) a été retiré au profit d'un cœur compact bâti sur
+rodio (décodage Symphonia, sortie CPAL). La promesse actuelle tient en une
+phrase : lecture locale solide et fluide — play / pause / seek / volume / file
+d'attente — avec une belle interface, sans complexité audio.
+
+Principes directeurs :
+- Local d'abord : pas de streaming, pas de cloud imposé, pas de serveur média
+  (le Google Drive optionnel est la seule source distante).
+- Lecture seule : Qobee ne modifie jamais vos fichiers (pas d'édition de tags).
+- UI sobre et sombre, inspirée de Cider / Apple Music (barre latérale, grille
+  d'albums, page album, barre de lecture persistante).
+- Moteur simple et maintenable plutôt que DSP avancé.
+
+
+--------------------------------------------------------------------------------
+2. PUBLIC CIBLE
+--------------------------------------------------------------------------------
+
+- Auditeurs possédant une bibliothèque locale (FLAC/MP3 rippés ou achetés) qui
+  veulent un lecteur joli et réactif sans abonnement.
+- Utilisateurs Windows cherchant une intégration native propre (touches média,
+  barre des tâches, menus contextuels, lecture en arrière-plan).
+- Anciens utilisateurs de lecteurs « lourds » (foobar2000, MusicBee) qui veulent
+  quelque chose de plus simple et plus moderne visuellement.
+- Utilisateurs Discord voulant afficher leur écoute en Rich Presence.
+- [A VERIFIER] Ce n'est PLUS un produit pour audiophiles exigeants (sortie
+  bit-perfect, EQ, ReplayGain) — ce public n'est plus servi depuis la refonte.
+
+
+--------------------------------------------------------------------------------
+3. FONCTIONNALITES PRINCIPALES
+--------------------------------------------------------------------------------
+
+- Indexation de bibliothèque locale multi-dossiers (ajout/retrait de racines,
+  rescan d'une racine ou de toutes), extraction des tags et pochettes intégrées.
+- Navigation de la bibliothèque : albums (grille), artistes (liste + page
+  détaillée singles/EP/albums), genres, titres.
+- Lecture : lecture d'un titre, d'un album à partir d'un titre, d'une playlist,
+  d'une liste arbitraire de titres, ou d'un album aléatoire.
+- Transport : play / pause / reprise / précédent / suivant, seek (recherche dans
+  le titre), volume logiciel (mapping linéaire curseur -> gain).
+- File d'attente complète : « lire ensuite », « ajouter à la file », réordonner
+  par glisser-déposer, retirer, sauter à un élément, vider la file (découplée de
+  la lecture en cours).
+- Modes de lecture : répétition (off / titre / file), aléatoire (shuffle),
+  lecture sans fin (endless).
+- Playlists : créer / renommer / supprimer / ajouter / retirer / lire, import et
+  export M3U / M3U8.
+- Favoris : par titre, avec écran Favoris dédié.
+- Recherche sur titres, artistes et albums.
+- Sélecteur de périphérique de sortie avec repli automatique sur le périphérique
+  système par défaut s'il disparaît (ex. casque Bluetooth déconnecté).
+
+
+--------------------------------------------------------------------------------
+4. FONCTIONNALITES SECONDAIRES
+--------------------------------------------------------------------------------
+
+- Paroles (lyrics) : synchronisées (LRC) ou texte simple, via fichiers sidecar,
+  tags intégrés, cache disque puis fournisseurs en ligne ; panneau latéral +
+  mode karaoké plein écran.
+- Now Playing plein écran immersif (grande pochette, fond animé dérivé de la
+  pochette, transport, cœur favori).
+- Mini-lecteur et barre de lecture persistante.
+- Notes par étoiles (1-5) + compteur de lectures via la fiche Propriétés.
+- Minuteur de mise en veille (15/30/45/60/90 min ou « stop en fin de titre »).
+- Reprise de session : file + position restaurées EN PAUSE au prochain lancement.
+- Récemment joués (titres / albums / artistes) sur l'accueil.
+- Thèmes (système / sombre / clair), palette de fond (Dark neutral / Deep black /
+  Soft gray / Indigo), couleur d'accent configurable et mode « accent suit la
+  pochette ».
+- Toasts in-app, raccourcis clavier, barre latérale redimensionnable/repliable.
+- Mises à jour automatiques depuis GitHub Releases (signées, silencieuses si
+  déjà à jour).
+- [A VERIFIER] (crossfade) : un fondu enchaîné avait été ajouté en 0.5.1, mais
+  après la refonte le README indique que le gapless/crossfade est HORS PERIMETRE
+  et aucune commande ni réglage crossfade n'a été trouvé dans le code actuel.
+  -> Considéré comme retiré ; un léger silence inter-piste est attendu.
+
+
+--------------------------------------------------------------------------------
+5. ECRANS ET PAGES DE L'APP
+--------------------------------------------------------------------------------
+
+Vues confirmées dans le routeur (App.svelte) :
+- Welcome / Onboarding (tant qu'aucune racine de bibliothèque n'est configurée).
+- Accueil (Home) : récemment joués, genres.
+- Albums (grille) et Détail album.
+- Artistes (liste) et Détail artiste.
+- Genres (liste) et Détail genre.
+- Playlists (liste) et Détail playlist.
+- Favoris.
+- File d'attente (page dédiée, en plus du popover rapide).
+- Recherche.
+- Réglages.
+
+Surfaces transversales : barre de titre, barre latérale, barre de lecture,
+Now Playing plein écran, menus contextuels, dialogues (Propriétés, sélecteur de
+playlist, invite de nom), popover de file, toasts, avis de réduction dans la
+zone de notification.
+
+
+--------------------------------------------------------------------------------
+6. PARCOURS UTILISATEUR TYPIQUE
+--------------------------------------------------------------------------------
+
+1. Premier lancement -> écran Welcome -> l'utilisateur choisit un dossier de
+   musique (ou glisse-dépose un dossier sur la fenêtre).
+2. Scan : barre de progression, puis l'accueil et la bibliothèque se remplissent.
+3. Navigation : l'utilisateur ouvre Albums, clique une pochette -> page album ->
+   clique le bouton de lecture sur un titre.
+4. Écoute : la barre de lecture affiche le titre ; il peut ouvrir Now Playing
+   plein écran (touche F), afficher les paroles, mettre en favori.
+5. Gestion de file : clic droit sur un titre/album -> « Lire ensuite » /
+   « Ajouter à la file » ; réorganisation dans la page File d'attente.
+6. Personnalisation : Réglages -> thème, accent, périphérique de sortie,
+   intégrations.
+7. Fermeture : selon le réglage, l'app se réduit dans la zone de notification et
+   continue la lecture ; à la réouverture, la session reprend en pause.
+
+
+--------------------------------------------------------------------------------
+7. REGLAGES DISPONIBLES
+--------------------------------------------------------------------------------
+
+Panneau Réglages organisé en catégories (style Spotify/Cider), confirmées dans
+Settings.svelte :
+
+- Library (Bibliothèque) : dossiers/racines, scan, sources distantes (Google
+  Drive), statistiques (titres, playlists, historique, taille DB, taille cache
+  pochettes).
+- Playback (Lecture) : périphérique de sortie, volume. (Plus aucun panneau Audio
+  ni Égaliseur — supprimés.)
+- Windows integration : autostart, démarrage minimisé, réduction dans la zone de
+  notification, menus contextuels fichiers/dossiers, protocole qobee://.
+- Window (Fenêtre) : comportement à la fermeture (quitter / réduire dans la zone
+  de notification / continuer en arrière-plan), icône de notification,
+  notification au changement de titre.
+- Appearance (Apparence) : thème, palette de fond, accent, « accent suit la
+  pochette ».
+- Integrations : Discord Rich Presence (activation, Application ID, upload de
+  pochette opt-in).
+- Keyboard shortcuts : écran d'aide des raccourcis.
+- Advanced : effacer l'historique, vider le cache des pochettes, réinitialiser
+  la bibliothèque.
+
+Préférences réellement persistées (settings.svelte.ts) : thème, palette de fond,
+accent, accent-suit-pochette, volume par défaut, périphérique de sortie, Discord
+(activation/clientId/upload), barre latérale étendue — plus les réglages fenêtre
+et intégration Windows.
+
+
+--------------------------------------------------------------------------------
+8. INTEGRATIONS SYSTEME
+--------------------------------------------------------------------------------
+
+- Touches média OS / Bluetooth / contrôles rapides Windows via Media Session
+  (play, pause, next, prev, seek, stop).
+- Windows SMTC (tuile « Now Playing », écran de verrouillage) et macOS
+  MPNowPlayingInfoCenter / MPRemoteCommandCenter (Control Center, AirPods).
+- Icône de zone de notification (tray) Windows : afficher/focus, play/pause,
+  préc/suiv, bibliothèque, réglages, quitter.
+  [A VERIFIER] macOS : le tray est volontairement désactivé (sinon icône
+  parasite dans la barre de menus).
+- Intégration bureau Windows (opt-in par item, écritures registre HKCU
+  uniquement) : autostart, démarrage minimisé, réduction dans la zone de
+  notification, menu contextuel fichiers audio (Lire / Ajouter à la file / Lire
+  ensuite / Importer), menu contextuel dossiers et lecteurs, protocole qobee://,
+  instance unique + transfert d'arguments (deep-link).
+- Arguments en ligne de commande : --play, --enqueue, --play-next,
+  --play-folder, --scan-folder, --import-folder, --open-library,
+  --open-settings, --minimized.
+- Discord Rich Presence : titre, artiste, album, vraie pochette (upload OPT-IN
+  vers un hébergeur public pour des raisons de confidentialité), timeline temps
+  réel, reconnexion auto.
+- Persistance de l'état de la fenêtre (taille/position/maximisé).
+- Mises à jour auto via GitHub Releases (signature minisign).
+
+
+--------------------------------------------------------------------------------
+9. FORMATS AUDIO ET SOURCES SUPPORTES
+--------------------------------------------------------------------------------
+
+Sources :
+- Dossiers locaux (multi-racines).
+- Google Drive (optionnel) : OAuth/PKCE avec vos propres identifiants,
+  indexation distante, lecture par plages HTTP, synchro des favoris via un
+  fichier d'état dans le dossier. URI interne drv://<source>/<file>.
+
+Formats (confirmés via les fonctionnalités Symphonia activées) :
+FLAC, MP3, AAC/M4A, ALAC, WAV/PCM, OGG, Vorbis, MKV.
+
+[A VERIFIER] (Opus / AIFF / WavPack .wv) : ces extensions sont ANNONCEES dans le
+menu contextuel Windows (.opus .aiff .wv) et le README, mais elles ne figurent
+PAS explicitement dans les fonctionnalités Symphonia déclarées dans Cargo.toml.
+La lecture passe par rodio avec symphonia-all, donc le décodage peut fonctionner,
+mais l'extraction de tags et le scan ne sont pas garantis pour ces formats.
+A tester avant de communiquer dessus.
+
+
+--------------------------------------------------------------------------------
+10. FONCTIONNALITES SUPPRIMEES DEPUIS L'ANCIENNE VERSION AUDIOPHILE
+--------------------------------------------------------------------------------
+
+Retirées lors de la refonte (confirmé par le CHANGELOG, le README et le dossier
+components/audio/ désormais vide) :
+- Égaliseur 10 bandes et son panneau de réglages.
+- ReplayGain, crossfeed, convolueur FFT, dither, limiteur look-ahead,
+  balance/trim.
+- Pipeline DSD.
+- Modes de sortie (Auto / Shared / WASAPI Exclusive / ASIO) et qualité de
+  resampler configurable.
+- Badge « bit-perfect » et diagnostic null-test.
+- [A VERIFIER] Crossfade / gapless : présents dans des versions intermédiaires,
+  mais hors périmètre après la refonte (voir section 4).
+
+Migration : au premier lancement après mise à jour, les anciennes clés audio.*
+sont nettoyées automatiquement ; les préférences non-audio (UI, périphérique,
+intégrations, session) sont conservées.
+
+Conservé : le sélecteur de périphérique de sortie (avec repli auto) et le volume
+logiciel linéaire.
+
+
+--------------------------------------------------------------------------------
+11. LIMITES ACTUELLES
+--------------------------------------------------------------------------------
+
+- Pas de gapless ni de crossfade : un léger silence entre les pistes est attendu.
+- Pas d'édition de tags (lecture seule).
+- Pas de scrobbling (Last.fm / ListenBrainz) ; l'historique reste local.
+- Pas de raccourcis globaux OS (les touches média marchent, mais pas un
+  Play/Pause système depuis n'importe quelle app).
+- Pas de smart playlists ni de visualiseur.
+- Backend BASS : présent uniquement comme stub (feature Cargo, sans
+  implémentation).
+- [A VERIFIER] Parité macOS incertaine : le projet cible macOS (build .dmg), mais
+  plusieurs intégrations sont spécifiques Windows (tray, registre, menus
+  contextuels, Jump List). L'expérience macOS n'a pas été vérifiée et pourrait
+  être partielle.
+- [A VERIFIER] Compteur d'underruns : une commande backend get_underrun_count
+  existe pour un futur panneau de diagnostic, mais aucune UI ne l'expose
+  aujourd'hui.
+- [A VERIFIER] Annulation d'indexation Drive : marquée TODO dans le code
+  (drive_index_cancel non câblé).
+- Pochette Discord : nécessite un upload vers un hébergeur public tiers (opt-in)
+  car Discord exige une URL HTTPS publique.
+
+
+--------------------------------------------------------------------------------
+12. IDEES D'AMELIORATION FUTURES
+--------------------------------------------------------------------------------
+
+- Crossfade / gapless réintroduits proprement sur le nouveau moteur.
+- Raccourcis clavier globaux (Play/Pause système).
+- Scrobbling Last.fm / ListenBrainz.
+- Smart playlists (filtres/tris dynamiques).
+- Visualiseur audio.
+- Jump List dynamique Windows (la statique existe déjà).
+- Panneau de diagnostic exploitant le compteur d'underruns existant.
+- Égaliseur léger optionnel (si la demande revient) — sans recréer toute
+  l'ancienne pile.
+- Édition de tags basique (renommer/corriger métadonnées).
+- Parité macOS complète et vérifiée.
+- Annulation et planification des scans Drive.
+
+
+--------------------------------------------------------------------------------
+13. ROADMAP (COURT / MOYEN / LONG TERME)
+--------------------------------------------------------------------------------
+
+COURT TERME — fiabiliser l'existant
+- Clarifier et tester le support réel des formats Opus / AIFF / WavPack (corriger
+  l'écart annonce <-> décodage).
+- Vérifier/documenter la parité macOS ou recentrer explicitement sur Windows.
+- Exposer le diagnostic d'underruns (petit panneau) ou retirer la commande
+  inutilisée.
+- Finir l'annulation d'indexation Drive.
+
+MOYEN TERME — confort de lecture
+- Réintroduire crossfade/gapless sur le moteur rodio.
+- Raccourcis clavier globaux.
+- Scrobbling (Last.fm / ListenBrainz).
+- Jump List dynamique Windows.
+
+LONG TERME — différenciation
+- Smart playlists et tris avancés.
+- Visualiseur audio.
+- Édition de tags (rester prudent vs. principe « lecture seule »).
+- Égaliseur léger optionnel si le public le redemande.
+
+================================================================================
+Fin du document.
+================================================================================

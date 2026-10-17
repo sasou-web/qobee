@@ -1,6 +1,7 @@
 <script lang="ts">
   import { playAlbumFromTrack, playTrack, type Track } from "../lib/api";
   import { app } from "../lib/stores.svelte";
+  import { playerStore } from "../lib/playerStore.svelte";
   import { formatDuration, formatQuality } from "../lib/format";
   import { openTrackMenu } from "../lib/trackMenu";
   import { splitArtists } from "../lib/artistNames";
@@ -63,8 +64,8 @@
   </thead>
   <tbody>
     {#each tracks as track (track.id)}
-      {@const isCurrent = app.player.current_track_id === String(track.id)}
-      {@const isPlaying = isCurrent && app.player.status === "playing"}
+      {@const isCurrent = playerStore.currentTrackId === String(track.id)}
+      {@const isPlaying = isCurrent && playerStore.status === "playing"}
       <tr
         class:current={isCurrent}
         onclick={() => handlePlay(track)}

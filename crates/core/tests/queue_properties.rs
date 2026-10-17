@@ -1,14 +1,17 @@
 //! Property-based tests for the playback queue exposed by
-//! [`qobee_core::Queue`] (cf. spec
-//! `qobee-beta-feedback-improvements`).
+//! [`qobee_core::Queue`].
+//!
+//! Feature: audio-engine-simplification, Property 5 — Queue operation
+//! invariants. (Originally authored for spec
+//! `qobee-beta-feedback-improvements`; the queue surface is unchanged
+//! by the audio-engine simplification and these invariants continue to
+//! pin its correctness.)
 //!
 //! ## Scope
 //!
-//! This file covers **Property 2 — Invariants des opérations de file
-//! d'attente**, exercising the three mutating operations a user can
-//! drive from the Queue_Panel (R3.4 "Add to queue", R3.7 "Vider la
-//! file" / réorganisation) directly against the real
-//! [`qobee_core::Queue`]:
+//! This file covers the queue operation invariants, exercising the
+//! mutating operations a user can drive from the Queue_Panel directly
+//! against the real [`qobee_core::Queue`]:
 //!
 //!   * `append(tracks)` produces `items_initiaux ++ tracks` — order
 //!     preserved, length grows by exactly `tracks.len()`.

@@ -13,6 +13,7 @@
     | "albums"
     | "scan"
     | "volume"
+    | "volume-mute"
     | "home"
     | "search"
     | "genres"
@@ -118,6 +119,12 @@
     <path d="M11 5L6.5 9H3v6h3.5L11 19V5z" fill="currentColor" stroke="none" />
     <path d="M15.5 8.5a5 5 0 0 1 0 7" />
     <path d="M18.5 6a8 8 0 0 1 0 12" />
+  </svg>
+{:else if name === "volume-mute"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M11 5L6.5 9H3v6h3.5L11 19V5z" fill="currentColor" stroke="none" />
+    <line x1="22" y1="9" x2="16" y2="15" />
+    <line x1="16" y1="9" x2="22" y2="15" />
   </svg>
 {:else if name === "home"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
